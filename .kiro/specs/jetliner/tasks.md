@@ -1,8 +1,8 @@
-# Implementation Plan: Avro Stream Reader
+# Implementation Plan: Jetliner
 
 ## Overview
 
-This plan implements a high-performance Rust library with Python bindings for streaming Avro data into Polars DataFrames. The implementation follows a bottom-up approach: core types → parsing → codecs → sources → streaming → Python bindings.
+This plan implements Jetliner, a high-performance Rust library with Python bindings for streaming Avro data into Polars DataFrames. Named after the Avro Jetliner, the library emphasizes speed and streaming. The implementation follows a bottom-up approach: core types → parsing → codecs → sources → streaming → Python bindings.
 
 ## Tasks
 
@@ -167,23 +167,37 @@ This plan implements a high-performance Rust library with Python bindings for st
     - Map logical types to Arrow types
     - _Requirements: 5.4_
 
-  - [ ] 9.2 Implement RecordDecoder with Arrow builders
+  - [ ] 9.2 Implement RecordDecode trait and FullRecordDecoder
+    - Define RecordDecode trait with decode_record, finish_batch, pending_records
+    - Implement FullRecordDecoder for non-projected reads (zero overhead)
     - Create appropriate ArrayBuilder for each field
     - Decode records directly into builders (no intermediate Value)
-    - Handle nullable fields from unions
-    - _Requirements: 5.1, 5.2, 5.3, 5.5_
+    - _Requirements: 5.1, 5.2, 5.3_
 
-  - [ ] 9.3 Implement DataFrameBuilder
+  - [ ] 9.3 Implement ProjectedRecordDecoder
+    - Implement ProjectedRecordDecoder for projected reads
+    - Only create builders for projected columns
+    - Implement skip_field() for non-projected columns
+    - Handle nullable fields from unions
+    - _Requirements: 5.5, 6a.2_
+
+  - [ ] 9.4 Implement RecordDecoder enum factory
+    - Create RecordDecoder enum wrapping Full/Projected variants
+    - Implement RecordDecoder::new() factory that chooses variant
+    - Delegate trait methods to inner decoder
+    - _Requirements: 6a.2_
+
+  - [ ] 9.5 Implement DataFrameBuilder
     - Convert Arrow arrays to Polars DataFrame
     - Handle batch size limits
     - Track and report errors in skip mode
     - _Requirements: 5.6, 5.7, 5.8_
 
-  - [ ]* 9.4 Write property test for null preservation
+  - [ ]* 9.6 Write property test for null preservation
     - **Property 9: Null Preservation in Unions**
     - **Validates: Requirements 5.5**
 
-  - [ ]* 9.5 Write property test for data round-trip
+  - [ ]* 9.7 Write property test for data round-trip
     - **Property 2: Data Round-Trip with Type Preservation**
     - **Validates: Requirements 5.4, 5.5, 5.6, 5.7, 5.8, 5.9**
 
@@ -247,33 +261,59 @@ This plan implements a high-performance Rust library with Python bindings for st
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 15. Python bindings
-  - [ ] 15.1 Implement AvroReader PyClass
-    - Constructor with path and configuration kwargs
+  - [ ] 15.1 Implement AvroReaderCore PyClass (internal)
+    - Constructor with path, configuration kwargs, and projected_columns
     - Implement __iter__ and __next__ for sync iteration
+    - Support projection pushdown via projected_columns parameter
+    - _Requirements: 6.1, 6.2, 6a.2_
+
+  - [ ] 15.2 Implement AvroReader PyClass (user-facing open() API)
+    - Wrapper around AvroReaderCore without projection
     - Implement __enter__ and __exit__ for context manager
     - _Requirements: 6.1, 6.2, 6.6_
 
-  - [ ] 15.2 Implement schema and error accessors
+  - [ ] 15.3 Implement schema and error accessors
     - Expose schema as JSON string and dict
     - Expose errors list after iteration
-    - _Requirements: 9.3, 7.4_
+    - Implement parse_avro_schema() for IO plugin schema extraction
+    - _Requirements: 9.3, 7.4, 6a.5_
 
-  - [ ] 15.3 Implement Python exception types
+  - [ ] 15.4 Implement Python exception types
     - Define custom exception classes (ParseError, SchemaError, etc.)
     - Map Rust errors to appropriate Python exceptions
     - Include context in error messages
     - _Requirements: 6.4, 6.5_
 
-  - [ ] 15.4 Implement avro_stream.open() entry point
+  - [ ] 15.5 Implement jetliner.open() entry point
     - Parse S3 URIs vs local paths
     - Create appropriate source and reader
     - _Requirements: 4.1, 4.2, 4.3_
 
-  - [ ]* 15.5 Write unit tests for Python API
-    - Test iterator protocol
+  - [ ] 15.6 Implement jetliner.scan() with IO plugin
+    - Implement scan() function returning LazyFrame via register_io_source
+    - Create source_generator that accepts with_columns, predicate, n_rows, batch_size
+    - Pass projected_columns to AvroReaderCore for builder-level filtering
+    - Apply predicate filter to each yielded DataFrame
+    - Implement early stopping when n_rows limit reached
+    - _Requirements: 6a.1, 6a.2, 6a.3, 6a.4, 6a.5, 6a.6_
+
+  - [ ]* 15.7 Write property test for projection correctness
+    - **Property 14: Projection Preserves Selected Columns**
+    - **Validates: Requirements 6a.2**
+
+  - [ ]* 15.8 Write property test for early stopping
+    - **Property 15: Early Stopping Respects Row Limit**
+    - **Validates: Requirements 6a.4**
+
+  - [ ]* 15.9 Write unit tests for Python API
+    - Test iterator protocol (open API)
     - Test context manager
     - Test error handling
-    - _Requirements: 6.1, 6.2, 6.4, 6.5, 6.6_
+    - Test scan() returns LazyFrame
+    - Test projection pushdown reduces memory
+    - Test predicate pushdown filters correctly
+    - Test early stopping with head()
+    - _Requirements: 6.1, 6.2, 6.4, 6.5, 6.6, 6a.1, 6a.2, 6a.3, 6a.4_
 
 - [ ] 16. Seek functionality
   - [ ] 16.1 Implement seek_to_sync in BlockReader

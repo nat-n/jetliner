@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This document specifies requirements for a high-performance Rust library with Python bindings that streams Avro data from S3 or local filesystem into Polars DataFrames. The library enables processing of large Avro files without loading entire files into memory, targeting production use cases including AWS Lambda deployments. This is a read-only library - write support is explicitly out of scope.
+This document specifies requirements for Jetliner, a high-performance Rust library with Python bindings that streams Avro data from S3 or local filesystem into Polars DataFrames. Named after the Avro Jetliner — the first jet airliner to fly in North America — the library emphasizes speed and streaming. It enables processing of large Avro files without loading entire files into memory, targeting production use cases including AWS Lambda deployments. This is a read-only library - write support is explicitly out of scope.
 
 ## Glossary
 
@@ -104,6 +104,19 @@ This document specifies requirements for a high-performance Rust library with Py
 4. THE Python API SHALL raise appropriate Python exceptions with descriptive messages
 5. WHEN an error occurs during iteration, THE Batch_Iterator SHALL include context about the block and record position
 6. THE Python API SHALL support context manager protocol for resource cleanup
+
+### Requirement 6a: Polars IO Plugin Integration
+
+**User Story:** As a data analyst, I want to use Polars query optimizations when reading Avro files, so that I can efficiently query large files without reading unnecessary data.
+
+#### Acceptance Criteria
+
+1. THE scan function SHALL return a Polars LazyFrame via register_io_source
+2. WHEN a query projects specific columns, THE Avro_Reader SHALL only allocate memory for those columns
+3. WHEN a query includes a filter predicate, THE Avro_Reader SHALL apply the filter to each batch
+4. WHEN a query limits rows (head/limit), THE Avro_Reader SHALL stop reading after the limit is reached
+5. THE scan function SHALL expose the Avro schema as a Polars schema for query planning
+6. WHEN using scan, THE Avro_Reader SHALL respect the batch_size hint from the query engine
 
 ### Requirement 7: Error Handling and Resilience
 

@@ -1,8 +1,8 @@
-# Design Document: Avro Stream Reader
+# Design Document: Jetliner
 
 ## Overview
 
-This document describes the architecture and design of a high-performance Rust library for streaming Avro data into Polars DataFrames. The library provides Python bindings via PyO3 and supports reading from both S3 and local filesystem.
+This document describes the architecture and design of Jetliner, a high-performance Rust library for streaming Avro data into Polars DataFrames. Named after the Avro Jetliner — the first jet airliner to fly in North America — the library emphasizes speed and streaming (lines/rows). It provides Python bindings via PyO3 and supports reading from both S3 and local filesystem.
 
 ### Key Design Decisions
 
@@ -10,13 +10,17 @@ This document describes the architecture and design of a high-performance Rust l
 2. **PyO3 + pyo3-polars**: Use PyO3 for Python bindings with pyo3-polars for zero-copy DataFrame transfer
 3. **Async I/O with Tokio**: Use async runtime for S3 operations and prefetching
 4. **Block-oriented Processing**: Process Avro blocks as the unit of work for streaming and parallelism
+5. **Polars IO Plugin**: Use `register_io_source` for LazyFrame integration with query optimization
 
-### Why Not Polars Plugins?
+### Dual API Strategy
 
-Polars plugins are designed for adding custom expressions/functions to query processing, not for data source integration. Our use case (streaming data source) is better served by:
-- Building DataFrames in Rust using polars crate directly
-- Returning them to Python via pyo3-polars' `PyDataFrame` wrapper
-- This gives us full control over streaming, buffering, and memory management
+We provide two complementary APIs:
+
+1. **`scan()` → LazyFrame via IO Plugin**: Integrates with Polars query optimizer for projection pushdown, predicate pushdown, early stopping, and streaming engine support. Recommended for most use cases.
+
+2. **`open()` → Iterator**: Direct DataFrame iteration for streaming control, progress tracking, or custom batch processing. Useful when you need fine-grained control over memory or processing.
+
+Both APIs share the same Rust core — the IO plugin just wraps the iterator in a generator that Polars can optimize.
 
 ## Architecture
 
@@ -25,13 +29,24 @@ Polars plugins are designed for adding custom expressions/functions to query pro
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Python API Layer                             │
-│  ┌─────────────────┐  ┌─────────────────┐                           │
-│  │  AvroReader     │  │  BatchIterator  │                           │
-│  │  (entry point)  │  │  (__iter__)     │                           │
-│  └────────┬────────┘  └────────┬────────┘                           │
-└───────────┼────────────────────┼────────────────────────────────────┘
-            │                    │
-            ▼                    ▼
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
+│  │  scan()         │  │  open()         │  │  BatchIterator      │  │
+│  │  → LazyFrame    │  │  → Iterator     │  │  (__iter__)         │  │
+│  │  (IO Plugin)    │  │  (direct)       │  │                     │  │
+│  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
+│           │                    │                      │             │
+│           │    ┌───────────────┴──────────────────────┘             │
+│           │    │  (both use same Rust core)                         │
+│           ▼    ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  register_io_source (Polars query optimization)             │    │
+│  │  - projection pushdown (with_columns)                       │    │
+│  │  - predicate pushdown (predicate)                           │    │
+│  │  - early stopping (n_rows)                                  │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+            │
+            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      PyO3 Binding Layer                              │
 │  ┌─────────────────────────────────────────────────────────────┐    │
@@ -50,8 +65,8 @@ Polars plugins are designed for adding custom expressions/functions to query pro
 │         │                   │                      │                 │
 │         ▼                   ▼                      ▼                 │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐   │
-│  │ PrefetchBuf  │    │    Codec     │    │   SchemaConverter    │   │
-│  │  (async)     │    │ (decompress) │    │  (Avro→Arrow types)  │   │
+│  │ PrefetchBuf  │    │    Codec     │    │  RecordDecoder       │   │
+│  │  (async)     │    │ (decompress) │    │  (Full/Projected)    │   │
 │  └──────────────┘    └──────────────┘    └──────────────────────┘   │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -466,15 +481,73 @@ pub enum ReadErrorKind {
 
 ## Python API Design
 
+### Two API Patterns
+
+The library provides two complementary APIs:
+
+1. **`scan()` - LazyFrame with Query Optimization** (recommended for most use cases)
+   - Returns a Polars `LazyFrame` via `register_io_source`
+   - Enables projection pushdown (only read needed columns)
+   - Enables predicate pushdown (filter at source level)
+   - Enables early stopping (`head()`, `limit()`)
+   - Integrates with Polars streaming engine
+
+2. **`open()` - Iterator for Streaming Control**
+   - Returns an iterator yielding `DataFrame` batches
+   - Full control over batch processing
+   - Useful for custom streaming pipelines, progress tracking, or memory-constrained environments
+
 ### Module Structure
 
 ```python
-import avro_stream
+import jetliner
+import polars as pl
 
-# Main entry point
-reader = avro_stream.open("s3://bucket/file.avro")
-reader = avro_stream.open("/path/to/file.avro")
-reader = avro_stream.open(
+# ============================================================
+# RECOMMENDED: scan() with LazyFrame and query optimization
+# ============================================================
+
+# Basic scan - returns LazyFrame
+lf = jetliner.scan("s3://bucket/file.avro")
+lf = jetliner.scan("/path/to/file.avro")
+
+# Query with projection pushdown - only reads col1, col2 from disk
+result = (
+    jetliner.scan("file.avro")
+    .select(["col1", "col2"])
+    .collect()
+)
+
+# Query with predicate pushdown - filters during read, not after
+result = (
+    jetliner.scan("file.avro")
+    .filter(pl.col("status") == "active")
+    .filter(pl.col("amount") > 100)
+    .collect()
+)
+
+# Early stopping - stops reading after 1000 rows
+result = jetliner.scan("file.avro").head(1000).collect()
+
+# Full query optimization example
+result = (
+    jetliner.scan("s3://bucket/large_file.avro")
+    .select(["user_id", "amount", "timestamp"])
+    .filter(pl.col("amount") > 0)
+    .group_by("user_id")
+    .agg(pl.col("amount").sum())
+    .head(100)
+    .collect()
+)
+
+# ============================================================
+# ALTERNATIVE: open() for streaming/batch control
+# ============================================================
+
+# Iterator-based reading
+reader = jetliner.open("s3://bucket/file.avro")
+reader = jetliner.open("/path/to/file.avro")
+reader = jetliner.open(
     "s3://bucket/file.avro",
     batch_size=100_000,
     buffer_blocks=4,
@@ -487,12 +560,12 @@ for df in reader:
     process(df)
 
 # Context manager
-with avro_stream.open("file.avro") as reader:
+with jetliner.open("file.avro") as reader:
     for df in reader:
         process(df)
 
 # Schema inspection
-reader = avro_stream.open("file.avro")
+reader = jetliner.open("file.avro")
 print(reader.schema)  # JSON string
 print(reader.schema_dict)  # Python dict
 
@@ -600,6 +673,320 @@ pub struct PyReadError {
 }
 ```
 
+### IO Plugin Implementation (scan API)
+
+The `scan()` function uses Polars' `register_io_source` to enable query optimizations. The implementation bridges Rust I/O with Python's generator protocol.
+
+**Why build this instead of using existing solutions?**
+- Polars has `read_avro` but **no `scan_avro`** — no lazy/streaming Avro support
+- Existing `polars_io::avro::AvroReader` requires `Read + Seek` — can't stream from S3
+- `polars-fastavro` uses Python/fastavro intermediary — 30-80x slower, no S3 support
+- Our library: Native Rust decoding + S3 streaming + IO plugin = unique value
+
+```python
+# Python-side implementation in jetliner/__init__.py
+import polars as pl
+from polars.io.plugins import register_io_source
+from typing import Iterator
+from ._jetliner import AvroReaderCore, parse_avro_schema
+
+def scan(
+    path: str,
+    *,
+    buffer_blocks: int = 4,
+    buffer_bytes: int = 64 * 1024 * 1024,
+    strict: bool = False,
+    validate_schema: bool = False,
+) -> pl.LazyFrame:
+    """
+    Scan an Avro file, returning a LazyFrame with query optimization support.
+
+    Supports projection pushdown, predicate pushdown, and early stopping.
+
+    Parameters
+    ----------
+    path : str
+        Path to Avro file (local path or s3:// URI)
+    buffer_blocks : int
+        Number of blocks to prefetch (default: 4)
+    buffer_bytes : int
+        Maximum bytes to buffer (default: 64MB)
+    strict : bool
+        If True, fail on first error. If False, skip bad records (default: False)
+    validate_schema : bool
+        If True, Polars validates each batch matches declared schema (default: False)
+        Useful for debugging but adds overhead.
+    """
+    # Parse schema to get Polars schema (calls into Rust)
+    polars_schema = parse_avro_schema(path)
+
+    def source_generator(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        """Generator that yields DataFrames, respecting pushdown hints."""
+
+        if batch_size is None:
+            batch_size = 100_000
+
+        # Create Rust reader with projection info
+        reader = AvroReaderCore(
+            path,
+            batch_size=batch_size,
+            buffer_blocks=buffer_blocks,
+            buffer_bytes=buffer_bytes,
+            strict=strict,
+            projected_columns=with_columns,  # Pass projection to Rust
+        )
+
+        rows_yielded = 0
+
+        for df in reader:
+            # Apply predicate pushdown (filter at Python level for now)
+            if predicate is not None:
+                df = df.filter(predicate)
+
+            # Handle early stopping
+            if n_rows is not None:
+                remaining = n_rows - rows_yielded
+                if remaining <= 0:
+                    break
+                if df.height > remaining:
+                    df = df.head(remaining)
+
+            rows_yielded += df.height
+            yield df
+
+            # Stop if we've hit the row limit
+            if n_rows is not None and rows_yielded >= n_rows:
+                break
+
+    return register_io_source(
+        io_source=source_generator,
+        schema=polars_schema,
+        validate_schema=validate_schema,
+        is_pure=True,  # Same path + config = same data, enables query optimization
+    )
+
+```
+
+### Projection Pushdown Implementation
+
+Projection pushdown uses **two separate decoder types** to avoid runtime overhead when projection isn't needed. Rust's monomorphization generates optimized code for each path.
+
+```rust
+/// Trait for record decoding with static dispatch
+pub trait RecordDecode: Send {
+    fn decode_record(&mut self, data: &mut &[u8]) -> Result<(), DecodeError>;
+    fn finish_batch(&mut self) -> Result<Vec<ArrayRef>, DecodeError>;
+    fn pending_records(&self) -> usize;
+}
+
+/// Full decoder - no projection, no overhead
+pub struct FullRecordDecoder {
+    schema: AvroSchema,
+    arrow_schema: ArrowSchema,
+    builders: Vec<Box<dyn ArrayBuilder>>,
+}
+
+impl FullRecordDecoder {
+    pub fn new(schema: &AvroSchema) -> Result<Self, SchemaError> {
+        let arrow_schema = avro_to_arrow_schema(schema);
+        let builders = schema.fields()
+            .iter()
+            .map(|field| create_builder_for_type(&field.schema))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self { schema, arrow_schema, builders })
+    }
+}
+
+impl RecordDecode for FullRecordDecoder {
+    fn decode_record(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
+        // Decode all fields directly - no projection checks
+        for (field, builder) in self.schema.fields().iter().zip(&mut self.builders) {
+            decode_field(data, &field.schema, builder)?;
+        }
+        Ok(())
+    }
+
+    fn finish_batch(&mut self) -> Result<Vec<ArrayRef>, DecodeError> {
+        self.builders.iter_mut()
+            .map(|b| Ok(b.finish()))
+            .collect()
+    }
+
+    fn pending_records(&self) -> usize {
+        self.builders.first().map_or(0, |b| b.len())
+    }
+}
+
+/// Projected decoder - only builds selected columns
+pub struct ProjectedRecordDecoder {
+    schema: AvroSchema,
+    arrow_schema: ArrowSchema,
+    builders: Vec<Option<Box<dyn ArrayBuilder>>>,  // None for skipped columns
+    projected_names: HashSet<String>,
+}
+
+impl ProjectedRecordDecoder {
+    pub fn new(schema: &AvroSchema, columns: &[String]) -> Result<Self, SchemaError> {
+        let projected_names: HashSet<_> = columns.iter().cloned().collect();
+        let arrow_schema = avro_to_arrow_schema_projected(schema, &projected_names);
+
+        let builders = schema.fields()
+            .iter()
+            .map(|field| {
+                if projected_names.contains(&field.name) {
+                    Some(create_builder_for_type(&field.schema))
+                } else {
+                    None
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self { schema, arrow_schema, builders, projected_names })
+    }
+}
+
+impl RecordDecode for ProjectedRecordDecoder {
+    fn decode_record(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
+        for (field, builder_opt) in self.schema.fields().iter().zip(&mut self.builders) {
+            match builder_opt {
+                Some(builder) => decode_field(data, &field.schema, builder)?,
+                None => skip_field(data, &field.schema)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_batch(&mut self) -> Result<Vec<ArrayRef>, DecodeError> {
+        self.builders.iter_mut()
+            .filter_map(|b| b.as_mut().map(|builder| Ok(builder.finish())))
+            .collect()
+    }
+
+    fn pending_records(&self) -> usize {
+        self.builders.iter()
+            .find_map(|b| b.as_ref().map(|builder| builder.len()))
+            .unwrap_or(0)
+    }
+}
+
+/// Factory enum - returns appropriate decoder type
+pub enum RecordDecoder {
+    Full(FullRecordDecoder),
+    Projected(ProjectedRecordDecoder),
+}
+
+impl RecordDecoder {
+    pub fn new(
+        schema: &AvroSchema,
+        projected_columns: Option<&[String]>,
+    ) -> Result<Self, SchemaError> {
+        match projected_columns {
+            None => Ok(RecordDecoder::Full(FullRecordDecoder::new(schema)?)),
+            Some(cols) => Ok(RecordDecoder::Projected(ProjectedRecordDecoder::new(schema, cols)?)),
+        }
+    }
+}
+
+impl RecordDecode for RecordDecoder {
+    fn decode_record(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
+        match self {
+            RecordDecoder::Full(d) => d.decode_record(data),
+            RecordDecoder::Projected(d) => d.decode_record(data),
+        }
+    }
+
+    fn finish_batch(&mut self) -> Result<Vec<ArrayRef>, DecodeError> {
+        match self {
+            RecordDecoder::Full(d) => d.finish_batch(),
+            RecordDecoder::Projected(d) => d.finish_batch(),
+        }
+    }
+
+    fn pending_records(&self) -> usize {
+        match self {
+            RecordDecoder::Full(d) => d.pending_records(),
+            RecordDecoder::Projected(d) => d.pending_records(),
+        }
+    }
+}
+```
+
+**Why two types instead of runtime checks?**
+- `FullRecordDecoder`: Zero overhead — no Option checks, no HashSet lookups, tight decode loop
+- `ProjectedRecordDecoder`: Pays the cost only when projection is actually used
+- The enum dispatch (`match self`) happens once per record, which is negligible
+- Rust's optimizer can inline the trait methods, making the enum match nearly free
+
+**Skip function for non-projected fields:**
+
+```rust
+/// Skip over an Avro field without decoding its value
+fn skip_field(data: &mut &[u8], schema: &AvroSchema) -> Result<(), DecodeError> {
+    match schema {
+        AvroSchema::Null => {}
+        AvroSchema::Boolean => { *data = &data[1..]; }
+        AvroSchema::Int | AvroSchema::Long => { skip_varint(data)?; }
+        AvroSchema::Float => { *data = &data[4..]; }
+        AvroSchema::Double => { *data = &data[8..]; }
+        AvroSchema::Bytes | AvroSchema::String => {
+            let len = decode_varint(data)? as usize;
+            *data = &data[len..];
+        }
+        AvroSchema::Fixed(f) => { *data = &data[f.size..]; }
+        AvroSchema::Array(inner) => { skip_array(data, inner)?; }
+        AvroSchema::Map(inner) => { skip_map(data, inner)?; }
+        AvroSchema::Union(variants) => {
+            let idx = decode_varint(data)? as usize;
+            skip_field(data, &variants[idx])?;
+        }
+        AvroSchema::Record(r) => {
+            for field in &r.fields {
+                skip_field(data, &field.schema)?;
+            }
+        }
+        AvroSchema::Enum(_) => { skip_varint(data)?; }
+    }
+    Ok(())
+}
+```
+
+### Predicate Pushdown Strategy
+
+Predicate pushdown is handled at the Python level initially (filter after building DataFrame). This is the approach shown in Polars' own IO plugin example.
+
+**Why not filter during decode?**
+- Polars expressions (`pl.Expr`) are complex to evaluate in Rust
+- Would require reimplementing expression evaluation
+- Filtering post-build is still efficient for most cases
+- Polars' own example does it this way
+
+**Future optimization path**: For simple predicates on primitive columns (e.g., `col("x") > 5`), we could:
+1. Parse the predicate expression in Python
+2. Pass simple filter conditions to Rust
+3. Skip records that fail the filter during decode
+
+This is out of scope for initial implementation.
+
+### Future Optimization Opportunities (Deferred)
+
+These optimizations are identified but deferred to post-MVP:
+
+1. **Decode-level field skipping for fixed-width types**: For schemas with many large fixed-width columns that aren't projected, we could compute byte offsets at schema parse time and seek directly past them without parsing.
+
+2. **Block-level predicate evaluation**: Unlike Parquet, Avro doesn't have block-level statistics (min/max). However, for sorted data or with external metadata, we could skip entire blocks.
+
+3. **Parallel record decoding within blocks**: Currently we decode records sequentially within a block. For very wide schemas, parallel field decoding could help.
+
+4. **SIMD-accelerated varint decoding**: Avro uses varint encoding extensively. SIMD could accelerate this for large batches.
+
+5. **Memory-mapped local files**: For local files, mmap could reduce copies vs read() calls.
+
 ## Correctness Properties
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system—essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
@@ -683,13 +1070,27 @@ pub struct PyReadError {
 
 **Validates: Requirements 3.7**
 
+### Property 14: Projection Preserves Selected Columns
+
+*For any* Avro file and any subset of columns, reading with projection SHALL produce a DataFrame containing exactly those columns with the same values as reading all columns and then selecting.
+
+**Validates: Requirements 6a.2**
+
+### Property 15: Early Stopping Respects Row Limit
+
+*For any* Avro file and any row limit N, reading with `n_rows=N` SHALL produce at most N rows, and those rows SHALL be the first N rows of the file.
+
+**Validates: Requirements 6a.4**
+
 ## Memory Management and Backpressure
 
 ### Lessons from Existing Implementations
 
-**polars-avro (hafaio)**: Uses `apache-avro` crate which is "fully compliant but does a lot of unnecessary memory allocation and object creation." Result: ~7x slower than native Polars. Key insight: avoid the `apache-avro` crate's `Value` enum which allocates for every field.
+**polars-fastavro**: Uses Python/fastavro as intermediary. Result: 30-80x slower than native. Key insight: avoid Python intermediaries for hot paths.
 
-**Native Polars Avro** (deprecated): Was faster because it decoded directly into Arrow buffers. We should follow this approach but with streaming support.
+**polars_io::avro**: Uses `apache-avro` crate which allocates a `Value` enum for every field. Result: ~7x slower than direct Arrow decoding. Key insight: decode directly into Arrow builders.
+
+**Native Polars Avro** (deprecated): Was faster because it decoded directly into Arrow buffers. We follow this approach with streaming support.
 
 ### Memory Lifecycle Through the Pipeline
 
@@ -768,15 +1169,15 @@ let record = decode_record(&data)?; // Propagate error immediately
 
 ### Python Exception Mapping
 
-| Rust Error                        | Python Exception                |
-| --------------------------------- | ------------------------------- |
-| SourceError::NotFound             | FileNotFoundError               |
-| SourceError::PermissionDenied     | PermissionError                 |
-| SourceError::AuthenticationFailed | avro_stream.AuthenticationError |
-| ReaderError::Parse                | avro_stream.ParseError          |
-| ReaderError::Schema               | avro_stream.SchemaError         |
-| ReaderError::Codec                | avro_stream.CodecError          |
-| ReaderError::Decode               | avro_stream.DecodeError         |
+| Rust Error                        | Python Exception             |
+| --------------------------------- | ---------------------------- |
+| SourceError::NotFound             | FileNotFoundError            |
+| SourceError::PermissionDenied     | PermissionError              |
+| SourceError::AuthenticationFailed | jetliner.AuthenticationError |
+| ReaderError::Parse                | jetliner.ParseError          |
+| ReaderError::Schema               | jetliner.SchemaError         |
+| ReaderError::Codec                | jetliner.CodecError          |
+| ReaderError::Decode               | jetliner.DecodeError         |
 
 ## Testing Strategy
 
@@ -884,7 +1285,7 @@ fn benchmark_read_throughput(c: &mut Criterion) {
 ### Test Configuration
 
 - Property tests: minimum 100 iterations per property
-- Each property test tagged with: `Feature: avro-stream-reader, Property N: {description}`
+- Each property test tagged with: `Feature: jetliner, Property N: {description}`
 - CI runs full test suite including property tests
 - Benchmarks run separately, results tracked over time
 
@@ -943,7 +1344,7 @@ build-backend = "maturin"
 ## Project Structure
 
 ```
-avro-stream/
+jetliner/
 ├── Cargo.toml
 ├── pyproject.toml
 ├── src/
