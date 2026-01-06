@@ -1,0 +1,315 @@
+# Implementation Plan: Avro Stream Reader
+
+## Overview
+
+This plan implements a high-performance Rust library with Python bindings for streaming Avro data into Polars DataFrames. The implementation follows a bottom-up approach: core types → parsing → codecs → sources → streaming → Python bindings.
+
+## Tasks
+
+- [-] 1. Project setup and core types
+  - [x] 1.1 Initialize Rust project with Cargo.toml and pyproject.toml
+    - Configure workspace with maturin build system
+    - Add all dependencies (tokio, pyo3, polars, compression crates, aws-sdk-s3)
+    - Set up feature flags for optional codecs
+    - _Requirements: 10.1_
+
+  - [x] 1.2 Define core error types
+    - Implement ReaderError, SourceError, CodecError, SchemaError, DecodeError
+    - Implement ReadError struct for recoverable errors
+    - Use thiserror for error derivation
+    - _Requirements: 7.5, 7.6_
+
+  - [ ] 1.3 Define Avro schema types
+    - Implement AvroSchema enum with all primitive types
+    - Implement RecordSchema, FieldSchema, EnumSchema, FixedSchema
+    - Implement LogicalType wrapper and LogicalTypeName enum
+    - _Requirements: 1.4, 1.5, 1.6_
+
+- [ ] 2. Schema parsing and pretty printing
+  - [ ] 2.1 Implement JSON schema parser
+    - Parse primitive type strings
+    - Parse complex type objects (record, enum, array, map, union, fixed)
+    - Parse logical type annotations
+    - Handle named type references with resolution context
+    - _Requirements: 1.1, 1.7_
+
+  - [ ] 2.2 Implement schema pretty printer (to_json)
+    - Serialize AvroSchema back to canonical JSON
+    - Handle named type references correctly
+    - _Requirements: 1.8_
+
+  - [ ]* 2.3 Write property test for schema round-trip
+    - **Property 1: Schema Round-Trip**
+    - **Validates: Requirements 1.9**
+
+- [ ] 3. Codec implementations
+  - [ ] 3.1 Implement Codec enum and null codec
+    - Implement Codec::from_name parser
+    - Implement null codec (passthrough)
+    - _Requirements: 2.1, 2.7_
+
+  - [ ] 3.2 Implement snappy codec
+    - Use snap crate for decompression
+    - Handle Avro's snappy framing (4-byte CRC suffix)
+    - _Requirements: 2.2_
+
+  - [ ] 3.3 Implement deflate codec
+    - Use flate2 crate for decompression
+    - _Requirements: 2.3_
+
+  - [ ] 3.4 Implement zstd codec
+    - Use zstd crate for decompression
+    - _Requirements: 2.4_
+
+  - [ ] 3.5 Implement bzip2 codec
+    - Use bzip2 crate for decompression
+    - _Requirements: 2.5_
+
+  - [ ] 3.6 Implement xz codec
+    - Use xz2 crate for decompression
+    - _Requirements: 2.6_
+
+  - [ ]* 3.7 Write property test for codec round-trip
+    - **Property 4: All Codecs Decompress Correctly**
+    - **Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5, 2.6**
+
+- [ ] 4. Checkpoint - Core types and codecs
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 5. Stream source abstraction
+  - [ ] 5.1 Define StreamSource trait
+    - Define async read_range, size, read_from methods
+    - _Requirements: 4.1, 4.4_
+
+  - [ ] 5.2 Implement LocalSource
+    - Use tokio::fs::File for async file I/O
+    - Implement range reads via seek + read
+    - _Requirements: 4.3_
+
+  - [ ] 5.3 Implement S3Source
+    - Use aws-sdk-s3 for S3 access
+    - Implement range requests via GetObject with Range header
+    - Handle authentication via environment credentials
+    - _Requirements: 4.2, 4.5, 4.6, 4.7_
+
+  - [ ]* 5.4 Write property test for range requests
+    - **Property 8: Range Requests Return Correct Data**
+    - **Validates: Requirements 4.4**
+
+- [ ] 6. Avro header and block parsing
+  - [ ] 6.1 Implement AvroHeader parsing
+    - Parse magic bytes and validate
+    - Parse metadata map (schema, codec)
+    - Extract sync marker
+    - _Requirements: 1.1, 1.2_
+
+  - [ ] 6.2 Implement AvroBlock parsing
+    - Parse block record count (varint)
+    - Parse block compressed size (varint)
+    - Read compressed data
+    - Validate sync marker
+    - _Requirements: 1.3, 3.1_
+
+  - [ ] 6.3 Implement BlockReader
+    - Orchestrate header parsing and block iteration
+    - Track current offset and block index
+    - Implement seek_to_sync for resumable reads
+    - _Requirements: 3.1, 3.7_
+
+  - [ ]* 6.4 Write property test for sync marker validation
+    - **Property 5: Sync Marker Validation**
+    - **Validates: Requirements 1.3**
+
+- [ ] 7. Checkpoint - Parsing layer
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 8. Record decoding and Arrow conversion
+  - [ ] 8.1 Implement Avro binary decoder for primitives
+    - Decode null, boolean, int (varint), long (varint)
+    - Decode float, double (little-endian)
+    - Decode bytes, string (length-prefixed)
+    - _Requirements: 1.4_
+
+  - [ ] 8.2 Implement Avro binary decoder for complex types
+    - Decode records (field sequence)
+    - Decode enums (varint index)
+    - Decode arrays (block encoding with count)
+    - Decode maps (block encoding with key-value pairs)
+    - Decode unions (varint index + value)
+    - Decode fixed (raw bytes)
+    - _Requirements: 1.5_
+
+  - [ ] 8.3 Implement logical type decoding
+    - Decode decimal (bytes with precision/scale)
+    - Decode uuid (fixed or string)
+    - Decode date, time-millis, time-micros
+    - Decode timestamp-millis, timestamp-micros
+    - Decode duration
+    - _Requirements: 1.6_
+
+  - [ ] 8.4 Implement schema type resolution for named types
+    - Build name resolution context during parsing
+    - Resolve Named references during decoding
+    - _Requirements: 1.7_
+
+  - [ ]* 8.5 Write property test for named type resolution
+    - **Property 6: Named Type Resolution**
+    - **Validates: Requirements 1.7**
+
+  - [ ]* 8.6 Write property test for all types deserialize
+    - **Property 3: All Avro Types Deserialize Correctly**
+    - **Validates: Requirements 1.4, 1.5, 1.6**
+
+- [ ] 9. Arrow/Polars integration
+  - [ ] 9.1 Implement Avro to Arrow type mapping
+    - Map primitives to Arrow types
+    - Map complex types (record→Struct, enum→Dictionary, array→LargeList, map→LargeList<Struct>)
+    - Map logical types to Arrow types
+    - _Requirements: 5.4_
+
+  - [ ] 9.2 Implement RecordDecoder with Arrow builders
+    - Create appropriate ArrayBuilder for each field
+    - Decode records directly into builders (no intermediate Value)
+    - Handle nullable fields from unions
+    - _Requirements: 5.1, 5.2, 5.3, 5.5_
+
+  - [ ] 9.3 Implement DataFrameBuilder
+    - Convert Arrow arrays to Polars DataFrame
+    - Handle batch size limits
+    - Track and report errors in skip mode
+    - _Requirements: 5.6, 5.7, 5.8_
+
+  - [ ]* 9.4 Write property test for null preservation
+    - **Property 9: Null Preservation in Unions**
+    - **Validates: Requirements 5.5**
+
+  - [ ]* 9.5 Write property test for data round-trip
+    - **Property 2: Data Round-Trip with Type Preservation**
+    - **Validates: Requirements 5.4, 5.5, 5.6, 5.7, 5.8, 5.9**
+
+- [ ] 10. Checkpoint - Decoding and conversion
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 11. Streaming infrastructure
+  - [ ] 11.1 Implement PrefetchBuffer
+    - Async block prefetching with configurable limits
+    - Backpressure when buffer is full
+    - Decompress blocks in background
+    - _Requirements: 3.5, 3.6_
+
+  - [ ] 11.2 Implement AvroStreamReader
+    - Orchestrate buffer, decoder, and builder
+    - Implement next_batch async method
+    - Track finished state and accumulated errors
+    - _Requirements: 3.1, 3.2, 3.3, 3.4_
+
+  - [ ]* 11.3 Write property test for batch size limit
+    - **Property 7: Batch Size Limit Respected**
+    - **Validates: Requirements 3.4**
+
+- [ ] 12. Error handling modes
+  - [ ] 12.1 Implement strict mode
+    - Fail immediately on any error
+    - Propagate errors up the call stack
+    - _Requirements: 7.5_
+
+  - [ ] 12.2 Implement skip mode (resilient reading)
+    - Skip bad blocks, continue to next sync marker
+    - Skip bad records within blocks
+    - Track error counts and positions
+    - _Requirements: 7.1, 7.2, 7.3, 7.4_
+
+  - [ ]* 12.3 Write property test for resilient reading
+    - **Property 10: Resilient Reading Skips Bad Data**
+    - **Validates: Requirements 7.1, 7.2, 7.3**
+
+  - [ ]* 12.4 Write property test for strict mode
+    - **Property 11: Strict Mode Fails on First Error**
+    - **Validates: Requirements 7.5**
+
+- [ ] 13. Schema resolution (reader schema support)
+  - [ ] 13.1 Implement schema compatibility checking
+    - Check reader/writer schema compatibility per Avro spec
+    - Return descriptive errors for incompatibilities
+    - _Requirements: 9.4_
+
+  - [ ] 13.2 Implement schema resolution during decoding
+    - Handle field defaults for missing fields
+    - Handle field reordering
+    - Handle type promotions (int→long, float→double)
+    - _Requirements: 9.2_
+
+  - [ ]* 13.3 Write property test for schema resolution
+    - **Property 12: Schema Resolution with Reader Schema**
+    - **Validates: Requirements 9.2**
+
+- [ ] 14. Checkpoint - Streaming and error handling
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 15. Python bindings
+  - [ ] 15.1 Implement AvroReader PyClass
+    - Constructor with path and configuration kwargs
+    - Implement __iter__ and __next__ for sync iteration
+    - Implement __enter__ and __exit__ for context manager
+    - _Requirements: 6.1, 6.2, 6.6_
+
+  - [ ] 15.2 Implement schema and error accessors
+    - Expose schema as JSON string and dict
+    - Expose errors list after iteration
+    - _Requirements: 9.3, 7.4_
+
+  - [ ] 15.3 Implement Python exception types
+    - Define custom exception classes (ParseError, SchemaError, etc.)
+    - Map Rust errors to appropriate Python exceptions
+    - Include context in error messages
+    - _Requirements: 6.4, 6.5_
+
+  - [ ] 15.4 Implement avro_stream.open() entry point
+    - Parse S3 URIs vs local paths
+    - Create appropriate source and reader
+    - _Requirements: 4.1, 4.2, 4.3_
+
+  - [ ]* 15.5 Write unit tests for Python API
+    - Test iterator protocol
+    - Test context manager
+    - Test error handling
+    - _Requirements: 6.1, 6.2, 6.4, 6.5, 6.6_
+
+- [ ] 16. Seek functionality
+  - [ ] 16.1 Implement seek_to_sync in BlockReader
+    - Scan for sync marker from given position
+    - Resume reading from found position
+    - _Requirements: 3.7_
+
+  - [ ]* 16.2 Write property test for seek to sync marker
+    - **Property 13: Seek to Sync Marker**
+    - **Validates: Requirements 3.7**
+
+- [ ] 17. Integration tests with Apache Avro test files
+  - [ ] 17.1 Add Apache Avro interoperability test files
+    - Download official test files
+    - Verify all primitive types
+    - Verify all complex types
+    - Verify all logical types
+    - Verify all codecs
+    - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+
+- [ ] 18. Performance benchmarks
+  - [ ] 18.1 Create benchmark suite with criterion
+    - Benchmark read throughput (records/sec)
+    - Benchmark memory usage
+    - Benchmark with different codecs
+    - Benchmark with different batch sizes
+    - _Requirements: 10.8_
+
+- [ ] 19. Final checkpoint
+  - Ensure all tests pass, ask the user if questions arise.
+
+## Notes
+
+- Tasks marked with `*` are optional and can be skipped for faster MVP
+- Each task references specific requirements for traceability
+- Checkpoints ensure incremental validation
+- Property tests validate universal correctness properties
+- Unit tests validate specific examples and edge cases
+- The implementation uses Rust's proptest crate for property-based testing

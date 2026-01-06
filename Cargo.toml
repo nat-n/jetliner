@@ -1,0 +1,61 @@
+[package]
+name = "avro-stream"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance Avro streaming reader with Python bindings"
+license = "MIT"
+
+[lib]
+name = "avro_stream"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["snappy", "deflate", "zstd", "bzip2", "xz"]
+snappy = ["dep:snap"]
+deflate = ["dep:flate2"]
+zstd = ["dep:zstd"]
+bzip2 = ["dep:bzip2"]
+xz = ["dep:xz2"]
+
+[dependencies]
+# Core async runtime
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "fs",
+  "io-util",
+  "sync",
+] }
+bytes = "1"
+thiserror = "2.0"
+async-trait = "0.1"
+
+# Arrow/Polars - using polars which bundles compatible arrow
+polars = { version = "0.52", features = ["dtype-struct", "dtype-categorical"] }
+
+# Compression codecs (optional)
+snap = { version = "1", optional = true }
+flate2 = { version = "1", optional = true }
+zstd = { version = "0.13", optional = true }
+bzip2 = { version = "0.6", optional = true }
+xz2 = { version = "0.1", optional = true }
+
+# S3 support
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# Python bindings
+pyo3 = { version = "0.26", features = ["extension-module"] }
+pyo3-polars = "0.25"
+
+# Serialization for schema parsing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.8", features = ["html_reports"] }
+tempfile = "3"
+
+[[bench]]
+name = "read_throughput"
+harness = false
