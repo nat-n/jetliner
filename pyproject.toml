@@ -3,7 +3,7 @@ requires = ["maturin>=1.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "avro-stream"
+name = "jetliner"
 version = "0.1.0"
 description = "High-performance Avro streaming reader for Polars DataFrames"
 readme = "README.md"
@@ -26,6 +26,108 @@ dependencies = ["polars>=0.52"]
 dev = ["pytest>=7.0", "hypothesis>=6.0", "maturin>=1.4"]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["extension-module"]
 python-source = "python"
-module-name = "avro_stream"
+module-name = "jetliner"
+
+[dependency-groups]
+dev = ["maturin>=1.11.2", "ruff>=0.8.0"]
+
+[tool.poe.executor]
+type = "uv"
+no-sync = true
+
+[tool.poe.env]
+PYO3_PYTHON = "${POE_ROOT}/.venv/bin/python"
+
+[tool.poe.tasks.build]
+help = "Build Rust library in debug mode"
+cmd = "cargo build"
+
+[tool.poe.tasks.build-release]
+help = "Build Rust library in release mode"
+cmd = "cargo build --release"
+
+[tool.poe.tasks.maturin-develop]
+help = "Install Python bindings in development mode (debug)"
+cmd = "maturin develop"
+
+[tool.poe.tasks.maturin-develop-release]
+help = "Install Python bindings in development mode (release)"
+cmd = "maturin develop --release"
+
+[tool.poe.tasks.maturin-build]
+help = "Build production Python wheel"
+cmd = "maturin build --release"
+
+[tool.poe.tasks.test-rust]
+help = "Run all Rust tests with all codec features"
+cmd = "cargo test --features test-features"
+
+[tool.poe.tasks.test-rust-fast]
+help = "Run Rust tests with default features only"
+cmd = "cargo test"
+
+[tool.poe.tasks.test-property]
+help = "Run rust property-based tests"
+cmd = "cargo test --test property_tests --features test-features"
+
+[tool.poe.tasks.test-schema]
+help = "Run schema tests"
+cmd = "cargo test --test schema_tests --features test-features"
+
+[tool.poe.tasks.bench]
+help = "Run benchmarks"
+cmd = "cargo bench"
+
+[tool.poe.tasks.bench-read]
+help = "Run read throughput benchmark"
+cmd = "cargo bench --bench read_throughput"
+
+[tool.poe.tasks.format-rust]
+help = "Format Rust code"
+cmd = "cargo fmt"
+
+[tool.poe.tasks.format-python]
+help = "Format Python code with ruff"
+cmd = "ruff check --fix python/"
+
+[tool.poe.tasks.style-rust]
+help = "Check Rust code formatting without changes"
+cmd = "cargo fmt --check"
+
+[tool.poe.tasks.lint-rust]
+help = "Run Clippy linter with all codec features"
+cmd = "cargo clippy --features test-features -- -D warnings"
+env = { PYO3_PYTHON = "${POE_ROOT}/.venv/bin/python" }
+
+[tool.poe.tasks.lint-python]
+help = "Check Python code formatting without changes"
+cmd = "ruff check python/"
+
+[tool.poe.tasks.check-rust]
+sequence = ["style-rust", "lint-rust"]
+
+[tool.poe.tasks.check-python]
+sequence = ["lint-python"]
+
+[tool.poe.tasks.format]
+sequence = ["format-rust", "format-python"]
+
+[tool.poe.tasks.check]
+sequence = ["style-rust", "lint-rust", "lint-python"]
+
+[tool.poe.tasks.clean]
+help = "Remove build artifacts"
+sequence = [
+  { cmd = "cargo clean" },
+  { script = "poethepoet.scripts:rm('.ruff_cache','.mypy_cache','.pytest_cache','./**/__pycache__','dist',verbosity=environ.get('POE_VERBOSITY'))"}
+]
+
+[tool.poe.tasks.rustup]
+help = "Install rust toolchain"
+shell = """
+command -v rustup >/dev/null || curl https://sh.rustup.rs -sSf | sh -s -- -y
+rustup component add rustfmt
+rustup component add clippy
+"""

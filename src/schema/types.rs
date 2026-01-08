@@ -3,7 +3,7 @@
 //! This module defines the complete Avro schema type system including
 //! primitives, complex types, and logical types.
 
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 /// Represents an Avro schema.
 ///
@@ -95,6 +95,30 @@ impl RecordSchema {
             None => self.name.clone(),
         }
     }
+
+    /// Serialize the record schema to a JSON Value.
+    pub fn to_json_value(&self) -> Value {
+        let mut obj = Map::new();
+        obj.insert("type".to_string(), json!("record"));
+        obj.insert("name".to_string(), json!(&self.name));
+
+        if let Some(ns) = &self.namespace {
+            obj.insert("namespace".to_string(), json!(ns));
+        }
+
+        if let Some(doc) = &self.doc {
+            obj.insert("doc".to_string(), json!(doc));
+        }
+
+        if !self.aliases.is_empty() {
+            obj.insert("aliases".to_string(), json!(&self.aliases));
+        }
+
+        let fields: Vec<Value> = self.fields.iter().map(|f| f.to_json_value()).collect();
+        obj.insert("fields".to_string(), Value::Array(fields));
+
+        Value::Object(obj)
+    }
 }
 
 /// Schema for a field within a record.
@@ -137,6 +161,36 @@ impl FieldSchema {
     pub fn with_doc(mut self, doc: impl Into<String>) -> Self {
         self.doc = Some(doc.into());
         self
+    }
+
+    /// Serialize the field schema to a JSON Value.
+    pub fn to_json_value(&self) -> Value {
+        let mut obj = Map::new();
+        obj.insert("name".to_string(), json!(&self.name));
+        obj.insert("type".to_string(), self.schema.to_json_value());
+
+        if let Some(default) = &self.default {
+            obj.insert("default".to_string(), default.clone());
+        }
+
+        if let Some(doc) = &self.doc {
+            obj.insert("doc".to_string(), json!(doc));
+        }
+
+        if self.order != FieldOrder::Ascending {
+            let order_str = match self.order {
+                FieldOrder::Ascending => "ascending",
+                FieldOrder::Descending => "descending",
+                FieldOrder::Ignore => "ignore",
+            };
+            obj.insert("order".to_string(), json!(order_str));
+        }
+
+        if !self.aliases.is_empty() {
+            obj.insert("aliases".to_string(), json!(&self.aliases));
+        }
+
+        Value::Object(obj)
     }
 }
 
@@ -197,6 +251,33 @@ impl EnumSchema {
     pub fn symbol_index(&self, symbol: &str) -> Option<usize> {
         self.symbols.iter().position(|s| s == symbol)
     }
+
+    /// Serialize the enum schema to a JSON Value.
+    pub fn to_json_value(&self) -> Value {
+        let mut obj = Map::new();
+        obj.insert("type".to_string(), json!("enum"));
+        obj.insert("name".to_string(), json!(&self.name));
+
+        if let Some(ns) = &self.namespace {
+            obj.insert("namespace".to_string(), json!(ns));
+        }
+
+        if let Some(doc) = &self.doc {
+            obj.insert("doc".to_string(), json!(doc));
+        }
+
+        if !self.aliases.is_empty() {
+            obj.insert("aliases".to_string(), json!(&self.aliases));
+        }
+
+        obj.insert("symbols".to_string(), json!(&self.symbols));
+
+        if let Some(default) = &self.default {
+            obj.insert("default".to_string(), json!(default));
+        }
+
+        Value::Object(obj)
+    }
 }
 
 /// Schema for a fixed-size byte array.
@@ -239,6 +320,29 @@ impl FixedSchema {
             None => self.name.clone(),
         }
     }
+
+    /// Serialize the fixed schema to a JSON Value.
+    pub fn to_json_value(&self) -> Value {
+        let mut obj = Map::new();
+        obj.insert("type".to_string(), json!("fixed"));
+        obj.insert("name".to_string(), json!(&self.name));
+
+        if let Some(ns) = &self.namespace {
+            obj.insert("namespace".to_string(), json!(ns));
+        }
+
+        if let Some(doc) = &self.doc {
+            obj.insert("doc".to_string(), json!(doc));
+        }
+
+        if !self.aliases.is_empty() {
+            obj.insert("aliases".to_string(), json!(&self.aliases));
+        }
+
+        obj.insert("size".to_string(), json!(self.size));
+
+        Value::Object(obj)
+    }
 }
 
 /// Logical type wrapper around a base schema.
@@ -257,6 +361,66 @@ impl LogicalType {
             base: Box::new(base),
             logical_type,
         }
+    }
+
+    /// Serialize the logical type to a JSON Value.
+    ///
+    /// The logical type is serialized as the base type with additional
+    /// logicalType and any type-specific fields.
+    pub fn to_json_value(&self) -> Value {
+        // For logical types, we need to serialize the base type as an object
+        // and add the logicalType field
+        let mut obj = match &*self.base {
+            AvroSchema::Int => {
+                let mut m = Map::new();
+                m.insert("type".to_string(), json!("int"));
+                m
+            }
+            AvroSchema::Long => {
+                let mut m = Map::new();
+                m.insert("type".to_string(), json!("long"));
+                m
+            }
+            AvroSchema::Bytes => {
+                let mut m = Map::new();
+                m.insert("type".to_string(), json!("bytes"));
+                m
+            }
+            AvroSchema::String => {
+                let mut m = Map::new();
+                m.insert("type".to_string(), json!("string"));
+                m
+            }
+            AvroSchema::Fixed(f) => {
+                // For fixed, we need to include all the fixed fields
+                let base_value = f.to_json_value();
+                if let Value::Object(m) = base_value {
+                    m
+                } else {
+                    let mut m = Map::new();
+                    m.insert("type".to_string(), json!("fixed"));
+                    m
+                }
+            }
+            _ => {
+                // Fallback for other base types
+                let mut m = Map::new();
+                m.insert("type".to_string(), self.base.to_json_value());
+                m
+            }
+        };
+
+        obj.insert("logicalType".to_string(), json!(self.logical_type.name()));
+
+        // Add type-specific fields
+        if let LogicalTypeName::Decimal { precision, scale } = &self.logical_type {
+            obj.insert("precision".to_string(), json!(precision));
+            if *scale > 0 {
+                obj.insert("scale".to_string(), json!(scale));
+            }
+        }
+
+        Value::Object(obj)
     }
 }
 
@@ -366,107 +530,64 @@ impl AvroSchema {
             _ => None,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_primitive_types() {
-        assert!(AvroSchema::Null.is_primitive());
-        assert!(AvroSchema::Boolean.is_primitive());
-        assert!(AvroSchema::Int.is_primitive());
-        assert!(AvroSchema::Long.is_primitive());
-        assert!(AvroSchema::Float.is_primitive());
-        assert!(AvroSchema::Double.is_primitive());
-        assert!(AvroSchema::Bytes.is_primitive());
-        assert!(AvroSchema::String.is_primitive());
+    /// Serialize the schema to a JSON string.
+    ///
+    /// This produces canonical Avro schema JSON that can be parsed back
+    /// to an equivalent schema.
+    ///
+    /// # Example
+    /// ```
+    /// use jetliner::schema::AvroSchema;
+    ///
+    /// let schema = AvroSchema::String;
+    /// assert_eq!(schema.to_json(), r#""string""#);
+    /// ```
+    pub fn to_json(&self) -> String {
+        let value = self.to_json_value();
+        serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string())
     }
 
-    #[test]
-    fn test_record_schema() {
-        let fields = vec![
-            FieldSchema::new("id", AvroSchema::Long),
-            FieldSchema::new("name", AvroSchema::String),
-        ];
-        let record = RecordSchema::new("User", fields).with_namespace("com.example");
+    /// Serialize the schema to a JSON Value.
+    ///
+    /// This is useful when you need to embed the schema in a larger JSON structure.
+    pub fn to_json_value(&self) -> Value {
+        match self {
+            // Primitive types serialize as simple strings
+            AvroSchema::Null => json!("null"),
+            AvroSchema::Boolean => json!("boolean"),
+            AvroSchema::Int => json!("int"),
+            AvroSchema::Long => json!("long"),
+            AvroSchema::Float => json!("float"),
+            AvroSchema::Double => json!("double"),
+            AvroSchema::Bytes => json!("bytes"),
+            AvroSchema::String => json!("string"),
 
-        assert_eq!(record.name, "User");
-        assert_eq!(record.namespace, Some("com.example".to_string()));
-        assert_eq!(record.fullname(), "com.example.User");
-        assert_eq!(record.fields.len(), 2);
-    }
+            // Complex types
+            AvroSchema::Record(r) => r.to_json_value(),
+            AvroSchema::Enum(e) => e.to_json_value(),
+            AvroSchema::Array(items) => {
+                json!({
+                    "type": "array",
+                    "items": items.to_json_value()
+                })
+            }
+            AvroSchema::Map(values) => {
+                json!({
+                    "type": "map",
+                    "values": values.to_json_value()
+                })
+            }
+            AvroSchema::Union(variants) => {
+                Value::Array(variants.iter().map(|v| v.to_json_value()).collect())
+            }
+            AvroSchema::Fixed(f) => f.to_json_value(),
 
-    #[test]
-    fn test_enum_schema() {
-        let symbols = vec!["RED".to_string(), "GREEN".to_string(), "BLUE".to_string()];
-        let enum_schema = EnumSchema::new("Color", symbols);
+            // Named type reference - just the name string
+            AvroSchema::Named(name) => json!(name),
 
-        assert_eq!(enum_schema.symbol_index("RED"), Some(0));
-        assert_eq!(enum_schema.symbol_index("GREEN"), Some(1));
-        assert_eq!(enum_schema.symbol_index("BLUE"), Some(2));
-        assert_eq!(enum_schema.symbol_index("YELLOW"), None);
-    }
-
-    #[test]
-    fn test_fixed_schema() {
-        let fixed = FixedSchema::new("MD5", 16).with_namespace("com.example");
-
-        assert_eq!(fixed.name, "MD5");
-        assert_eq!(fixed.size, 16);
-        assert_eq!(fixed.fullname(), "com.example.MD5");
-    }
-
-    #[test]
-    fn test_logical_type() {
-        let decimal = LogicalType::new(
-            AvroSchema::Bytes,
-            LogicalTypeName::Decimal {
-                precision: 10,
-                scale: 2,
-            },
-        );
-
-        assert_eq!(decimal.logical_type.name(), "decimal");
-        assert_eq!(*decimal.base, AvroSchema::Bytes);
-    }
-
-    #[test]
-    fn test_nullable_union() {
-        let nullable_string = AvroSchema::Union(vec![AvroSchema::Null, AvroSchema::String]);
-
-        assert!(nullable_string.is_nullable());
-        assert_eq!(nullable_string.nullable_inner(), Some(&AvroSchema::String));
-
-        let non_nullable = AvroSchema::String;
-        assert!(!non_nullable.is_nullable());
-        assert_eq!(non_nullable.nullable_inner(), None);
-    }
-
-    #[test]
-    fn test_named_types() {
-        let record = AvroSchema::Record(RecordSchema::new("Test", vec![]));
-        assert!(record.is_named());
-        assert_eq!(record.name(), Some("Test"));
-
-        let enum_type = AvroSchema::Enum(EnumSchema::new("Status", vec!["OK".to_string()]));
-        assert!(enum_type.is_named());
-
-        let fixed = AvroSchema::Fixed(FixedSchema::new("Hash", 32));
-        assert!(fixed.is_named());
-
-        assert!(!AvroSchema::Int.is_named());
-    }
-
-    #[test]
-    fn test_field_schema_with_default() {
-        let field = FieldSchema::new("count", AvroSchema::Int)
-            .with_default(serde_json::json!(0))
-            .with_doc("The count value");
-
-        assert_eq!(field.name, "count");
-        assert_eq!(field.default, Some(serde_json::json!(0)));
-        assert_eq!(field.doc, Some("The count value".to_string()));
+            // Logical type wrapper
+            AvroSchema::Logical(lt) => lt.to_json_value(),
+        }
     }
 }

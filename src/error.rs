@@ -3,6 +3,20 @@
 use std::io;
 use thiserror::Error;
 
+/// Format a 16-byte sync marker as a hex string for error messages.
+///
+/// Returns a string like "0xDEADBEEF..." showing the first 8 bytes
+/// followed by "..." if there are more bytes.
+fn format_sync_marker(marker: &[u8; 16]) -> String {
+    format!(
+        "0x{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        marker[0], marker[1], marker[2], marker[3],
+        marker[4], marker[5], marker[6], marker[7],
+        marker[8], marker[9], marker[10], marker[11],
+        marker[12], marker[13], marker[14], marker[15]
+    )
+}
+
 /// Errors that can occur during schema operations
 #[derive(Debug, Error)]
 pub enum SchemaError {
@@ -116,8 +130,23 @@ pub enum ReaderError {
     InvalidMagic([u8; 4]),
 
     /// Invalid sync marker
-    #[error("Invalid sync marker at block {block_index}, offset {offset}")]
-    InvalidSyncMarker { block_index: usize, offset: u64 },
+    #[error(
+        "Invalid sync marker at block {block_index}, offset {offset}: expected {}, got {}",
+        format_sync_marker(expected),
+        format_sync_marker(actual)
+    )]
+    InvalidSyncMarker {
+        block_index: usize,
+        offset: u64,
+        /// Expected sync marker from file header
+        expected: [u8; 16],
+        /// Actual sync marker found in block
+        actual: [u8; 16],
+    },
+
+    /// Builder error (from DataFrameBuilder)
+    #[error("Builder error: {0}")]
+    Builder(String),
 }
 
 impl From<DecodeError> for ReaderError {
@@ -127,6 +156,14 @@ impl From<DecodeError> for ReaderError {
             record_index: 0,
             message: err.to_string(),
         }
+    }
+}
+
+// Forward declaration to avoid circular dependency
+// BuilderError is defined in convert::dataframe
+impl From<crate::convert::BuilderError> for ReaderError {
+    fn from(err: crate::convert::BuilderError) -> Self {
+        ReaderError::Builder(err.to_string())
     }
 }
 
@@ -166,28 +203,55 @@ impl ReadError {
 
 impl std::fmt::Display for ReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Format the error kind with details
+        let kind_str = match &self.kind {
+            ReadErrorKind::InvalidSyncMarker { expected, actual } => {
+                format!(
+                    "InvalidSyncMarker (expected {}, got {})",
+                    format_sync_marker(expected),
+                    format_sync_marker(actual)
+                )
+            }
+            ReadErrorKind::DecompressionFailed { codec } => {
+                format!("DecompressionFailed (codec: {})", codec)
+            }
+            ReadErrorKind::BlockParseFailed => "BlockParseFailed".to_string(),
+            ReadErrorKind::RecordDecodeFailed => "RecordDecodeFailed".to_string(),
+            ReadErrorKind::SchemaViolation => "SchemaViolation".to_string(),
+        };
+
         match self.record_index {
             Some(record_idx) => write!(
                 f,
-                "{:?} at block {}, record {}, offset {}: {}",
-                self.kind, self.block_index, record_idx, self.offset, self.message
+                "{} at block {}, record {}, offset {}: {}",
+                kind_str, self.block_index, record_idx, self.offset, self.message
             ),
             None => write!(
                 f,
-                "{:?} at block {}, offset {}: {}",
-                self.kind, self.block_index, self.offset, self.message
+                "{} at block {}, offset {}: {}",
+                kind_str, self.block_index, self.offset, self.message
             ),
         }
     }
 }
 
 /// Types of recoverable errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadErrorKind {
     /// Sync marker doesn't match expected value
-    InvalidSyncMarker,
+    InvalidSyncMarker {
+        /// Expected sync marker from file header
+        expected: [u8; 16],
+        /// Actual sync marker found in block
+        actual: [u8; 16],
+    },
     /// Block decompression failed
-    DecompressionFailed,
+    DecompressionFailed {
+        /// Name of the codec that failed
+        codec: String,
+    },
+    /// Block parsing failed (truncated data, invalid varints, etc.)
+    BlockParseFailed,
     /// Record decoding failed
     RecordDecodeFailed,
     /// Data violates schema constraints

@@ -245,6 +245,23 @@ impl<S: StreamSource> BlockReader<S> {
     pub fn header(&self) -> &AvroHeader;
 
     pub async fn seek_to_sync(&mut self, sync_marker: &[u8; 16]) -> Result<bool, ReaderError>;
+
+    /// Skip past corrupted data and find the next valid sync marker.
+    ///
+    /// This method is specifically designed for error recovery in skip mode.
+    /// Unlike `seek_to_sync`, which searches from a given position, this method:
+    /// 1. Starts searching from current_offset + 1 (to skip past the current bad data)
+    /// 2. Scans forward looking for the file's sync marker
+    /// 3. Positions the reader immediately after the found sync marker
+    ///
+    /// This is necessary because when we encounter an invalid sync marker:
+    /// - The block data has already been read
+    /// - The "sync marker" we read doesn't match the expected one
+    /// - We need to find the NEXT occurrence of the correct sync marker
+    ///
+    /// Returns true if a sync marker was found and the reader is positioned
+    /// to read the next block, false if no more sync markers exist (EOF).
+    pub async fn skip_to_next_sync(&mut self) -> Result<bool, ReaderError>;
 }
 ```
 
@@ -569,9 +586,19 @@ reader = jetliner.open("file.avro")
 print(reader.schema)  # JSON string
 print(reader.schema_dict)  # Python dict
 
-# Error inspection (after iteration)
-for error in reader.errors:
-    print(f"Block {error.block_index}: {error.message}")
+# Error inspection (after iteration in skip mode)
+with jetliner.open("file.avro", strict=False) as reader:
+    for df in reader:
+        process(df)
+
+    # Quick check
+    if reader.error_count > 0:
+        print(f"Skipped {reader.error_count} errors")
+
+    # Detailed inspection
+    for err in reader.errors:
+        print(f"[{err.kind}] Block {err.block_index}: {err.message}")
+        # Or as dict: err.to_dict()
 ```
 
 ### PyO3 Implementation
@@ -660,17 +687,96 @@ impl AvroReader {
     fn errors(&self) -> Vec<PyReadError> {
         self.errors.iter().map(PyReadError::from).collect()
     }
+
+    #[getter]
+    fn error_count(&self) -> usize {
+        self.errors.len()
+    }
 }
 
 #[pyclass]
 pub struct PyReadError {
     #[pyo3(get)]
+    kind: String,           // "InvalidSyncMarker", "DecompressionFailed", etc.
+    #[pyo3(get)]
     block_index: usize,
     #[pyo3(get)]
     record_index: Option<usize>,
     #[pyo3(get)]
+    offset: u64,            // File offset where error occurred
+    #[pyo3(get)]
     message: String,
 }
+
+#[pymethods]
+impl PyReadError {
+    fn to_dict(&self) -> PyResult<PyObject> {
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("kind", &self.kind)?;
+            dict.set_item("block_index", self.block_index)?;
+            dict.set_item("record_index", self.record_index)?;
+            dict.set_item("offset", self.offset)?;
+            dict.set_item("message", &self.message)?;
+            Ok(dict.into())
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        match self.record_index {
+            Some(rec) => format!(
+                "ReadError(kind='{}', block={}, record={}, offset={}, message='{}')",
+                self.kind, self.block_index, rec, self.offset, self.message
+            ),
+            None => format!(
+                "ReadError(kind='{}', block={}, offset={}, message='{}')",
+                self.kind, self.block_index, self.offset, self.message
+            ),
+        }
+    }
+}
+```
+
+### Error Exposure Design
+
+The Python API exposes errors accumulated during skip-mode reading without complicating the normal iteration flow:
+
+**Design Principles:**
+1. **Keep happy path simple** - Normal iteration just yields DataFrames
+2. **Errors accumulate silently** - No callbacks or mid-stream exceptions for skipped errors
+3. **Inspect after reading** - Check `error_count` or iterate `errors` after completion
+4. **Structured data** - Each error has typed fields for programmatic access
+
+**Usage Pattern:**
+```python
+# Simple case - just check if errors occurred
+with jetliner.open("file.avro", strict=False) as reader:
+    for df in reader:
+        process(df)
+
+    if reader.error_count > 0:
+        print(f"Warning: {reader.error_count} errors during read")
+
+# Detailed inspection
+with jetliner.open("file.avro", strict=False) as reader:
+    for df in reader:
+        process(df)
+
+    for err in reader.errors:
+        # Structured access
+        print(f"[{err.kind}] Block {err.block_index} at offset {err.offset}")
+        print(f"  {err.message}")
+
+        # Or as dict for logging/serialization
+        log_error(err.to_dict())
+```
+
+**Error Kinds:**
+- `InvalidSyncMarker` - Block sync marker doesn't match file header
+- `DecompressionFailed` - Codec failed to decompress block data
+- `BlockParseFailed` - Block header parsing failed (truncated, invalid varints)
+- `RecordDecodeFailed` - Record data doesn't match schema
+- `SchemaViolation` - Data violates schema constraints
 ```
 
 ### IO Plugin Implementation (scan API)
@@ -1144,6 +1250,64 @@ These optimizations are identified but deferred to post-MVP:
    - Block decompression failure (skip block)
    - Record decode failure (skip record)
    - Schema violation in data (skip record)
+
+### Sync Marker Recovery
+
+When a block has an invalid sync marker in skip mode, the reader must recover by finding the next valid sync marker. This is handled by `BlockReader::skip_to_next_sync()`:
+
+```rust
+// In PrefetchBuffer::next() when InvalidSyncMarker error occurs:
+Err(ReaderError::InvalidSyncMarker { .. }) => {
+    match self.error_mode {
+        ErrorMode::Strict => return Err(e),
+        ErrorMode::Skip => {
+            // Log the error with sufficient detail for diagnosis (Req 7.7)
+            // Include: block index, file offset, expected vs actual sync marker
+            self.errors.push(ReadError::new(
+                ReadErrorKind::InvalidSyncMarker,
+                self.reader.block_index(),
+                None,
+                self.reader.current_offset(),
+                format!(
+                    "Invalid sync marker at offset {}: expected {:02x?}, got {:02x?}",
+                    offset, expected_sync, actual_sync
+                ),
+            ));
+
+            // Skip to the next valid sync marker
+            // This scans forward from current position to find the file's sync marker
+            let (found, bytes_skipped) = self.reader.skip_to_next_sync().await?;
+
+            if !found {
+                // No more sync markers found - we're done
+                self.finished = true;
+                return Ok(None);
+            }
+
+            // Log recovery information
+            log::warn!(
+                "Skipped {} bytes to recover at block {}",
+                bytes_skipped, self.reader.block_index()
+            );
+
+            // Continue to try reading the next block
+            continue;
+        }
+    }
+}
+```
+
+The key insight is that `skip_to_next_sync()` must search FORWARD from the current position, not from the position where the bad sync marker was found. This is because:
+1. When we detect an invalid sync marker, we've already read past the block data
+2. The bytes we read as "sync marker" don't match, so we're at an unknown position
+3. We need to scan forward to find the next occurrence of the correct sync marker
+
+**Logging Requirements (Req 7.1, 7.2, 7.7)**:
+- Block index where error occurred
+- File offset where error was detected
+- Expected vs actual sync marker bytes (for diagnosis)
+- Number of bytes skipped during recovery
+- Clear indication of whether recovery succeeded
 
 ### Error Propagation
 

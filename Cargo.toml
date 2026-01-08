@@ -1,16 +1,19 @@
 [package]
-name = "avro-stream"
+name = "jetliner"
 version = "0.1.0"
 edition = "2021"
 description = "High-performance Avro streaming reader with Python bindings"
 license = "MIT"
 
 [lib]
-name = "avro_stream"
+name = "jetliner"
 crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["snappy", "deflate", "zstd", "bzip2", "xz"]
+extension-module = ["pyo3/extension-module"]
+# Feature set for testing - includes all codecs but excludes extension-module
+test-features = ["snappy", "deflate", "zstd", "bzip2", "xz"]
 snappy = ["dep:snap"]
 deflate = ["dep:flate2"]
 zstd = ["dep:zstd"]
@@ -30,7 +33,12 @@ thiserror = "2.0"
 async-trait = "0.1"
 
 # Arrow/Polars - using polars which bundles compatible arrow
-polars = { version = "0.52", features = ["dtype-struct", "dtype-categorical"] }
+polars = { version = "0.52", features = [
+  "dtype-struct",
+  "dtype-categorical",
+  "dtype-decimal",
+  "dtype-array",
+] }
 
 # Compression codecs (optional)
 snap = { version = "1", optional = true }
@@ -39,12 +47,15 @@ zstd = { version = "0.13", optional = true }
 bzip2 = { version = "0.6", optional = true }
 xz2 = { version = "0.1", optional = true }
 
+# CRC32C for snappy checksum validation (Avro spec requirement)
+crc32c = "0.6"
+
 # S3 support
 aws-sdk-s3 = "1"
 aws-config = "1"
 
 # Python bindings
-pyo3 = { version = "0.26", features = ["extension-module"] }
+pyo3 = { version = "0.26", features = ["auto-initialize"] }
 pyo3-polars = "0.25"
 
 # Serialization for schema parsing
