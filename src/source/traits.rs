@@ -57,3 +57,19 @@ pub trait StreamSource: Send + Sync {
 
 /// A boxed StreamSource for dynamic dispatch
 pub type BoxedSource = Box<dyn StreamSource>;
+
+/// Implement StreamSource for BoxedSource to allow using it with generic code
+#[async_trait]
+impl StreamSource for BoxedSource {
+    async fn read_range(&self, offset: u64, length: usize) -> Result<Bytes, SourceError> {
+        (**self).read_range(offset, length).await
+    }
+
+    async fn size(&self) -> Result<u64, SourceError> {
+        (**self).size().await
+    }
+
+    async fn read_from(&self, offset: u64) -> Result<Bytes, SourceError> {
+        (**self).read_from(offset).await
+    }
+}

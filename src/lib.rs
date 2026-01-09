@@ -6,6 +6,7 @@
 pub mod codec;
 pub mod convert;
 pub mod error;
+pub mod python;
 pub mod reader;
 pub mod schema;
 pub mod source;
@@ -36,3 +37,59 @@ pub use schema::{
     SchemaIncompatibility, SchemaParser, SchemaResolutionContext, TypePromotion,
 };
 pub use source::{BoxedSource, LocalSource, S3Source, StreamSource};
+
+// Re-export Python bindings
+pub use python::{open, parse_avro_schema, AvroReader, AvroReaderCore, PyReadError};
+// Re-export Python exception types
+pub use python::{
+    CodecError as PyCodecError, DecodeError as PyDecodeError, JetlinerError as PyJetlinerError,
+    ParseError as PyParseError, SchemaError as PySchemaError, SourceError as PySourceError,
+};
+
+// PyO3 module registration
+use pyo3::prelude::*;
+
+/// Python module for Jetliner
+///
+/// This is the main entry point for the Python bindings.
+///
+/// # Exception Types
+/// The module provides custom exception types for specific error conditions:
+/// - `JetlinerError`: Base exception for all Jetliner errors
+/// - `ParseError`: Errors during Avro file parsing (invalid magic bytes, malformed headers)
+/// - `SchemaError`: Schema-related errors (invalid schema, incompatible schemas)
+/// - `CodecError`: Compression/decompression errors
+/// - `DecodeError`: Record decoding errors (type mismatches, invalid data)
+/// - `SourceError`: Data source errors (S3, filesystem)
+///
+/// # Requirements
+/// - 6.4: Raise appropriate Python exceptions with descriptive messages
+/// - 6.5: Include context about block and record position in errors
+#[pymodule]
+fn jetliner(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Register classes
+    m.add_class::<AvroReader>()?;
+    m.add_class::<AvroReaderCore>()?;
+    m.add_class::<PyReadError>()?;
+
+    // Register functions
+    m.add_function(wrap_pyfunction!(open, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_avro_schema, m)?)?;
+
+    // Register exception types
+    // These allow Python code to catch specific error types:
+    //   try:
+    //       reader = jetliner.open("file.avro")
+    //   except jetliner.ParseError as e:
+    //       print(f"Invalid Avro file: {e}")
+    //   except jetliner.SchemaError as e:
+    //       print(f"Schema problem: {e}")
+    m.add("JetlinerError", m.py().get_type::<PyJetlinerError>())?;
+    m.add("ParseError", m.py().get_type::<PyParseError>())?;
+    m.add("SchemaError", m.py().get_type::<PySchemaError>())?;
+    m.add("CodecError", m.py().get_type::<PyCodecError>())?;
+    m.add("DecodeError", m.py().get_type::<PyDecodeError>())?;
+    m.add("SourceError", m.py().get_type::<PySourceError>())?;
+
+    Ok(())
+}

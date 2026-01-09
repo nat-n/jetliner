@@ -5876,3 +5876,710 @@ proptest! {
         })?;
     }
 }
+
+// ============================================================================
+// Early Stopping Property Tests
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: jetliner, Property 15: Early Stopping Respects Row Limit
+    ///
+    /// For any Avro file and any row limit N, reading with n_rows=N SHALL
+    /// produce at most N rows, and those rows SHALL be the first N rows of the file.
+    ///
+    /// **Validates: Requirements 6a.4**
+    #[test]
+    fn prop_early_stopping_respects_row_limit(
+        // Generate number of blocks (1-10)
+        num_blocks in 1usize..10,
+        // Generate records per block (1-20)
+        records_per_block in 1usize..20,
+        // Generate row limit as percentage of total (10-150%)
+        // This allows testing both limits smaller and larger than total
+        row_limit_pct in 10u8..150,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create blocks with records
+            let mut blocks = Vec::new();
+            let mut total_records = 0;
+
+            for block_idx in 0..num_blocks {
+                let mut block_data = Vec::new();
+                for record_idx in 0..records_per_block {
+                    let id = (block_idx * records_per_block + record_idx) as i64;
+                    let value = format!("value_{}", id);
+                    block_data.extend_from_slice(&create_simple_record(id, &value));
+                }
+                blocks.push((records_per_block as i64, block_data));
+                total_records += records_per_block;
+            }
+
+            // Calculate row limit based on percentage
+            let row_limit = ((row_limit_pct as usize) * total_records / 100).max(1);
+
+            // Create Avro file
+            let file_data = create_avro_file_with_blocks(&blocks);
+            let source = MemorySource::new(file_data.clone());
+
+            // Create reader with default batch size
+            let config = ReaderConfig::new().with_batch_size(100);
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            // Simulate early stopping logic (as done in Python source_generator)
+            let mut rows_yielded = 0;
+            let mut collected_ids: Vec<i64> = Vec::new();
+
+            while let Some(df) = reader.next_batch().await.expect("Failed to read batch") {
+                // Check if we've already hit the limit
+                let remaining = row_limit.saturating_sub(rows_yielded);
+                if remaining == 0 {
+                    break;
+                }
+
+                // Truncate batch if needed
+                let df = if df.height() > remaining {
+                    df.head(Some(remaining))
+                } else {
+                    df
+                };
+
+                // Collect the IDs from this batch
+                let id_col = df.column("id").expect("id column should exist");
+                let ids: Vec<i64> = id_col.i64().expect("id should be i64")
+                    .into_no_null_iter()
+                    .collect();
+                collected_ids.extend(ids);
+
+                rows_yielded += df.height();
+
+                // Stop if we've hit the row limit
+                if rows_yielded >= row_limit {
+                    break;
+                }
+            }
+
+            // Verify: at most N rows returned
+            let expected_rows = row_limit.min(total_records);
+            prop_assert_eq!(
+                rows_yielded, expected_rows,
+                "Expected {} rows (min of limit {} and total {}), got {}",
+                expected_rows, row_limit, total_records, rows_yielded
+            );
+
+            // Verify: rows are the first N rows of the file
+            // The IDs should be 0, 1, 2, ..., expected_rows-1
+            let expected_ids: Vec<i64> = (0..expected_rows as i64).collect();
+            prop_assert_eq!(
+                collected_ids.clone(), expected_ids.clone(),
+                "Expected first {} IDs {:?}, got {:?}",
+                expected_rows, expected_ids, collected_ids
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 15: Early Stopping Respects Row Limit (edge case: limit = 1)
+    ///
+    /// For any Avro file with at least one record, reading with n_rows=1 SHALL
+    /// produce exactly 1 row, which is the first row of the file.
+    ///
+    /// **Validates: Requirements 6a.4**
+    #[test]
+    fn prop_early_stopping_single_row(
+        // Generate number of blocks (1-5)
+        num_blocks in 1usize..5,
+        // Generate records per block (1-10)
+        records_per_block in 1usize..10,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create blocks with records
+            let mut blocks = Vec::new();
+
+            for block_idx in 0..num_blocks {
+                let mut block_data = Vec::new();
+                for record_idx in 0..records_per_block {
+                    let id = (block_idx * records_per_block + record_idx) as i64;
+                    let value = format!("value_{}", id);
+                    block_data.extend_from_slice(&create_simple_record(id, &value));
+                }
+                blocks.push((records_per_block as i64, block_data));
+            }
+
+            // Create Avro file
+            let file_data = create_avro_file_with_blocks(&blocks);
+            let source = MemorySource::new(file_data);
+
+            // Create reader
+            let config = ReaderConfig::new().with_batch_size(100);
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            // Read with row limit of 1
+            let row_limit = 1;
+            let mut rows_yielded = 0;
+            let mut first_id: Option<i64> = None;
+
+            while let Some(df) = reader.next_batch().await.expect("Failed to read batch") {
+                let remaining = row_limit - rows_yielded;
+                if remaining == 0 {
+                    break;
+                }
+
+                let df = if df.height() > remaining {
+                    df.head(Some(remaining))
+                } else {
+                    df
+                };
+
+                if first_id.is_none() {
+                    let id_col = df.column("id").expect("id column should exist");
+                    first_id = Some(id_col.i64().expect("id should be i64").get(0).unwrap());
+                }
+
+                rows_yielded += df.height();
+
+                if rows_yielded >= row_limit {
+                    break;
+                }
+            }
+
+            // Should have exactly 1 row
+            prop_assert_eq!(
+                rows_yielded, 1,
+                "Expected exactly 1 row, got {}",
+                rows_yielded
+            );
+
+            // Should be the first row (id = 0)
+            prop_assert_eq!(
+                first_id, Some(0),
+                "Expected first row with id=0, got {:?}",
+                first_id
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 15: Early Stopping Respects Row Limit (limit exceeds total)
+    ///
+    /// For any Avro file with N records, reading with n_rows > N SHALL
+    /// produce exactly N rows (all records in the file).
+    ///
+    /// **Validates: Requirements 6a.4**
+    #[test]
+    fn prop_early_stopping_limit_exceeds_total(
+        // Generate number of blocks (1-5)
+        num_blocks in 1usize..5,
+        // Generate records per block (1-10)
+        records_per_block in 1usize..10,
+        // Generate how much the limit exceeds total (1-100)
+        excess in 1usize..100,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create blocks with records
+            let mut blocks = Vec::new();
+            let mut total_records = 0;
+
+            for block_idx in 0..num_blocks {
+                let mut block_data = Vec::new();
+                for record_idx in 0..records_per_block {
+                    let id = (block_idx * records_per_block + record_idx) as i64;
+                    let value = format!("value_{}", id);
+                    block_data.extend_from_slice(&create_simple_record(id, &value));
+                }
+                blocks.push((records_per_block as i64, block_data));
+                total_records += records_per_block;
+            }
+
+            // Row limit exceeds total
+            let row_limit = total_records + excess;
+
+            // Create Avro file
+            let file_data = create_avro_file_with_blocks(&blocks);
+            let source = MemorySource::new(file_data);
+
+            // Create reader
+            let config = ReaderConfig::new().with_batch_size(100);
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            // Read with early stopping logic
+            let mut rows_yielded = 0;
+            let mut collected_ids: Vec<i64> = Vec::new();
+
+            while let Some(df) = reader.next_batch().await.expect("Failed to read batch") {
+                let remaining = row_limit.saturating_sub(rows_yielded);
+                if remaining == 0 {
+                    break;
+                }
+
+                let df = if df.height() > remaining {
+                    df.head(Some(remaining))
+                } else {
+                    df
+                };
+
+                let id_col = df.column("id").expect("id column should exist");
+                let ids: Vec<i64> = id_col.i64().expect("id should be i64")
+                    .into_no_null_iter()
+                    .collect();
+                collected_ids.extend(ids);
+
+                rows_yielded += df.height();
+
+                if rows_yielded >= row_limit {
+                    break;
+                }
+            }
+
+            // Should have all records (limit exceeds total)
+            prop_assert_eq!(
+                rows_yielded, total_records,
+                "Expected all {} records when limit {} exceeds total, got {}",
+                total_records, row_limit, rows_yielded
+            );
+
+            // Should have all IDs in order
+            let expected_ids: Vec<i64> = (0..total_records as i64).collect();
+            prop_assert_eq!(
+                collected_ids.clone(), expected_ids.clone(),
+                "Expected all IDs {:?}, got {:?}",
+                expected_ids, collected_ids
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 15: Early Stopping Respects Row Limit (mid-batch truncation)
+    ///
+    /// For any Avro file where the row limit falls in the middle of a batch,
+    /// the reader SHALL correctly truncate the batch and return exactly N rows.
+    ///
+    /// **Validates: Requirements 6a.4**
+    #[test]
+    fn prop_early_stopping_mid_batch_truncation(
+        // Generate a single large block (10-50 records)
+        num_records in 10usize..50,
+        // Generate row limit as fraction of records (10-90%)
+        limit_pct in 10u8..90,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a single block with all records
+            let mut block_data = Vec::new();
+            for i in 0..num_records {
+                block_data.extend_from_slice(&create_simple_record(i as i64, &format!("val{}", i)));
+            }
+
+            let file_data = create_avro_file_with_blocks(&[(num_records as i64, block_data)]);
+            let source = MemorySource::new(file_data);
+
+            // Calculate row limit (guaranteed to be less than total)
+            let row_limit = ((limit_pct as usize) * num_records / 100).max(1);
+
+            // Create reader with large batch size (so all records come in one batch)
+            let config = ReaderConfig::new().with_batch_size(num_records * 2);
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            // Read with early stopping
+            let mut rows_yielded = 0;
+            let mut collected_ids: Vec<i64> = Vec::new();
+
+            while let Some(df) = reader.next_batch().await.expect("Failed to read batch") {
+                let remaining = row_limit.saturating_sub(rows_yielded);
+                if remaining == 0 {
+                    break;
+                }
+
+                // This should truncate the batch
+                let df = if df.height() > remaining {
+                    df.head(Some(remaining))
+                } else {
+                    df
+                };
+
+                let id_col = df.column("id").expect("id column should exist");
+                let ids: Vec<i64> = id_col.i64().expect("id should be i64")
+                    .into_no_null_iter()
+                    .collect();
+                collected_ids.extend(ids);
+
+                rows_yielded += df.height();
+
+                if rows_yielded >= row_limit {
+                    break;
+                }
+            }
+
+            // Should have exactly row_limit rows
+            prop_assert_eq!(
+                rows_yielded, row_limit,
+                "Expected exactly {} rows after truncation, got {}",
+                row_limit, rows_yielded
+            );
+
+            // Should be the first row_limit IDs
+            let expected_ids: Vec<i64> = (0..row_limit as i64).collect();
+            prop_assert_eq!(
+                collected_ids.clone(), expected_ids.clone(),
+                "Expected first {} IDs, got {:?}",
+                row_limit, collected_ids
+            );
+
+            Ok(())
+        })?;
+    }
+}
+
+// ============================================================================
+// Property 14: Projection Preserves Selected Columns
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: jetliner, Property 14: Projection Preserves Selected Columns
+    ///
+    /// For any Avro file and any subset of columns, reading with projection SHALL
+    /// produce a DataFrame containing exactly those columns with the same values
+    /// as reading all columns and then selecting.
+    ///
+    /// **Validates: Requirements 6a.2**
+    #[test]
+    fn prop_projection_preserves_selected_columns(
+        // Generate number of records (1-20)
+        num_records in 1usize..20,
+        // Generate which columns to project (at least 1, at most all)
+        // We use a bitmask to select columns from our 4-column schema
+        column_mask in 1u8..15, // 1-14 (at least one column, not all zeros)
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a schema with 4 columns of different types
+            // This gives us a good variety for testing projection
+            let schema = AvroSchema::Record(RecordSchema::new(
+                "TestRecord",
+                vec![
+                    FieldSchema::new("id", AvroSchema::Long),
+                    FieldSchema::new("name", AvroSchema::String),
+                    FieldSchema::new("value", AvroSchema::Int),
+                    FieldSchema::new("active", AvroSchema::Boolean),
+                ],
+            ));
+
+            // Determine which columns to project based on the mask
+            let all_columns = vec!["id", "name", "value", "active"];
+            let projected_columns: Vec<String> = all_columns
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| (column_mask >> i) & 1 == 1)
+                .map(|(_, name)| name.to_string())
+                .collect();
+
+            // Skip if no columns selected (shouldn't happen with mask >= 1)
+            if projected_columns.is_empty() {
+                return Ok(());
+            }
+
+            // Generate test data
+            let mut block_data = Vec::new();
+            let mut expected_ids: Vec<i64> = Vec::new();
+            let mut expected_names: Vec<String> = Vec::new();
+            let mut expected_values: Vec<i32> = Vec::new();
+            let mut expected_active: Vec<bool> = Vec::new();
+
+            for i in 0..num_records {
+                let id = i as i64;
+                let name = format!("name{}", i);
+                let value = (i * 10) as i32;
+                let active = i % 2 == 0;
+
+                expected_ids.push(id);
+                expected_names.push(name.clone());
+                expected_values.push(value);
+                expected_active.push(active);
+
+                // Encode record: id (long), name (string), value (int), active (boolean)
+                block_data.extend_from_slice(&encode_zigzag(id));
+                let name_bytes = name.as_bytes();
+                block_data.extend_from_slice(&encode_zigzag(name_bytes.len() as i64));
+                block_data.extend_from_slice(name_bytes);
+                block_data.extend_from_slice(&encode_zigzag(value as i64));
+                block_data.push(if active { 1 } else { 0 });
+            }
+
+            // Create builder with projection
+            let config = BuilderConfig::new(1000);
+            let mut projected_builder = DataFrameBuilder::with_projection(
+                &schema,
+                config.clone(),
+                &projected_columns,
+            ).expect("Failed to create projected builder");
+
+            // Create builder without projection (for comparison)
+            let mut full_builder = DataFrameBuilder::new(&schema, config)
+                .expect("Failed to create full builder");
+
+            // Create blocks and add to both builders
+            let block = DecompressedBlock::new(
+                num_records as i64,
+                bytes::Bytes::from(block_data.clone()),
+                0,
+            );
+            let block_copy = DecompressedBlock::new(
+                num_records as i64,
+                bytes::Bytes::from(block_data),
+                0,
+            );
+
+            projected_builder.add_block(block).expect("Failed to add block to projected builder");
+            full_builder.add_block(block_copy).expect("Failed to add block to full builder");
+
+            // Build DataFrames
+            let projected_df = projected_builder.finish()
+                .expect("Failed to build projected DataFrame")
+                .expect("Expected projected DataFrame");
+            let full_df = full_builder.finish()
+                .expect("Failed to build full DataFrame")
+                .expect("Expected full DataFrame");
+
+            // Verify projected DataFrame has exactly the projected columns
+            prop_assert_eq!(
+                projected_df.width(), projected_columns.len(),
+                "Projected DataFrame should have {} columns, got {}",
+                projected_columns.len(), projected_df.width()
+            );
+
+            // Verify column names match
+            let projected_col_names: Vec<&str> = projected_df.get_column_names()
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let expected_col_names: Vec<&str> = projected_columns.iter().map(|s| s.as_str()).collect();
+            prop_assert_eq!(
+                projected_col_names.clone(), expected_col_names.clone(),
+                "Column names should match: expected {:?}, got {:?}",
+                expected_col_names, projected_col_names
+            );
+
+            // Verify row count matches
+            prop_assert_eq!(
+                projected_df.height(), num_records,
+                "Projected DataFrame should have {} rows, got {}",
+                num_records, projected_df.height()
+            );
+
+            // Verify values match the full DataFrame for each projected column
+            for col_name in &projected_columns {
+                let projected_col = projected_df.column(col_name)
+                    .map_err(|e| TestCaseError::fail(format!(
+                        "Column '{}' not found in projected DataFrame: {}", col_name, e
+                    )))?;
+                let full_col = full_df.column(col_name)
+                    .map_err(|e| TestCaseError::fail(format!(
+                        "Column '{}' not found in full DataFrame: {}", col_name, e
+                    )))?;
+
+                // Compare values based on column type
+                match col_name.as_str() {
+                    "id" => {
+                        let projected_ids: Vec<i64> = projected_col.i64()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i64: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_ids: Vec<i64> = full_col.i64()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i64: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            projected_ids.clone(), full_ids.clone(),
+                            "id values should match: projected {:?} vs full {:?}",
+                            projected_ids, full_ids
+                        );
+                        prop_assert_eq!(
+                            projected_ids.clone(), expected_ids.clone(),
+                            "id values should match expected: got {:?}, expected {:?}",
+                            projected_ids, expected_ids
+                        );
+                    }
+                    "name" => {
+                        let projected_names: Vec<&str> = projected_col.str()
+                            .map_err(|e| TestCaseError::fail(format!("Expected str: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_names: Vec<&str> = full_col.str()
+                            .map_err(|e| TestCaseError::fail(format!("Expected str: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            projected_names.clone(), full_names.clone(),
+                            "name values should match: projected {:?} vs full {:?}",
+                            projected_names, full_names
+                        );
+                        let expected_name_refs: Vec<&str> = expected_names.iter().map(|s| s.as_str()).collect();
+                        prop_assert_eq!(
+                            projected_names.clone(), expected_name_refs.clone(),
+                            "name values should match expected: got {:?}, expected {:?}",
+                            projected_names, expected_name_refs
+                        );
+                    }
+                    "value" => {
+                        let projected_values: Vec<i32> = projected_col.i32()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i32: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_values: Vec<i32> = full_col.i32()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i32: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            projected_values.clone(), full_values.clone(),
+                            "value values should match: projected {:?} vs full {:?}",
+                            projected_values, full_values
+                        );
+                        prop_assert_eq!(
+                            projected_values.clone(), expected_values.clone(),
+                            "value values should match expected: got {:?}, expected {:?}",
+                            projected_values, expected_values
+                        );
+                    }
+                    "active" => {
+                        let projected_active: Vec<bool> = projected_col.bool()
+                            .map_err(|e| TestCaseError::fail(format!("Expected bool: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_active: Vec<bool> = full_col.bool()
+                            .map_err(|e| TestCaseError::fail(format!("Expected bool: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            projected_active.clone(), full_active.clone(),
+                            "active values should match: projected {:?} vs full {:?}",
+                            projected_active, full_active
+                        );
+                        prop_assert_eq!(
+                            projected_active.clone(), expected_active.clone(),
+                            "active values should match expected: got {:?}, expected {:?}",
+                            projected_active, expected_active
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            // Verify that non-projected columns are NOT in the projected DataFrame
+            for col_name in &all_columns {
+                if !projected_columns.contains(&col_name.to_string()) {
+                    let result = projected_df.column(*col_name);
+                    prop_assert!(
+                        result.is_err(),
+                        "Non-projected column '{}' should not be in projected DataFrame",
+                        col_name
+                    );
+                }
+            }
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 14: Projection Preserves Selected Columns (single column)
+    ///
+    /// For any Avro file, projecting a single column SHALL produce a DataFrame
+    /// with exactly one column containing the correct values.
+    ///
+    /// **Validates: Requirements 6a.2**
+    #[test]
+    fn prop_projection_single_column(
+        num_records in 1usize..30,
+        // Select which single column to project (0-3)
+        column_idx in 0usize..4,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a schema with 4 columns
+            let schema = AvroSchema::Record(RecordSchema::new(
+                "TestRecord",
+                vec![
+                    FieldSchema::new("id", AvroSchema::Long),
+                    FieldSchema::new("name", AvroSchema::String),
+                    FieldSchema::new("value", AvroSchema::Int),
+                    FieldSchema::new("active", AvroSchema::Boolean),
+                ],
+            ));
+
+            let all_columns = vec!["id", "name", "value", "active"];
+            let projected_column = all_columns[column_idx].to_string();
+
+            // Generate test data
+            let mut block_data = Vec::new();
+            for i in 0..num_records {
+                let id = i as i64;
+                let name = format!("n{}", i);
+                let value = (i * 5) as i32;
+                let active = i % 3 == 0;
+
+                // Encode record
+                block_data.extend_from_slice(&encode_zigzag(id));
+                let name_bytes = name.as_bytes();
+                block_data.extend_from_slice(&encode_zigzag(name_bytes.len() as i64));
+                block_data.extend_from_slice(name_bytes);
+                block_data.extend_from_slice(&encode_zigzag(value as i64));
+                block_data.push(if active { 1 } else { 0 });
+            }
+
+            // Create builder with single column projection
+            let config = BuilderConfig::new(1000);
+            let mut builder = DataFrameBuilder::with_projection(
+                &schema,
+                config,
+                &[projected_column.clone()],
+            ).expect("Failed to create projected builder");
+
+            let block = DecompressedBlock::new(
+                num_records as i64,
+                bytes::Bytes::from(block_data),
+                0,
+            );
+
+            builder.add_block(block).expect("Failed to add block");
+            let df = builder.finish()
+                .expect("Failed to build DataFrame")
+                .expect("Expected DataFrame");
+
+            // Verify exactly one column
+            prop_assert_eq!(
+                df.width(), 1,
+                "Single column projection should produce 1 column, got {}",
+                df.width()
+            );
+
+            // Verify column name
+            let col_names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+            prop_assert_eq!(
+                col_names.clone(), vec![projected_column.as_str()],
+                "Column name should be '{}', got {:?}",
+                projected_column, col_names
+            );
+
+            // Verify row count
+            prop_assert_eq!(
+                df.height(), num_records,
+                "Should have {} rows, got {}",
+                num_records, df.height()
+            );
+
+            Ok(())
+        })?;
+    }
+}

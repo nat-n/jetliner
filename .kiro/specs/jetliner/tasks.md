@@ -6,7 +6,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
 
 ## Tasks
 
-- [-] 1. Project setup and core types
+- [x] 1. Project setup and core types
   - [x] 1.1 Initialize Rust project with Cargo.toml and pyproject.toml
     - Configure workspace with maturin build system
     - Add all dependencies (tokio, pyo3, polars, compression crates, aws-sdk-s3)
@@ -318,23 +318,23 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 15. Python bindings
-  - [ ] 15.1 Implement AvroReaderCore PyClass (internal)
+  - [x] 15.1 Implement AvroReaderCore PyClass (internal)
     - Constructor with path, configuration kwargs, and projected_columns
     - Implement __iter__ and __next__ for sync iteration
     - Support projection pushdown via projected_columns parameter
     - _Requirements: 6.1, 6.2, 6a.2_
 
-  - [ ] 15.2 Implement AvroReader PyClass (user-facing open() API)
+  - [x] 15.2 Implement AvroReader PyClass (user-facing open() API)
     - Wrapper around AvroReaderCore without projection
     - Implement __enter__ and __exit__ for context manager
     - _Requirements: 6.1, 6.2, 6.6_
 
-  - [ ] 15.3 Implement schema and error accessors
+  - [x] 15.3 Implement schema and error accessors
     - Expose schema as JSON string and dict
     - Implement parse_avro_schema() for IO plugin schema extraction
     - _Requirements: 9.3, 6a.5_
 
-  - [ ] 15.3a Implement structured error exposure for Python
+  - [x] 15.3a Implement structured error exposure for Python
     - Create ReadError PyClass with properties: kind, block_index, record_index, offset, message
     - Add `to_dict()` method returning error as Python dict
     - Expose `reader.errors` property returning list of ReadError objects (accumulated during read)
@@ -352,18 +352,18 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       ```
     - _Requirements: 7.3, 7.4, 7.7_
 
-  - [ ] 15.4 Implement Python exception types
+  - [x] 15.4 Implement Python exception types
     - Define custom exception classes (ParseError, SchemaError, etc.)
     - Map Rust errors to appropriate Python exceptions
     - Include context in error messages
     - _Requirements: 6.4, 6.5_
 
-  - [ ] 15.5 Implement jetliner.open() entry point
+  - [x] 15.5 Implement jetliner.open() entry point
     - Parse S3 URIs vs local paths
     - Create appropriate source and reader
     - _Requirements: 4.1, 4.2, 4.3_
 
-  - [ ] 15.6 Implement jetliner.scan() with IO plugin
+  - [x] 15.6 Implement jetliner.scan() with IO plugin
     - Implement scan() function returning LazyFrame via register_io_source
     - Create source_generator that accepts with_columns, predicate, n_rows, batch_size
     - Pass projected_columns to AvroReaderCore for builder-level filtering
@@ -371,15 +371,15 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Implement early stopping when n_rows limit reached
     - _Requirements: 6a.1, 6a.2, 6a.3, 6a.4, 6a.5, 6a.6_
 
-  - [ ]* 15.7 Write property test for projection correctness
+  - [x] 15.7 Write property test for projection correctness
     - **Property 14: Projection Preserves Selected Columns**
     - **Validates: Requirements 6a.2**
 
-  - [ ]* 15.8 Write property test for early stopping
+  - [x] 15.8 Write property test for early stopping
     - **Property 15: Early Stopping Respects Row Limit**
     - **Validates: Requirements 6a.4**
 
-  - [ ]* 15.9 Write unit tests for Python API
+  - [x] 15.9 Write unit tests for Python API
     - Test iterator protocol (open API)
     - Test context manager
     - Test error handling

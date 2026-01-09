@@ -31,7 +31,11 @@ python-source = "python"
 module-name = "jetliner"
 
 [dependency-groups]
-dev = ["maturin>=1.11.2", "ruff>=0.8.0"]
+dev = [
+    "maturin>=1.11.2",
+    "pytest>=9.0.2",
+    "ruff>=0.8.0",
+]
 
 [tool.poe.executor]
 type = "uv"
@@ -75,6 +79,10 @@ cmd = "cargo test --test property_tests --features test-features"
 [tool.poe.tasks.test-schema]
 help = "Run schema tests"
 cmd = "cargo test --test schema_tests --features test-features"
+
+[tool.poe.tasks.test-python]
+help = "Run Python unit tests"
+cmd = "pytest python/tests -v"
 
 [tool.poe.tasks.bench]
 help = "Run benchmarks"
@@ -121,7 +129,7 @@ sequence = ["style-rust", "lint-rust", "lint-python"]
 help = "Remove build artifacts"
 sequence = [
   { cmd = "cargo clean" },
-  { script = "poethepoet.scripts:rm('.ruff_cache','.mypy_cache','.pytest_cache','./**/__pycache__','dist',verbosity=environ.get('POE_VERBOSITY'))"}
+  { script = "poethepoet.scripts:rm('.ruff_cache','.mypy_cache','.pytest_cache','./**/__pycache__','dist',verbosity=environ.get('POE_VERBOSITY'))" },
 ]
 
 [tool.poe.tasks.rustup]

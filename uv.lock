@@ -50,6 +50,7 @@ dev = [
 [package.dev-dependencies]
 dev = [
     { name = "maturin" },
+    { name = "pytest" },
     { name = "ruff" },
 ]
 
@@ -65,6 +66,7 @@ provides-extras = ["dev"]
 [package.metadata.requires-dev]
 dev = [
     { name = "maturin", specifier = ">=1.11.2" },
+    { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.8.0" },
 ]
 
