@@ -1,7 +1,7 @@
 //! Unit tests for spec compliance fixes (Task 10.6)
 //!
 //! This test module validates the following spec compliance fixes:
-//! - Task 10.1: Snappy CRC32C validation
+//! - Task 10.1: Snappy CRC32 validation (ISO polynomial, not CRC32C)
 //! - Task 10.2: "zstandard" codec name alias
 //! - Task 10.3: Strict schema validation mode
 //! - Task 10.4: Local timestamp Arrow type mapping
@@ -14,22 +14,24 @@ use jetliner::schema::{parse_schema_with_options, AvroSchema, LogicalType, Logic
 use polars::prelude::*;
 
 // ============================================================================
-// Task 10.1 & 10.2: Snappy CRC32C Validation Tests
+// Task 10.1 & 10.2: Snappy CRC32 Validation Tests
+// Note: Avro uses CRC32 (ISO polynomial), NOT CRC32C (Castagnoli)
 // ============================================================================
 
 #[cfg(feature = "snappy")]
 mod snappy_crc_tests {
     use super::*;
 
-    /// Helper to create Avro-framed snappy data (compressed + 4-byte CRC)
+    /// Helper to create Avro-framed snappy data (compressed + 4-byte CRC32)
+    /// Note: Avro uses CRC32 (ISO polynomial), not CRC32C (Castagnoli)
     fn create_avro_snappy_data(uncompressed: &[u8]) -> Vec<u8> {
         use snap::raw::Encoder;
 
         let mut encoder = Encoder::new();
         let compressed = encoder.compress_vec(uncompressed).unwrap();
 
-        // Compute CRC32C of uncompressed data (big-endian)
-        let crc = crc32c::crc32c(uncompressed);
+        // Compute CRC32 of uncompressed data (big-endian)
+        let crc = crc32fast::hash(uncompressed);
 
         let mut result = compressed;
         result.extend_from_slice(&crc.to_be_bytes());
@@ -37,7 +39,7 @@ mod snappy_crc_tests {
     }
 
     #[test]
-    fn test_snappy_crc32c_validation_with_valid_data() {
+    fn test_snappy_crc32_validation_with_valid_data() {
         // Test that valid snappy data with correct CRC passes validation
         let original = b"The quick brown fox jumps over the lazy dog";
         let avro_snappy_data = create_avro_snappy_data(original);
@@ -51,7 +53,7 @@ mod snappy_crc_tests {
     }
 
     #[test]
-    fn test_snappy_crc32c_validation_with_corrupted_crc() {
+    fn test_snappy_crc32_validation_with_corrupted_crc() {
         // Test that corrupted CRC is detected
         let original = b"Test data for CRC validation";
         let mut avro_snappy_data = create_avro_snappy_data(original);
@@ -69,14 +71,14 @@ mod snappy_crc_tests {
         let err = result.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("CRC32C checksum mismatch"),
-            "Error should mention CRC32C checksum mismatch, got: {}",
+            err_msg.contains("CRC32 checksum mismatch"),
+            "Error should mention CRC32 checksum mismatch, got: {}",
             err_msg
         );
     }
 
     #[test]
-    fn test_snappy_crc32c_validation_with_corrupted_data() {
+    fn test_snappy_crc32_validation_with_corrupted_data() {
         // Test that data corruption is detected via CRC
         let original = b"Important data that must not be corrupted";
         let mut avro_snappy_data = create_avro_snappy_data(original);
@@ -97,7 +99,7 @@ mod snappy_crc_tests {
     }
 
     #[test]
-    fn test_snappy_crc32c_validation_with_wrong_crc_value() {
+    fn test_snappy_crc32_validation_with_wrong_crc_value() {
         use snap::raw::Encoder;
 
         let original = b"Test data";
@@ -117,8 +119,8 @@ mod snappy_crc_tests {
         let err = result.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("CRC32C checksum mismatch"),
-            "Error should mention CRC32C checksum mismatch"
+            err_msg.contains("CRC32 checksum mismatch"),
+            "Error should mention CRC32 checksum mismatch"
         );
         assert!(
             err_msg.contains("expected 0x00000000"),
@@ -127,9 +129,10 @@ mod snappy_crc_tests {
     }
 
     #[test]
-    fn test_snappy_crc32c_validation_empty_data() {
+    fn test_snappy_crc32_validation_empty_data() {
         // Test that empty data with correct CRC passes
-        let empty_crc = crc32c::crc32c(&[]);
+        // CRC32 of empty data is 0x00000000
+        let empty_crc = crc32fast::hash(&[]);
         let mut data = Vec::new();
         data.extend_from_slice(&empty_crc.to_be_bytes());
 
@@ -142,7 +145,7 @@ mod snappy_crc_tests {
     }
 
     #[test]
-    fn test_snappy_crc32c_validation_large_data() {
+    fn test_snappy_crc32_validation_large_data() {
         // Test CRC validation with larger data
         let original: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
         let avro_snappy_data = create_avro_snappy_data(&original);
@@ -587,4 +590,109 @@ fn test_permissive_mode_maximizes_compatibility() {
         result.is_ok(),
         "Permissive mode should allow non-compliant schemas for read compatibility"
     );
+}
+
+// ============================================================================
+// Debug Test: Read weather-snappy.avro file
+// ============================================================================
+
+#[cfg(feature = "snappy")]
+#[test]
+fn test_read_weather_snappy_file_debug() {
+    use std::fs::File;
+    use std::io::Read;
+    use std::path::PathBuf;
+
+    // Get path to test file
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests/data/apache-avro/weather-snappy.avro");
+
+    // Read the file
+    let mut file = File::open(&path).expect("Failed to open file");
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).expect("Failed to read file");
+
+    println!("File size: {} bytes", data.len());
+
+    // For weather-snappy.avro, header ends at 239, sync marker is at 223-239
+    let sync_marker = &data[223..239];
+    println!("Sync marker: {:02x?}", sync_marker);
+
+    // Block starts at 239
+    let block_start = 239;
+
+    // Parse block header
+    fn decode_zigzag(data: &[u8], offset: usize) -> (i64, usize) {
+        let mut result: u64 = 0;
+        let mut shift = 0;
+        let mut pos = offset;
+        loop {
+            let b = data[pos] as u64;
+            result |= (b & 0x7f) << shift;
+            pos += 1;
+            if (b & 0x80) == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        // Zigzag decode
+        let signed = ((result >> 1) as i64) ^ -((result & 1) as i64);
+        (signed, pos)
+    }
+
+    let (record_count, pos) = decode_zigzag(&data, block_start);
+    println!("Record count: {} (at offset {})", record_count, block_start);
+
+    let (compressed_size, pos) = decode_zigzag(&data, pos);
+    println!("Compressed size: {} (at offset {})", compressed_size, pos);
+
+    // The compressed data
+    let compressed_data = &data[pos..pos + compressed_size as usize];
+    println!("Compressed data starts at: {}", pos);
+    println!("Compressed data length: {}", compressed_data.len());
+    println!("Compressed data (hex): {:02x?}", compressed_data);
+
+    // The CRC is the last 4 bytes (big-endian)
+    let crc_bytes = &compressed_data[compressed_data.len() - 4..];
+    let expected_crc = u32::from_be_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
+    println!("\nCRC bytes: {:02x?}", crc_bytes);
+    println!("Expected CRC (big-endian): 0x{:08X}", expected_crc);
+
+    // The snappy data is everything except the last 4 bytes
+    let snappy_data = &compressed_data[..compressed_data.len() - 4];
+    println!("Snappy data length: {}", snappy_data.len());
+    println!("Snappy data (hex): {:02x?}", snappy_data);
+
+    // Try to decompress
+    let mut decoder = snap::raw::Decoder::new();
+    match decoder.decompress_vec(snappy_data) {
+        Ok(decompressed) => {
+            println!("\nDecompression successful!");
+            println!("Decompressed length: {}", decompressed.len());
+            println!("Decompressed (hex): {:02x?}", &decompressed);
+
+            // Calculate actual CRC32 (ISO polynomial, same as zlib)
+            // Note: Avro uses CRC32, not CRC32C
+            let actual_crc = crc32fast::hash(&decompressed);
+            println!("\nActual CRC32: 0x{:08X}", actual_crc);
+            println!("Expected CRC32: 0x{:08X}", expected_crc);
+            println!("CRC matches: {}", actual_crc == expected_crc);
+
+            assert_eq!(
+                actual_crc, expected_crc,
+                "CRC mismatch: actual 0x{:08X} != expected 0x{:08X}",
+                actual_crc, expected_crc
+            );
+        }
+        Err(e) => {
+            panic!("Decompression failed: {}", e);
+        }
+    }
+
+    // Also check the sync marker after the block
+    let sync_start = pos + compressed_size as usize;
+    let block_sync = &data[sync_start..sync_start + 16];
+    println!("\nBlock sync marker at {}: {:02x?}", sync_start, block_sync);
+    println!("Sync matches header: {}", block_sync == sync_marker);
+    assert_eq!(block_sync, sync_marker, "Sync marker mismatch");
 }

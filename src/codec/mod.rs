@@ -144,15 +144,18 @@ impl Codec {
 /// Decompress snappy data with Avro framing.
 ///
 /// Avro uses a custom snappy framing format where the compressed data is followed
-/// by a 4-byte CRC32C checksum of the uncompressed data (big-endian).
+/// by a 4-byte CRC32 checksum of the uncompressed data (big-endian).
 ///
-/// Format: [snappy_compressed_data][4-byte CRC32C checksum]
+/// Format: [snappy_compressed_data][4-byte CRC32 checksum]
 ///
-/// The CRC32C checksum uses the Castagnoli polynomial and is validated after
-/// decompression to detect data corruption.
+/// The CRC32 checksum uses the ISO polynomial (same as zlib/gzip) and is validated
+/// after decompression to detect data corruption.
+///
+/// Note: The Avro spec says "CRC32" (ISO polynomial), NOT "CRC32C" (Castagnoli).
+/// This is important for interoperability with Apache Avro implementations.
 #[cfg(feature = "snappy")]
 fn decompress_snappy(data: &[u8]) -> Result<Vec<u8>, CodecError> {
-    // Avro snappy format: compressed_data + 4-byte CRC32C checksum
+    // Avro snappy format: compressed_data + 4-byte CRC32 checksum
     // The checksum is of the uncompressed data, stored in big-endian
     const CRC_SIZE: usize = 4;
 
@@ -170,10 +173,10 @@ fn decompress_snappy(data: &[u8]) -> Result<Vec<u8>, CodecError> {
     // Handle empty compressed data (just the CRC)
     if compressed_data.is_empty() {
         // Validate CRC of empty data
-        let actual_crc = crc32c::crc32c(&[]);
+        let actual_crc = crc32fast::hash(&[]);
         if actual_crc != expected_crc {
             return Err(CodecError::DecompressionError(format!(
-                "Snappy CRC32C checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
+                "Snappy CRC32 checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
                 expected_crc, actual_crc
             )));
         }
@@ -186,11 +189,12 @@ fn decompress_snappy(data: &[u8]) -> Result<Vec<u8>, CodecError> {
         CodecError::DecompressionError(format!("Snappy decompression failed: {}", e))
     })?;
 
-    // Validate CRC32C checksum of the uncompressed data
-    let actual_crc = crc32c::crc32c(&decompressed);
+    // Validate CRC32 checksum of the uncompressed data
+    // Note: Avro uses CRC32 (ISO polynomial), not CRC32C (Castagnoli)
+    let actual_crc = crc32fast::hash(&decompressed);
     if actual_crc != expected_crc {
         return Err(CodecError::DecompressionError(format!(
-            "Snappy CRC32C checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
+            "Snappy CRC32 checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
             expected_crc, actual_crc
         )));
     }
@@ -400,15 +404,16 @@ mod tests {
     mod snappy_tests {
         use super::*;
 
-        /// Helper to create Avro-framed snappy data (compressed + 4-byte CRC)
+        /// Helper to create Avro-framed snappy data (compressed + 4-byte CRC32)
+        /// Note: Avro uses CRC32 (ISO polynomial), not CRC32C (Castagnoli)
         fn create_avro_snappy_data(uncompressed: &[u8]) -> Vec<u8> {
             use snap::raw::Encoder;
 
             let mut encoder = Encoder::new();
             let compressed = encoder.compress_vec(uncompressed).unwrap();
 
-            // Compute CRC32C of uncompressed data (big-endian)
-            let crc = crc32c::crc32c(uncompressed);
+            // Compute CRC32 of uncompressed data (big-endian)
+            let crc = crc32fast::hash(uncompressed);
 
             let mut result = compressed;
             result.extend_from_slice(&crc.to_be_bytes());
@@ -486,7 +491,7 @@ mod tests {
         }
 
         #[test]
-        fn test_snappy_crc32c_validation_failure() {
+        fn test_snappy_crc32_validation_failure() {
             use snap::raw::Encoder;
 
             let original = b"hello world";
@@ -500,7 +505,7 @@ mod tests {
             let err = Codec::Snappy.decompress(&bad_data).unwrap_err();
             let err_msg = err.to_string();
             assert!(
-                err_msg.contains("CRC32C checksum mismatch"),
+                err_msg.contains("CRC32 checksum mismatch"),
                 "Expected CRC mismatch error, got: {}",
                 err_msg
             );
@@ -512,7 +517,7 @@ mod tests {
         }
 
         #[test]
-        fn test_snappy_crc32c_validation_corrupted_data() {
+        fn test_snappy_crc32_validation_corrupted_data() {
             let original = b"hello world";
             let mut avro_snappy_data = create_avro_snappy_data(original);
 
@@ -523,7 +528,7 @@ mod tests {
             let err = Codec::Snappy.decompress(&avro_snappy_data).unwrap_err();
             let err_msg = err.to_string();
             assert!(
-                err_msg.contains("CRC32C checksum mismatch"),
+                err_msg.contains("CRC32 checksum mismatch"),
                 "Expected CRC mismatch error, got: {}",
                 err_msg
             );
@@ -532,7 +537,8 @@ mod tests {
         #[test]
         fn test_snappy_empty_data_crc_validation() {
             // Test that empty data with correct CRC passes
-            let empty_crc = crc32c::crc32c(&[]);
+            // CRC32 of empty data is 0x00000000
+            let empty_crc = crc32fast::hash(&[]);
             let mut data = Vec::new();
             data.extend_from_slice(&empty_crc.to_be_bytes());
 
@@ -546,7 +552,7 @@ mod tests {
             let data = vec![0xFF, 0xFF, 0xFF, 0xFF]; // Wrong CRC for empty data
 
             let err = Codec::Snappy.decompress(&data).unwrap_err();
-            assert!(err.to_string().contains("CRC32C checksum mismatch"));
+            assert!(err.to_string().contains("CRC32 checksum mismatch"));
         }
     }
 

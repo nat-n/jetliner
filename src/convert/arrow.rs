@@ -85,11 +85,14 @@ pub fn avro_to_arrow(schema: &AvroSchema) -> Result<DataType, SchemaError> {
             Ok(DataType::Array(Box::new(DataType::UInt8), fixed.size))
         }
 
-        // Named type reference - should be resolved before conversion
-        AvroSchema::Named(name) => Err(SchemaError::InvalidSchema(format!(
-            "Unresolved named type reference: {}. Schema must be resolved before conversion.",
-            name
-        ))),
+        // Named type reference - this occurs for recursive types
+        // Recursive types are represented as JSON strings since Arrow/Polars
+        // doesn't natively support recursive data structures
+        AvroSchema::Named(_name) => {
+            // For recursive references, we use String (JSON) representation
+            // This allows us to serialize arbitrarily deep recursive structures
+            Ok(DataType::String)
+        }
 
         // Logical types
         AvroSchema::Logical(logical) => logical_to_arrow(logical),
@@ -237,6 +240,11 @@ pub fn avro_to_arrow_field(name: &str, schema: &AvroSchema) -> Result<Field, Sch
 ///
 /// # Returns
 /// An Arrow Schema with fields corresponding to the record's fields.
+///
+/// # Non-Record Schemas
+/// If the schema is not a record type, it will be wrapped in a synthetic record
+/// with a single "value" field. This allows non-record schemas to be converted
+/// to a single-column DataFrame.
 pub fn avro_to_arrow_schema(schema: &AvroSchema) -> Result<Schema, SchemaError> {
     match schema {
         AvroSchema::Record(record) => {
@@ -248,9 +256,12 @@ pub fn avro_to_arrow_schema(schema: &AvroSchema) -> Result<Schema, SchemaError> 
 
             Ok(Schema::from_iter(fields?))
         }
-        _ => Err(SchemaError::InvalidSchema(
-            "Top-level schema must be a record type for DataFrame conversion".to_string(),
-        )),
+        _ => {
+            // Wrap non-record schema in a synthetic record with a "value" field
+            let dtype = avro_to_arrow(schema)?;
+            let field = Field::new("value".into(), dtype);
+            Ok(Schema::from_iter(vec![field]))
+        }
     }
 }
 
@@ -264,6 +275,11 @@ pub fn avro_to_arrow_schema(schema: &AvroSchema) -> Result<Schema, SchemaError> 
 ///
 /// # Returns
 /// An Arrow Schema with only the projected fields.
+///
+/// # Non-Record Schemas
+/// If the schema is not a record type, it will be wrapped in a synthetic record
+/// with a single "value" field. Projection will only work if "value" is in the
+/// projected_names set.
 pub fn avro_to_arrow_schema_projected(
     schema: &AvroSchema,
     projected_names: &std::collections::HashSet<String>,
@@ -279,9 +295,18 @@ pub fn avro_to_arrow_schema_projected(
 
             Ok(Schema::from_iter(fields?))
         }
-        _ => Err(SchemaError::InvalidSchema(
-            "Top-level schema must be a record type for DataFrame conversion".to_string(),
-        )),
+        _ => {
+            // Wrap non-record schema in a synthetic record with a "value" field
+            // Only include if "value" is in the projected names
+            if projected_names.contains("value") {
+                let dtype = avro_to_arrow(schema)?;
+                let field = Field::new("value".into(), dtype);
+                Ok(Schema::from_iter(vec![field]))
+            } else {
+                // No fields projected
+                Ok(Schema::from_iter(Vec::<Field>::new()))
+            }
+        }
     }
 }
 
@@ -536,10 +561,11 @@ mod tests {
     }
 
     #[test]
-    fn test_unresolved_named_type_error() {
+    fn test_recursive_named_type_to_string() {
+        // Recursive named types are represented as JSON strings
         let named = AvroSchema::Named("SomeType".to_string());
-        let result = avro_to_arrow(&named);
-        assert!(result.is_err());
+        let result = avro_to_arrow(&named).unwrap();
+        assert_eq!(result, DataType::String);
     }
 
     #[test]

@@ -241,7 +241,8 @@ fn compress_null(data: &[u8]) -> Vec<u8> {
     data.to_vec()
 }
 
-/// Compress data using snappy with Avro framing (4-byte CRC suffix).
+/// Compress data using snappy with Avro framing (4-byte CRC32 suffix).
+/// Note: Avro uses CRC32 (ISO polynomial), not CRC32C (Castagnoli).
 #[cfg(feature = "snappy")]
 fn compress_snappy(data: &[u8]) -> Vec<u8> {
     use snap::raw::Encoder;
@@ -249,23 +250,25 @@ fn compress_snappy(data: &[u8]) -> Vec<u8> {
     let mut encoder = Encoder::new();
     let compressed = encoder.compress_vec(data).unwrap();
 
-    // Compute CRC32C of uncompressed data (big-endian)
-    let crc = compute_crc32c(data);
+    // Compute CRC32 of uncompressed data (big-endian)
+    // Avro spec requires CRC32 (ISO polynomial), not CRC32C
+    let crc = compute_crc32(data);
 
     let mut result = compressed;
     result.extend_from_slice(&crc.to_be_bytes());
     result
 }
 
-/// Simple CRC32C computation for testing (Castagnoli polynomial).
+/// Simple CRC32 computation for testing (ISO polynomial, same as zlib).
+/// This is the standard CRC32 used by Avro for snappy checksums.
 #[cfg(feature = "snappy")]
-fn compute_crc32c(data: &[u8]) -> u32 {
+fn compute_crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFFFFFF;
     for &byte in data {
         crc ^= byte as u32;
         for _ in 0..8 {
             if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0x82F63B78; // Reflected polynomial
+                crc = (crc >> 1) ^ 0xEDB88320; // ISO polynomial (reflected)
             } else {
                 crc >>= 1;
             }
@@ -4435,11 +4438,12 @@ proptest! {
             ];
             file_data.extend_from_slice(&sync_marker);
 
-            // Helper to compress block data with snappy (Avro format: compressed + CRC32C)
+            // Helper to compress block data with snappy (Avro format: compressed + CRC32)
+            // Note: Avro uses CRC32 (ISO polynomial), not CRC32C (Castagnoli)
             let compress_snappy = |data: &[u8]| -> Vec<u8> {
                 let mut encoder = snap::raw::Encoder::new();
                 let compressed = encoder.compress_vec(data).unwrap();
-                let crc = crc32c::crc32c(data);
+                let crc = crc32fast::hash(data);
                 let mut result = compressed;
                 result.extend_from_slice(&crc.to_be_bytes());
                 result

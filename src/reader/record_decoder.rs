@@ -76,6 +76,8 @@ pub struct FullRecordDecoder {
     builders: Vec<FieldBuilder>,
     /// Number of records currently in the builders
     record_count: usize,
+    /// Resolution context for named type references (used for recursive types)
+    resolution_context: crate::schema::SchemaResolutionContext,
 }
 
 impl FullRecordDecoder {
@@ -98,11 +100,14 @@ impl FullRecordDecoder {
 
         let polars_schema = avro_to_arrow_schema(schema)?;
 
-        // Create builders for each field
+        // Build resolution context for named type references (needed for recursive types)
+        let resolution_context = crate::schema::SchemaResolutionContext::build_from_schema(schema);
+
+        // Create builders for each field, passing the root schema for recursive type resolution
         let builders: Result<Vec<FieldBuilder>, SchemaError> = record_schema
             .fields
             .iter()
-            .map(|field| FieldBuilder::new(&field.name, &field.schema))
+            .map(|field| FieldBuilder::new_with_root(&field.name, &field.schema, schema))
             .collect();
 
         Ok(Self {
@@ -110,6 +115,7 @@ impl FullRecordDecoder {
             polars_schema,
             builders: builders?,
             record_count: 0,
+            resolution_context,
         })
     }
 }
@@ -194,13 +200,17 @@ impl ProjectedRecordDecoder {
         let polars_schema =
             crate::convert::avro_to_arrow_schema_projected(schema, &projected_names)?;
 
-        // Create builders only for projected columns
+        // Create builders only for projected columns, passing root schema for recursive types
         let builders: Result<Vec<Option<FieldBuilder>>, SchemaError> = record_schema
             .fields
             .iter()
             .map(|field| {
                 if projected_names.contains(&field.name) {
-                    Ok(Some(FieldBuilder::new(&field.name, &field.schema)?))
+                    Ok(Some(FieldBuilder::new_with_root(
+                        &field.name,
+                        &field.schema,
+                        schema,
+                    )?))
                 } else {
                     Ok(None)
                 }
@@ -369,15 +379,30 @@ enum FieldBuilder {
     Duration(DurationBuilder),
     /// Decimal
     Decimal(DecimalBuilder),
+    /// Recursive type (serialized to JSON string)
+    Recursive(RecursiveBuilder),
 }
 
 impl FieldBuilder {
     /// Create a new builder for the given schema.
     fn new(name: &str, schema: &AvroSchema) -> Result<Self, SchemaError> {
-        Self::create_builder(name, schema)
+        Self::create_builder(name, schema, schema)
     }
 
-    fn create_builder(name: &str, schema: &AvroSchema) -> Result<Self, SchemaError> {
+    /// Create a new builder for the given schema with a root schema for context.
+    fn new_with_root(
+        name: &str,
+        schema: &AvroSchema,
+        root_schema: &AvroSchema,
+    ) -> Result<Self, SchemaError> {
+        Self::create_builder(name, schema, root_schema)
+    }
+
+    fn create_builder(
+        name: &str,
+        schema: &AvroSchema,
+        root_schema: &AvroSchema,
+    ) -> Result<Self, SchemaError> {
         match schema {
             AvroSchema::Null => Ok(FieldBuilder::Null(NullBuilder::new(name))),
             AvroSchema::Boolean => Ok(FieldBuilder::Boolean(BooleanBuilder::new(name))),
@@ -401,7 +426,8 @@ impl FieldBuilder {
                         .iter()
                         .position(|s| matches!(s, AvroSchema::Null))
                         .unwrap();
-                    let inner_builder = Box::new(Self::create_builder(name, non_null[0])?);
+                    let inner_builder =
+                        Box::new(Self::create_builder(name, non_null[0], root_schema)?);
                     Ok(FieldBuilder::Nullable(NullableBuilder::new(
                         name,
                         inner_builder,
@@ -420,20 +446,28 @@ impl FieldBuilder {
             }
 
             AvroSchema::Array(items) => {
-                let inner_builder = Box::new(Self::create_builder("item", items)?);
-                Ok(FieldBuilder::List(ListBuilder::new(name, inner_builder, items)))
+                let inner_builder = Box::new(Self::create_builder("item", items, root_schema)?);
+                Ok(FieldBuilder::List(ListBuilder::new(
+                    name,
+                    inner_builder,
+                    items,
+                )))
             }
 
             AvroSchema::Map(values) => {
-                let value_builder = Box::new(Self::create_builder("value", values)?);
-                Ok(FieldBuilder::Map(MapBuilder::new(name, value_builder, values)))
+                let value_builder = Box::new(Self::create_builder("value", values, root_schema)?);
+                Ok(FieldBuilder::Map(MapBuilder::new(
+                    name,
+                    value_builder,
+                    values,
+                )))
             }
 
             AvroSchema::Record(record) => {
                 let field_builders: Result<Vec<FieldBuilder>, SchemaError> = record
                     .fields
                     .iter()
-                    .map(|f| Self::create_builder(&f.name, &f.schema))
+                    .map(|f| Self::create_builder(&f.name, &f.schema, root_schema))
                     .collect();
                 Ok(FieldBuilder::Struct(StructBuilder::new(
                     name,
@@ -442,56 +476,49 @@ impl FieldBuilder {
                 )))
             }
 
-            AvroSchema::Enum(enum_schema) => {
-                Ok(FieldBuilder::Enum(EnumBuilder::new(name, enum_schema.symbols.clone())))
-            }
-
-            AvroSchema::Fixed(fixed_schema) => {
-                Ok(FieldBuilder::Fixed(FixedBuilder::new(name, fixed_schema.size)))
-            }
-
-            AvroSchema::Named(type_name) => Err(SchemaError::InvalidSchema(format!(
-                "Unresolved named type reference: {}. Schema must be resolved before creating decoder.",
-                type_name
+            AvroSchema::Enum(enum_schema) => Ok(FieldBuilder::Enum(EnumBuilder::new(
+                name,
+                enum_schema.symbols.clone(),
             ))),
+
+            AvroSchema::Fixed(fixed_schema) => Ok(FieldBuilder::Fixed(FixedBuilder::new(
+                name,
+                fixed_schema.size,
+            ))),
+
+            AvroSchema::Named(type_name) => {
+                // Recursive type reference - serialize to JSON string
+                // This handles self-referential types like linked lists
+                Ok(FieldBuilder::Recursive(RecursiveBuilder::new(
+                    name,
+                    type_name.clone(),
+                    root_schema,
+                )))
+            }
 
             AvroSchema::Logical(logical) => {
                 match &logical.logical_type {
                     LogicalTypeName::Date => Ok(FieldBuilder::Date(DateBuilder::new(name))),
-                    LogicalTypeName::TimeMillis => {
-                        Ok(FieldBuilder::Time(TimeBuilder::new(name, TimeUnit::Milliseconds)))
-                    }
-                    LogicalTypeName::TimeMicros => {
-                        Ok(FieldBuilder::Time(TimeBuilder::new(name, TimeUnit::Microseconds)))
-                    }
-                    LogicalTypeName::TimestampMillis => {
-                        Ok(FieldBuilder::Datetime(DatetimeBuilder::new(
-                            name,
-                            TimeUnit::Milliseconds,
-                            Some(TimeZone::UTC),
-                        )))
-                    }
-                    LogicalTypeName::TimestampMicros => {
-                        Ok(FieldBuilder::Datetime(DatetimeBuilder::new(
-                            name,
-                            TimeUnit::Microseconds,
-                            Some(TimeZone::UTC),
-                        )))
-                    }
-                    LogicalTypeName::LocalTimestampMillis => {
-                        Ok(FieldBuilder::Datetime(DatetimeBuilder::new(
-                            name,
-                            TimeUnit::Milliseconds,
-                            None,
-                        )))
-                    }
-                    LogicalTypeName::LocalTimestampMicros => {
-                        Ok(FieldBuilder::Datetime(DatetimeBuilder::new(
-                            name,
-                            TimeUnit::Microseconds,
-                            None,
-                        )))
-                    }
+                    LogicalTypeName::TimeMillis => Ok(FieldBuilder::Time(TimeBuilder::new(
+                        name,
+                        TimeUnit::Milliseconds,
+                    ))),
+                    LogicalTypeName::TimeMicros => Ok(FieldBuilder::Time(TimeBuilder::new(
+                        name,
+                        TimeUnit::Microseconds,
+                    ))),
+                    LogicalTypeName::TimestampMillis => Ok(FieldBuilder::Datetime(
+                        DatetimeBuilder::new(name, TimeUnit::Milliseconds, Some(TimeZone::UTC)),
+                    )),
+                    LogicalTypeName::TimestampMicros => Ok(FieldBuilder::Datetime(
+                        DatetimeBuilder::new(name, TimeUnit::Microseconds, Some(TimeZone::UTC)),
+                    )),
+                    LogicalTypeName::LocalTimestampMillis => Ok(FieldBuilder::Datetime(
+                        DatetimeBuilder::new(name, TimeUnit::Milliseconds, None),
+                    )),
+                    LogicalTypeName::LocalTimestampMicros => Ok(FieldBuilder::Datetime(
+                        DatetimeBuilder::new(name, TimeUnit::Microseconds, None),
+                    )),
                     LogicalTypeName::Duration => {
                         Ok(FieldBuilder::Duration(DurationBuilder::new(name)))
                     }
@@ -534,6 +561,7 @@ impl FieldBuilder {
             FieldBuilder::Datetime(b) => b.decode(data),
             FieldBuilder::Duration(b) => b.decode(data),
             FieldBuilder::Decimal(b) => b.decode(data),
+            FieldBuilder::Recursive(b) => b.decode(data, schema),
         }
     }
 
@@ -559,6 +587,7 @@ impl FieldBuilder {
             FieldBuilder::Datetime(b) => b.finish(),
             FieldBuilder::Duration(b) => b.finish(),
             FieldBuilder::Decimal(b) => b.finish(),
+            FieldBuilder::Recursive(b) => b.finish(),
         }
     }
 }
@@ -875,6 +904,10 @@ impl NullableBuilder {
                     }
                 }
             }
+            FieldBuilder::Recursive(b) => {
+                // For recursive types, append "null" as the default JSON value
+                b.values.push("null".to_string());
+            }
         }
         Ok(())
     }
@@ -935,6 +968,10 @@ fn append_default_to_builder(
                     b.append_default_value(inner_schema)?;
                 }
             }
+        }
+        FieldBuilder::Recursive(b) => {
+            // For recursive types, append "null" as the default JSON value
+            b.values.push("null".to_string());
         }
     }
     Ok(())
@@ -1416,6 +1453,55 @@ impl DecimalBuilder {
         Ok(ca
             .into_decimal_unchecked(self.precision, self.scale)
             .into_series())
+    }
+}
+
+/// Builder for recursive type values (serialized to JSON string).
+///
+/// Recursive types (like linked lists or trees) cannot be directly represented
+/// in Arrow/Polars since they don't support recursive data structures.
+/// Instead, we serialize the recursive structure to a JSON string.
+struct RecursiveBuilder {
+    name: String,
+    /// The full schema for the recursive type (needed for decoding)
+    schema: AvroSchema,
+    /// Resolution context for resolving named type references
+    context: crate::schema::SchemaResolutionContext,
+    values: Vec<String>,
+}
+
+impl RecursiveBuilder {
+    fn new(name: &str, type_name: String, root_schema: &AvroSchema) -> Self {
+        // Build resolution context from the root schema
+        let context = crate::schema::SchemaResolutionContext::build_from_schema(root_schema);
+
+        // Get the actual schema for this type from the context
+        let schema = context
+            .get(&type_name)
+            .cloned()
+            .unwrap_or_else(|| AvroSchema::Named(type_name));
+
+        Self {
+            name: name.to_string(),
+            schema,
+            context,
+            values: Vec::new(),
+        }
+    }
+
+    fn decode(&mut self, data: &mut &[u8], _schema: &AvroSchema) -> Result<(), DecodeError> {
+        // Decode the value to JSON using the context-aware decoder
+        let value = super::decode::decode_value_with_context(data, &self.schema, &self.context)?;
+        let json_str = serde_json::to_string(&value.to_json()).map_err(|e| {
+            DecodeError::InvalidData(format!("Failed to serialize recursive type to JSON: {}", e))
+        })?;
+        self.values.push(json_str);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Series, DecodeError> {
+        let values = std::mem::take(&mut self.values);
+        Ok(Series::new(self.name.clone().into(), values))
     }
 }
 

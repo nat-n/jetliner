@@ -1421,6 +1421,7 @@ fn arb_avro_value_for_schema(schema: &AvroSchema) -> impl Strategy<Value = AvroV
 ### Integration Tests
 
 - Read Apache Avro's official interoperability test files
+    - See Appendix: A_avro_java_test_research.md and B_e2e-test-plan.md
 - Round-trip tests with real S3 (using localstack or minio)
 - Large file tests (verify memory stays bounded)
 - Concurrent access tests

@@ -245,6 +245,119 @@ pub enum AvroValue {
     },
 }
 
+impl AvroValue {
+    /// Convert the AvroValue to a serde_json::Value for JSON serialization.
+    ///
+    /// This is useful for serializing recursive types to JSON strings.
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::{json, Map, Value};
+
+        match self {
+            AvroValue::Null => Value::Null,
+            AvroValue::Boolean(b) => Value::Bool(*b),
+            AvroValue::Int(i) => Value::Number((*i).into()),
+            AvroValue::Long(l) => Value::Number((*l).into()),
+            AvroValue::Float(f) => serde_json::Number::from_f64(*f as f64)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            AvroValue::Double(d) => serde_json::Number::from_f64(*d)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            AvroValue::Bytes(b) => {
+                // Encode bytes as base64 string
+                Value::String(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    b,
+                ))
+            }
+            AvroValue::String(s) => Value::String(s.clone()),
+            AvroValue::Record(fields) => {
+                let mut map = Map::new();
+                for (name, value) in fields {
+                    map.insert(name.clone(), value.to_json());
+                }
+                Value::Object(map)
+            }
+            AvroValue::Enum(_index, symbol) => Value::String(symbol.clone()),
+            AvroValue::Array(items) => Value::Array(items.iter().map(|v| v.to_json()).collect()),
+            AvroValue::Map(entries) => {
+                let mut map = Map::new();
+                for (key, value) in entries {
+                    map.insert(key.clone(), value.to_json());
+                }
+                Value::Object(map)
+            }
+            AvroValue::Union(_index, value) => value.to_json(),
+            AvroValue::Fixed(b) => {
+                // Encode fixed bytes as base64 string
+                Value::String(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    b,
+                ))
+            }
+            AvroValue::Decimal {
+                unscaled,
+                precision: _,
+                scale,
+            } => {
+                // Convert decimal to string representation
+                let value = bytes_to_decimal_string(unscaled, *scale);
+                Value::String(value)
+            }
+            AvroValue::Uuid(s) => Value::String(s.clone()),
+            AvroValue::Date(days) => Value::Number((*days).into()),
+            AvroValue::TimeMillis(ms) => Value::Number((*ms).into()),
+            AvroValue::TimeMicros(us) => Value::Number((*us).into()),
+            AvroValue::TimestampMillis(ms) => Value::Number((*ms).into()),
+            AvroValue::TimestampMicros(us) => Value::Number((*us).into()),
+            AvroValue::Duration {
+                months,
+                days,
+                milliseconds,
+            } => {
+                json!({
+                    "months": months,
+                    "days": days,
+                    "milliseconds": milliseconds
+                })
+            }
+        }
+    }
+}
+
+/// Convert decimal bytes to a string representation.
+fn bytes_to_decimal_string(bytes: &[u8], scale: u32) -> String {
+    if bytes.is_empty() {
+        return "0".to_string();
+    }
+
+    // Convert big-endian two's complement to i128
+    let is_negative = bytes[0] & 0x80 != 0;
+    let mut value: i128 = if is_negative { -1 } else { 0 };
+    for &byte in bytes {
+        value = (value << 8) | (byte as i128);
+    }
+
+    // Format with scale
+    if scale == 0 {
+        return value.to_string();
+    }
+
+    let abs_value = value.abs();
+    let divisor = 10i128.pow(scale);
+    let integer_part = abs_value / divisor;
+    let fractional_part = abs_value % divisor;
+
+    let sign = if value < 0 { "-" } else { "" };
+    format!(
+        "{}{}.{:0>width$}",
+        sign,
+        integer_part,
+        fractional_part,
+        width = scale as usize
+    )
+}
+
 /// Decode a fixed-size byte array.
 ///
 /// Avro fixed types are encoded as raw bytes with a predetermined size

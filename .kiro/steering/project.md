@@ -32,3 +32,10 @@ High-performance Polars plugin for streaming Avro files into DataFrames.
 - Prefer `&[u8]` and `Bytes` over `Vec<u8>` for read-only data
 - Use `#[cfg(feature = "...")]` for optional codec support
 
+## Dependencies
+
+This project uses uv for python dependency management.
+
+- If you need a python dependency in the project install it with `uv add`
+- use `uv add --dev` if it's only needed for testing or other dev processes
+- when running inline python scripts use `uv run python -c '...'`

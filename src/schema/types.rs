@@ -483,6 +483,35 @@ impl AvroSchema {
         )
     }
 
+    /// Check if this schema is a record type.
+    pub fn is_record(&self) -> bool {
+        matches!(self, AvroSchema::Record(_))
+    }
+
+    /// Wrap a non-record schema in a synthetic record with a single "value" field.
+    ///
+    /// This allows non-record top-level schemas to be read into a single-column DataFrame.
+    /// If the schema is already a record, it is returned unchanged.
+    ///
+    /// # Example
+    /// ```
+    /// use jetliner::schema::AvroSchema;
+    ///
+    /// let bytes_schema = AvroSchema::Bytes;
+    /// let wrapped = bytes_schema.wrap_as_record();
+    /// assert!(wrapped.is_record());
+    /// ```
+    pub fn wrap_as_record(self) -> AvroSchema {
+        if self.is_record() {
+            return self;
+        }
+
+        AvroSchema::Record(RecordSchema::new(
+            "_SyntheticRecord",
+            vec![FieldSchema::new("value", self)],
+        ))
+    }
+
     /// Check if this schema is a named type (record, enum, or fixed).
     pub fn is_named(&self) -> bool {
         matches!(
@@ -589,5 +618,69 @@ impl AvroSchema {
             // Logical type wrapper
             AvroSchema::Logical(lt) => lt.to_json_value(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_as_record_primitive() {
+        let schema = AvroSchema::Bytes;
+        let wrapped = schema.wrap_as_record();
+
+        match wrapped {
+            AvroSchema::Record(record) => {
+                assert_eq!(record.name, "_SyntheticRecord");
+                assert_eq!(record.fields.len(), 1);
+                assert_eq!(record.fields[0].name, "value");
+                assert!(matches!(record.fields[0].schema, AvroSchema::Bytes));
+            }
+            _ => panic!("Expected Record schema"),
+        }
+    }
+
+    #[test]
+    fn test_wrap_as_record_already_record() {
+        let record = RecordSchema::new(
+            "TestRecord",
+            vec![FieldSchema::new("field1", AvroSchema::String)],
+        );
+        let schema = AvroSchema::Record(record);
+        let wrapped = schema.clone().wrap_as_record();
+
+        // Should return the same record unchanged
+        assert_eq!(schema, wrapped);
+    }
+
+    #[test]
+    fn test_wrap_as_record_array() {
+        let schema = AvroSchema::Array(Box::new(AvroSchema::Int));
+        let wrapped = schema.wrap_as_record();
+
+        match wrapped {
+            AvroSchema::Record(record) => {
+                assert_eq!(record.fields.len(), 1);
+                assert_eq!(record.fields[0].name, "value");
+                match &record.fields[0].schema {
+                    AvroSchema::Array(inner) => {
+                        assert!(matches!(**inner, AvroSchema::Int));
+                    }
+                    _ => panic!("Expected Array schema"),
+                }
+            }
+            _ => panic!("Expected Record schema"),
+        }
+    }
+
+    #[test]
+    fn test_is_record() {
+        assert!(!AvroSchema::Bytes.is_record());
+        assert!(!AvroSchema::String.is_record());
+        assert!(!AvroSchema::Array(Box::new(AvroSchema::Int)).is_record());
+
+        let record = RecordSchema::new("Test", vec![]);
+        assert!(AvroSchema::Record(record).is_record());
     }
 }

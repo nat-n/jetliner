@@ -47,8 +47,8 @@ zstd = { version = "0.13", optional = true }
 bzip2 = { version = "0.6", optional = true }
 xz2 = { version = "0.1", optional = true }
 
-# CRC32C for snappy checksum validation (Avro spec requirement)
-crc32c = "0.6"
+# CRC32 for snappy checksum validation (Avro spec requires CRC32, not CRC32C)
+crc32fast = "1"
 
 # S3 support
 aws-sdk-s3 = "1"
@@ -61,6 +61,9 @@ pyo3-polars = "0.25"
 # Serialization for schema parsing
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Base64 encoding for binary data in JSON
+base64 = "0.22"
 
 [dev-dependencies]
 proptest = "1"

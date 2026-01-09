@@ -171,9 +171,15 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
     /// - `ReaderError::Schema` if schema is invalid
     /// - `ReaderError::Codec` if codec is unknown
     ///
+    /// # Non-Record Schemas
+    /// If the top-level schema is not a record type (e.g., bytes, array, etc.),
+    /// the reader will wrap it in a synthetic record with a single "value" field.
+    /// This allows non-record schemas to be read into a single-column DataFrame.
+    ///
     /// # Requirements
     /// - 3.1: Read and process one block at a time
     /// - 3.2: Don't load entire file into memory
+    /// - 1.4, 1.5: Support all Avro primitive and complex types at top level
     pub async fn open(source: S, config: ReaderConfig) -> Result<Self, ReaderError> {
         // Create block reader (parses header)
         let block_reader = BlockReader::new(source).await?;
@@ -184,12 +190,34 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
         // Use reader schema if provided, otherwise use writer schema
         let effective_schema = config.reader_schema.as_ref().unwrap_or(&schema);
 
-        // Validate schema is a record type
-        if !matches!(effective_schema, AvroSchema::Record(_)) {
-            return Err(ReaderError::Schema(SchemaError::InvalidSchema(
-                "Top-level schema must be a record type".to_string(),
-            )));
-        }
+        // Wrap non-record schemas in a synthetic record with a "value" field
+        // This allows reading files with non-record top-level schemas into DataFrames
+        let effective_schema = if !matches!(effective_schema, AvroSchema::Record(_)) {
+            // Validate that the top-level type is supported
+            match effective_schema {
+                AvroSchema::Array(_) => {
+                    return Err(ReaderError::Schema(SchemaError::UnsupportedType(
+                        "Array as top-level schema is not yet supported. \
+                        Arrays at the top level cause Polars list builder errors. \
+                        Workaround: Wrap your array in a record type with a field, \
+                        or use primitive types (int, string, bytes) which are fully supported."
+                            .to_string(),
+                    )));
+                }
+                AvroSchema::Map(_) => {
+                    return Err(ReaderError::Schema(SchemaError::UnsupportedType(
+                        "Map as top-level schema is not yet supported. \
+                        Maps at the top level cause Polars struct builder errors. \
+                        Workaround: Wrap your map in a record type with a field, \
+                        or use primitive types (int, string, bytes) which are fully supported."
+                            .to_string(),
+                    )));
+                }
+                _ => effective_schema.clone().wrap_as_record(),
+            }
+        } else {
+            effective_schema.clone()
+        };
 
         // Create prefetch buffer with error mode
         let buffer = PrefetchBuffer::new(
@@ -203,9 +231,9 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
             BuilderConfig::new(config.batch_size).with_error_mode(config.error_mode);
 
         let builder = if let Some(ref columns) = config.projected_columns {
-            DataFrameBuilder::with_projection(effective_schema, builder_config, columns)?
+            DataFrameBuilder::with_projection(&effective_schema, builder_config, columns)?
         } else {
-            DataFrameBuilder::new(effective_schema, builder_config)?
+            DataFrameBuilder::new(&effective_schema, builder_config)?
         };
 
         Ok(Self {

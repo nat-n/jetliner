@@ -399,14 +399,41 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - **Property 13: Seek to Sync Marker**
     - **Validates: Requirements 3.7**
 
-- [ ] 17. Integration tests with Apache Avro test files
-  - [ ] 17.1 Add Apache Avro interoperability test files
-    - Download official test files
+- [x] 17. Integration tests with Apache Avro test files
+  - [x] 17.1 Add Apache Avro interoperability test files
+    - See Appendix: A_avro_java_test_research.md
+    - See Appendix: B_e2e-test-plan.md
     - Verify all primitive types
     - Verify all complex types
     - Verify all logical types
     - Verify all codecs
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+
+  - [x] 17.2 Fix interoperability gaps discovered in E2E testing
+    - [x] 17.2.1 Fix snappy codec returning 0 records
+      - Root cause: Avro uses CRC32 (ISO polynomial), not CRC32C (Castagnoli)
+      - Fixed by replacing crc32c crate with crc32fast crate
+      - Updated all tests to use CRC32 instead of CRC32C
+      - Snappy-compressed files now produce same data as uncompressed
+      - Removed xfail markers from snappy tests
+      - _Requirements: 2.2, 10.5_
+
+    - [x] 17.2.2 Support non-record top-level schemas
+      - Currently fails with "Top-level schema must be a record type"
+      - Add support for reading files where top-level schema is null, array, or other types
+      - Test with fastavro/null.avro
+      - Remove xfail marker once fixed
+      - Make sure it works when loading a file with non-record top level schema into a polars dataframe, the non-record value should be read into a single column dataframe with a column called 'value'
+      - _Requirements: 1.4, 1.5_
+
+    - [x] 17.2.3 Fix recursive type resolution ✓
+      - Implemented JSON serialization approach for recursive types (Arrow/Polars doesn't support recursive structures)
+      - Modified `src/convert/arrow.rs` to return `DataType::String` for `Named` types
+      - Added `RecursiveBuilder` in `src/reader/record_decoder.rs` that uses `decode_value_with_context` to decode recursive structures and serialize to JSON
+      - Added `to_json()` method to `AvroValue` in `src/reader/decode.rs` for JSON serialization
+      - Test with fastavro/recursive.avro passes - linked list pattern correctly serialized to JSON strings
+      - Removed xfail markers from tests
+      - _Requirements: 1.7_
 
 - [ ] 18. Performance benchmarks
   - [ ] 18.1 Create benchmark suite with criterion

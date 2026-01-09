@@ -31,5 +31,24 @@ poe test-schema # run rust schema tests
 
 Feature flags control codec support: `snappy`, `deflate`, `zstd`, `bzip2`, `xz`. Disable what you don't need with `--no-default-features --features "snappy,zstd"` to optimize build times.
 
+## Known Limitations
+
+### Recursive Types
+Avro supports recursive types (e.g., linked lists, trees) where a record can contain references to itself. Since Arrow and Polars don't natively support recursive data structures, Jetliner serializes recursive fields to JSON strings. This preserves data integrity while maintaining compatibility with the Polars DataFrame model.
+
+Example: A binary tree node with `left` and `right` children will have those fields serialized as JSON strings that can be parsed if needed.
+
+### Complex Top-Level Schemas
+While Jetliner supports most Avro schemas, certain complex types as top-level schemas have limitations:
+
+- **Arrays as top-level schema**: Not yet supported (Polars list builder constraints)
+- **Maps as top-level schema**: Not yet supported (struct handling in list builder)
+- **Primitive top-level schemas** (int, long, string, bytes): ✅ Fully supported, wrapped in a "value" column
+- **N-ary trees with array children**: Not yet supported (arrays of recursive types)
+
+Binary tree structures (with optional left/right children) work correctly with JSON serialization.
+
+These limitations are tracked in the test suite with documented workarounds planned for future releases.
+
 ### Built with Kiro 👻
 See ./.kiro for the specs.

@@ -39,6 +39,7 @@ use crate::error::{
     SchemaError as RustSchemaError, SourceError as RustSourceError,
 };
 use crate::reader::{AvroHeader, AvroStreamReader, BufferConfig, ReaderConfig};
+use crate::schema::AvroSchema;
 use crate::source::{BoxedSource, LocalSource, S3Source};
 
 // =============================================================================
@@ -833,6 +834,31 @@ pub fn parse_avro_schema(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
 
         // Parse the header to get the Avro schema
         let header = AvroHeader::parse(&header_bytes)?;
+
+        // Validate top-level schema type is supported
+        if !header.schema.is_record() {
+            match &header.schema {
+                AvroSchema::Array(_) => {
+                    return Err(ReaderError::Schema(RustSchemaError::UnsupportedType(
+                        "Array as top-level schema is not yet supported. \
+                        Arrays at the top level cause Polars list builder errors. \
+                        Workaround: Wrap your array in a record type with a field, \
+                        or use primitive types (int, string, bytes) which are fully supported."
+                            .to_string(),
+                    )));
+                }
+                AvroSchema::Map(_) => {
+                    return Err(ReaderError::Schema(RustSchemaError::UnsupportedType(
+                        "Map as top-level schema is not yet supported. \
+                        Maps at the top level cause Polars struct builder errors. \
+                        Workaround: Wrap your map in a record type with a field, \
+                        or use primitive types (int, string, bytes) which are fully supported."
+                            .to_string(),
+                    )));
+                }
+                _ => {} // Other non-record types (primitives) are OK
+            }
+        }
 
         // Convert Avro schema to Polars schema
         let polars_schema = avro_to_arrow_schema(&header.schema).map_err(ReaderError::Schema)?;
