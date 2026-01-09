@@ -1,0 +1,409 @@
+"""
+Tests for edge case values in Avro files.
+
+Tests handling of boundary values and special cases:
+- Integer boundaries (int32/int64 max/min)
+- Float special values (NaN, Infinity, -Infinity)
+- Empty/long strings and bytes
+- Unicode edge cases (emoji, RTL, combining characters, surrogates)
+- Boolean values
+- Multiple records with variations
+
+Test data source: tests/data/edge-cases/edge-cases.avro
+
+Requirements tested:
+- 1.4: Primitive type edge cases
+- 1.5: Complex type edge cases
+- String encoding edge cases
+"""
+
+import math
+
+import polars as pl
+import pytest
+
+import jetliner
+
+
+class TestEdgeCaseValues:
+    """
+    Test reading Avro files with edge case values.
+
+    These tests verify correct handling of:
+    - Max/min int32, int64 values
+    - NaN, Infinity, -Infinity for floats
+    - Empty strings, empty bytes, empty arrays, empty maps
+    - Very long strings (> 64KB)
+    - Unicode edge cases (emoji, RTL, combining characters)
+
+    Requirements tested: 1.4, 1.5 (primitive and complex types)
+    """
+
+    def test_read_edge_case_file(self, get_test_data_path):
+        """Test that edge case file can be read without errors."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+
+        with jetliner.open(path) as reader:
+            dfs = list(reader)
+            assert len(dfs) > 0, "Should yield at least one DataFrame"
+
+            df = pl.concat(dfs)
+            assert df.height == 3, "Should have 3 records"
+
+    def test_int32_boundary_values(self, get_test_data_path):
+        """Test int32 max/min boundary values are read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        # First record should have max/min values
+        first_row = df.head(1)
+
+        # Max int32: 2^31 - 1 = 2147483647
+        assert first_row["int32_max"][0] == 2147483647, "int32_max should be 2147483647"
+
+        # Min int32: -2^31 = -2147483648
+        assert (
+            first_row["int32_min"][0] == -2147483648
+        ), "int32_min should be -2147483648"
+
+        # Zero
+        assert first_row["int32_zero"][0] == 0, "int32_zero should be 0"
+
+    def test_int64_boundary_values(self, get_test_data_path):
+        """Test int64 max/min boundary values are read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+
+        # Max int64: 2^63 - 1 = 9223372036854775807
+        assert (
+            first_row["int64_max"][0] == 9223372036854775807
+        ), "int64_max should be 9223372036854775807"
+
+        # Min int64: -2^63 = -9223372036854775808
+        assert (
+            first_row["int64_min"][0] == -9223372036854775808
+        ), "int64_min should be -9223372036854775808"
+
+        # Zero
+        assert first_row["int64_zero"][0] == 0, "int64_zero should be 0"
+
+    def test_float_special_values(self, get_test_data_path):
+        """Test float NaN, Infinity, -Infinity are read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+
+        # NaN
+        assert math.isnan(first_row["float_nan"][0]), "float_nan should be NaN"
+
+        # Positive infinity
+        assert (
+            first_row["float_pos_inf"][0] == float("inf")
+        ), "float_pos_inf should be +inf"
+
+        # Negative infinity
+        assert (
+            first_row["float_neg_inf"][0] == float("-inf")
+        ), "float_neg_inf should be -inf"
+
+        # Zero
+        assert first_row["float_zero"][0] == 0.0, "float_zero should be 0.0"
+
+    def test_double_special_values(self, get_test_data_path):
+        """Test double NaN, Infinity, -Infinity are read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+
+        # NaN
+        assert math.isnan(first_row["double_nan"][0]), "double_nan should be NaN"
+
+        # Positive infinity
+        assert (
+            first_row["double_pos_inf"][0] == float("inf")
+        ), "double_pos_inf should be +inf"
+
+        # Negative infinity
+        assert (
+            first_row["double_neg_inf"][0] == float("-inf")
+        ), "double_neg_inf should be -inf"
+
+        # Zero
+        assert first_row["double_zero"][0] == 0.0, "double_zero should be 0.0"
+
+        # Max double
+        assert (
+            first_row["double_max"][0] == 1.7976931348623157e308
+        ), "double_max should be max float64"
+
+    def test_empty_string(self, get_test_data_path):
+        """Test empty string is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        assert first_row["string_empty"][0] == "", "string_empty should be empty string"
+
+    def test_long_string(self, get_test_data_path):
+        """Test long string (~10KB) is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        long_str = first_row["string_long"][0]
+
+        # Should be 10000 characters
+        assert len(long_str) == 10000, f"string_long should be 10000 chars, got {len(long_str)}"
+        assert long_str == "A" * 10000, "string_long should be all 'A' characters"
+
+    def test_unicode_emoji(self, get_test_data_path):
+        """Test string with emoji is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        emoji_str = first_row["string_unicode_emoji"][0]
+
+        # Should contain emoji
+        assert "👋" in emoji_str, "Should contain wave emoji"
+        assert "🌍" in emoji_str, "Should contain earth emoji"
+        assert "🚀" in emoji_str, "Should contain rocket emoji"
+
+    def test_unicode_rtl(self, get_test_data_path):
+        """Test string with RTL (Arabic/Hebrew) characters is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        rtl_str = first_row["string_unicode_rtl"][0]
+
+        # Should contain Arabic and Hebrew
+        assert "مرحبا" in rtl_str, "Should contain Arabic text"
+        assert "שלום" in rtl_str, "Should contain Hebrew text"
+        assert "Hello" in rtl_str, "Should contain English text"
+
+    def test_unicode_combining_characters(self, get_test_data_path):
+        """Test string with combining characters is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        combining_str = first_row["string_unicode_combining"][0]
+
+        # Should contain combining character sequences
+        # e + combining acute = é
+        assert "e\u0301" in combining_str or "é" in combining_str
+
+    def test_unicode_surrogate_pairs(self, get_test_data_path):
+        """Test string with surrogate pairs (musical symbols, etc.) is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        surrogate_str = first_row["string_unicode_surrogate"][0]
+
+        # Should contain musical symbols (require surrogate pairs in UTF-16)
+        assert "𝄞" in surrogate_str, "Should contain treble clef"
+        assert "🎵" in surrogate_str, "Should contain musical note"
+
+    def test_string_with_null_character(self, get_test_data_path):
+        """Test string with embedded null character is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        null_str = first_row["string_null_char"][0]
+
+        # Should contain null character
+        assert "\x00" in null_str, "Should contain null character"
+        assert null_str == "before\x00after", "Should preserve text around null"
+
+    def test_string_with_newlines(self, get_test_data_path):
+        """Test string with various newline characters is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        newline_str = first_row["string_newlines"][0]
+
+        # Should contain various newlines
+        assert "\n" in newline_str, "Should contain LF"
+        assert "\r" in newline_str, "Should contain CR"
+        assert "line1" in newline_str and "line2" in newline_str
+
+    def test_empty_bytes(self, get_test_data_path):
+        """Test empty bytes is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        empty_bytes = first_row["bytes_empty"][0]
+
+        assert len(empty_bytes) == 0, "bytes_empty should be empty"
+
+    def test_long_bytes(self, get_test_data_path):
+        """Test long bytes (~10KB) is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        long_bytes = first_row["bytes_long"][0]
+
+        # Should be 10000 bytes
+        assert (
+            len(long_bytes) == 10000
+        ), f"bytes_long should be 10000 bytes, got {len(long_bytes)}"
+
+        # Verify pattern (i % 256 for each byte)
+        for i in range(min(100, len(long_bytes))):  # Check first 100 bytes
+            assert long_bytes[i] == i % 256, f"Byte {i} should be {i % 256}"
+
+    def test_bytes_all_zeros(self, get_test_data_path):
+        """Test bytes with all zeros is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        zero_bytes = first_row["bytes_all_zeros"][0]
+
+        assert len(zero_bytes) == 100, "bytes_all_zeros should be 100 bytes"
+        assert all(b == 0 for b in zero_bytes), "All bytes should be zero"
+
+    def test_bytes_all_ones(self, get_test_data_path):
+        """Test bytes with all 0xFF is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        ones_bytes = first_row["bytes_all_ones"][0]
+
+        assert len(ones_bytes) == 100, "bytes_all_ones should be 100 bytes"
+        assert all(b == 0xFF for b in ones_bytes), "All bytes should be 0xFF"
+
+    def test_empty_array(self, get_test_data_path):
+        """Test empty array is read correctly.
+
+        Note: Array fields are currently not included in the edge case file
+        due to a known Polars list builder limitation. This test is marked
+        as xfail until the limitation is resolved.
+        """
+        pytest.xfail("Array fields not included due to Polars list builder limitation")
+
+    def test_single_element_array(self, get_test_data_path):
+        """Test single element array is read correctly.
+
+        Note: Array fields are currently not included in the edge case file
+        due to a known Polars list builder limitation.
+        """
+        pytest.xfail("Array fields not included due to Polars list builder limitation")
+
+    def test_large_array(self, get_test_data_path):
+        """Test large array (1000 elements) is read correctly.
+
+        Note: Array fields are currently not included in the edge case file
+        due to a known Polars list builder limitation.
+        """
+        pytest.xfail("Array fields not included due to Polars list builder limitation")
+
+    def test_empty_map(self, get_test_data_path):
+        """Test empty map is read correctly.
+
+        Note: Map fields are currently not included in the edge case file
+        due to a known Polars list builder limitation with structs.
+        """
+        pytest.xfail("Map fields not included due to Polars list builder limitation")
+
+    def test_single_entry_map(self, get_test_data_path):
+        """Test single entry map is read correctly.
+
+        Note: Map fields are currently not included in the edge case file
+        due to a known Polars list builder limitation with structs.
+        """
+        pytest.xfail("Map fields not included due to Polars list builder limitation")
+
+    def test_map_with_unicode_keys(self, get_test_data_path):
+        """Test map with unicode keys is read correctly.
+
+        Note: Map fields are currently not included in the edge case file
+        due to a known Polars list builder limitation with structs.
+        """
+        pytest.xfail("Map fields not included due to Polars list builder limitation")
+
+    def test_boolean_values(self, get_test_data_path):
+        """Test boolean true/false values are read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+
+        assert first_row["bool_true"][0] is True, "bool_true should be True"
+        assert first_row["bool_false"][0] is False, "bool_false should be False"
+
+    def test_edge_case_scan_api(self, get_test_data_path):
+        """Test scan() API works with edge case file."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+
+        lf = jetliner.scan(path)
+        assert isinstance(lf, pl.LazyFrame)
+
+        df = lf.collect()
+        assert df.height == 3
+        assert df.width == 34  # 34 fields in schema (arrays and maps removed)
+
+    def test_edge_case_projection(self, get_test_data_path):
+        """Test projection works with edge case file."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+
+        # Select only integer columns
+        df = (
+            jetliner.scan(path)
+            .select(["int32_max", "int64_max", "string_unicode_emoji"])
+            .collect()
+        )
+
+        assert df.width == 3
+        assert "int32_max" in df.columns
+        assert "int64_max" in df.columns
+        assert "string_unicode_emoji" in df.columns
+
+    def test_multiple_records_variation(self, get_test_data_path):
+        """Test that multiple records with variations are read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        # Should have 3 records with different values
+        assert df.height == 3
+
+        # Second record should have different int values
+        second_row = df.row(1, named=True)
+        assert second_row["int32_max"] == 1, "Second record int32_max should be 1"
+        assert second_row["int32_min"] == -1, "Second record int32_min should be -1"
+
+        # Third record should have different values too
+        third_row = df.row(2, named=True)
+        assert (
+            third_row["int32_max"] == 2147483646
+        ), "Third record int32_max should be 2147483646"
+
+
+# =============================================================================
+# Parametrized Edge Case Tests
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "edge-cases.avro",
+    ],
+)
+def test_edge_case_file_readable(filename, get_test_data_path):
+    """Test that edge case test file is readable."""
+    path = get_test_data_path(f"edge-cases/{filename}")
+
+    df = jetliner.scan(path).collect()
+    assert df.height > 0

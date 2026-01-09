@@ -93,6 +93,7 @@ pub struct PrefetchBuffer<S: StreamSource> {
     /// Codec for decompression
     codec: Codec,
     /// Background fetch task (if running)
+    #[allow(dead_code)]
     fetch_task: Option<JoinHandle<Result<Option<DecompressedBlock>, ReaderError>>>,
     /// Whether we've reached EOF
     finished: bool,
@@ -414,6 +415,7 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
     ///
     /// # Requirements
     /// - 3.6: Pause fetching when buffer is full
+    #[allow(dead_code)]
     fn maybe_start_prefetch(&mut self) {
         // Don't start if already running or finished
         if self.fetch_task.is_some() || self.finished {
@@ -436,10 +438,10 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
     ///
     /// Spawns an async task that fetches the next block, decompresses it,
     /// and returns the result.
+    #[allow(dead_code)]
     fn start_prefetch(&mut self) {
         // Don't start if already running or finished
         if self.fetch_task.is_some() || self.finished {
-            return;
         }
 
         // We need to move the reader temporarily to the task

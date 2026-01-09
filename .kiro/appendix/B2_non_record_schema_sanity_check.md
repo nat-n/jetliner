@@ -309,7 +309,7 @@ Unlike Python or Java, Jetliner **must** produce a DataFrame, which requires:
 
 ```python
 @pytest.mark.xfail(reason="Top-level schema must be a record type - Jetliner limitation")
-def test_read_null_type():
+def test_read_null_type(get_test_data_path):
     """
     Test reading file with null type handling.
 
@@ -329,7 +329,7 @@ def test_read_null_type():
 ### What Should Pass After Implementation
 
 ```python
-def test_read_bytes_primitive_schema():
+def test_read_bytes_primitive_schema(get_test_data_path):
     """Test reading file with primitive bytes schema at top level."""
     path = get_test_data_path("fastavro/null.avro")
 
@@ -347,7 +347,7 @@ def test_read_bytes_primitive_schema():
         # Each value should be bytes
         assert df[df.columns[0]].dtype == pl.Binary
 
-def test_read_string_primitive_schema():
+def test_read_string_primitive_schema(get_test_data_path):
     """Test reading file with primitive string schema."""
     # Would need to generate this file
     path = get_test_data_path("generated/strings.avro")

@@ -33,6 +33,11 @@ Feature flags control codec support: `snappy`, `deflate`, `zstd`, `bzip2`, `xz`.
 
 ## Known Limitations
 
+### Read-Only Library
+Jetliner is a read-only library for Avro Object Container Files (`.avro`). It does not support:
+- Writing Avro files
+- Reading standalone schema files (`.avsc`) — schemas are extracted from the embedded header in `.avro` files
+
 ### Recursive Types
 Avro supports recursive types (e.g., linked lists, trees) where a record can contain references to itself. Since Arrow and Polars don't natively support recursive data structures, Jetliner serializes recursive fields to JSON strings. This preserves data integrity while maintaining compatibility with the Polars DataFrame model.
 
@@ -52,3 +57,8 @@ These limitations are tracked in the test suite with documented workarounds plan
 
 ### Built with Kiro 👻
 See ./.kiro for the specs.
+
+## License
+
+Licensed under the Apache License, Version 2.0.
+See LICENSE for details.

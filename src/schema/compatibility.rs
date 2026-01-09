@@ -6,7 +6,7 @@
 //!
 //! # Requirements
 //! - 9.4: WHEN schema resolution fails, THE Avro_Reader SHALL return a descriptive error
-//!        explaining the incompatibility
+//!   explaining the incompatibility
 
 use crate::error::SchemaError;
 use crate::schema::{AvroSchema, EnumSchema, FieldSchema, FixedSchema, LogicalType, RecordSchema};

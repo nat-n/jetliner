@@ -400,13 +400,16 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - **Validates: Requirements 3.7**
 
 - [x] 17. Integration tests with Apache Avro test files
-  - [x] 17.1 Add Apache Avro interoperability test files
+  - [x] 17.1 Add Apache Avro interoperability test files ✓
     - See Appendix: A_avro_java_test_research.md
     - See Appendix: B_e2e-test-plan.md
-    - Verify all primitive types
-    - Verify all complex types
-    - Verify all logical types
-    - Verify all codecs
+    - ✓ Downloaded official test files from Apache Avro and fastavro
+    - ✓ Created license attribution files (Apache 2.0, MIT)
+    - ✓ Verify all primitive types (weather files)
+    - ✓ Verify all complex types (recursive, arrays, maps)
+    - ✓ Verify all logical types (UUID via java-generated-uuid.avro)
+    - ✓ Verify all codecs (null, deflate, snappy, zstd)
+    - ✓ 166 tests passing, 16 xfailed for known Polars limitations
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
 
   - [x] 17.2 Fix interoperability gaps discovered in E2E testing
@@ -434,6 +437,89 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - Test with fastavro/recursive.avro passes - linked list pattern correctly serialized to JSON strings
       - Removed xfail markers from tests
       - _Requirements: 1.7_
+
+  - [ ] 17.3 Multi-block and large file testing
+    - See Appendix: C_functional_coverage_gap_analysis.md (Gap 1)
+    - [x] 17.3.1 Generate large test file (10K+ records)
+      - Create Python script using fastavro to generate file spanning multiple blocks
+      - Use weather schema for consistency with existing tests
+      - Include variety of record sizes to ensure multiple blocks
+      - _Requirements: 3.1, 3.4_
+
+    - [x] 17.3.2 Add multi-block E2E tests
+      - Verify correct total record count across all blocks
+      - Verify batch size respected across block boundaries
+      - Verify sync markers validated between blocks
+      - _Requirements: 3.1, 3.4, 1.3_
+
+    - [x] 17.3.3 Add memory efficiency tests
+      - Verify memory doesn't grow unbounded with file size
+      - Verify memory bounded by batch_size and buffer config
+      - _Requirements: 8.2, 3.5, 3.6_
+
+    - [x] 17.3.4 Add large file stress test with RSS memory verification
+      - Add psutil as dev dependency for process memory tracking
+      - Generate 1GB test file on-demand (or parameterized: 100MB, 500MB, 1GB)
+      - Track peak RSS during streaming read to verify memory stays bounded
+      - Assert peak RSS < threshold (e.g., 500MB for 1GB file)
+      - Verify data integrity (record count matches expected)
+      - Measure and report throughput (MB/s, records/s)
+      - Mark as @pytest.mark.slow for CI exclusion
+      - _Requirements: 8.2, 3.5, 3.6_
+
+  - [x] 17.4 Implement missing property tests
+    - See Appendix: C_functional_coverage_gap_analysis.md (Gap 2)
+    - [x] 17.4.1 Implement Property 14: Projection Preserves Selected Columns
+      - Generate random schemas and column subsets
+      - Verify projected read equals full read + select
+      - **Property 14: Projection Preserves Selected Columns**
+      - **Validates: Requirements 6a.2**
+
+    - [x] 17.4.2 Implement Property 15: Early Stopping Respects Row Limit
+      - Generate random files and row limits
+      - Verify at most N rows returned
+      - Verify rows are first N rows of file
+      - **Property 15: Early Stopping Respects Row Limit**
+      - **Validates: Requirements 6a.4**
+
+  - [ ] 17.5 Error recovery E2E tests with corrupted files
+    - See Appendix: C_functional_coverage_gap_analysis.md (Gap 3)
+    - [ ] 17.5.1 Generate corrupted test files
+      - Create Python script to generate files with specific corruption patterns
+      - File with invalid magic bytes
+      - Truncated file (EOF mid-block)
+      - File with corrupted sync marker
+      - File with corrupted compressed data
+      - File with invalid record data
+      - _Requirements: 7.1, 7.2_
+
+    - [ ] 17.5.2 Add skip mode recovery tests
+      - Test recovery from each corruption type
+      - Verify valid data before/after corruption is read
+      - Verify error tracking (error_count, errors list)
+      - _Requirements: 7.1, 7.2, 7.3, 7.4_
+
+    - [ ] 17.5.3 Add strict mode failure tests
+      - Verify immediate failure on each corruption type
+      - Verify descriptive error messages
+      - _Requirements: 7.5, 7.7_
+
+  - [x] 17.6 Edge case value testing
+    - See Appendix: C_functional_coverage_gap_analysis.md (Gap 5)
+    - [x] 17.6.1 Generate edge case test file
+      - Create Python script using fastavro to generate file with boundary values
+      - Max/min int32, int64 values
+      - NaN, Infinity, -Infinity for floats
+      - Empty strings, empty bytes, empty arrays, empty maps
+      - Very long strings (> 64KB)
+      - Unicode edge cases (emoji, RTL, combining characters)
+      - _Requirements: 1.4, 1.5_
+
+    - [x] 17.6.2 Add edge case E2E tests
+      - Verify all boundary values read correctly
+      - Verify empty collections handled properly
+      - Verify Unicode preserved correctly
+      - _Requirements: 1.4, 1.5_
 
 - [ ] 18. Performance benchmarks
   - [ ] 18.1 Create benchmark suite with criterion

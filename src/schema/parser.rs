@@ -70,7 +70,7 @@ pub fn parse_schema_with_options(json: &str, strict: bool) -> Result<AvroSchema,
 ///
 /// Maintains a registry of named types (records, enums, fixed) for resolving
 /// type references during parsing.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SchemaParser {
     /// Registry of named types by their fully qualified name
     named_types: HashMap<String, AvroSchema>,
@@ -78,16 +78,6 @@ pub struct SchemaParser {
     current_namespace: Option<String>,
     /// Whether to enforce strict schema validation
     strict_schema: bool,
-}
-
-impl Default for SchemaParser {
-    fn default() -> Self {
-        Self {
-            named_types: HashMap::new(),
-            current_namespace: None,
-            strict_schema: false,
-        }
-    }
 }
 
 impl SchemaParser {
@@ -681,9 +671,34 @@ impl SchemaParser {
     /// Avro names must:
     /// - Start with [A-Za-z_]
     /// - Contain only [A-Za-z0-9_]
+    ///
+    /// Fullnames (containing dots) are also valid - each component is validated separately.
     fn validate_name(&self, name: &str, context: &str) -> Result<(), SchemaError> {
         if name.is_empty() {
             let msg = format!("{} name cannot be empty", context);
+            if self.strict_schema {
+                return Err(SchemaError::InvalidSchema(msg));
+            } else {
+                eprintln!("Warning: {}", msg);
+                return Ok(());
+            }
+        }
+
+        // If name contains dots, it's a fullname - validate each component separately
+        if name.contains('.') {
+            for part in name.split('.') {
+                self.validate_simple_name(part, context)?;
+            }
+            return Ok(());
+        }
+
+        self.validate_simple_name(name, context)
+    }
+
+    /// Validate a simple name (no dots).
+    fn validate_simple_name(&self, name: &str, context: &str) -> Result<(), SchemaError> {
+        if name.is_empty() {
+            let msg = format!("{} name component cannot be empty", context);
             if self.strict_schema {
                 return Err(SchemaError::InvalidSchema(msg));
             } else {

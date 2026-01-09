@@ -146,6 +146,7 @@ pub struct AvroStreamReader<S: StreamSource> {
     /// DataFrame builder for record decoding
     builder: DataFrameBuilder,
     /// Configuration
+    #[allow(dead_code)]
     config: ReaderConfig,
     /// Whether we've reached EOF
     finished: bool,

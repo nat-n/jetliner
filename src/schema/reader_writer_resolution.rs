@@ -8,7 +8,7 @@
 //!
 //! # Requirements
 //! - 9.2: WHERE an external reader schema is provided, THE Avro_Reader SHALL use
-//!        schema resolution rules per Avro spec
+//!   schema resolution rules per Avro spec
 
 use std::collections::HashMap;
 

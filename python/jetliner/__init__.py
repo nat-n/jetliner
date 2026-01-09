@@ -1,5 +1,6 @@
-# Python bindings for Jetliner
-# This module will be populated by the Rust PyO3 bindings
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Nat Noordanus
+
 """
 Jetliner - High-performance Avro streaming reader for Polars DataFrames.
 

@@ -77,6 +77,7 @@ pub struct FullRecordDecoder {
     /// Number of records currently in the builders
     record_count: usize,
     /// Resolution context for named type references (used for recursive types)
+    #[allow(dead_code)]
     resolution_context: crate::schema::SchemaResolutionContext,
 }
 
@@ -385,6 +386,7 @@ enum FieldBuilder {
 
 impl FieldBuilder {
     /// Create a new builder for the given schema.
+    #[allow(dead_code)]
     fn new(name: &str, schema: &AvroSchema) -> Result<Self, SchemaError> {
         Self::create_builder(name, schema, schema)
     }
@@ -1479,7 +1481,7 @@ impl RecursiveBuilder {
         let schema = context
             .get(&type_name)
             .cloned()
-            .unwrap_or_else(|| AvroSchema::Named(type_name));
+            .unwrap_or(AvroSchema::Named(type_name));
 
         Self {
             name: name.to_string(),

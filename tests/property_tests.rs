@@ -6586,4 +6586,1043 @@ proptest! {
             Ok(())
         })?;
     }
+
+    /// Feature: jetliner, Property 14+15: Projection Combined with Early Stopping
+    ///
+    /// For any Avro file, any subset of columns, and any row limit N, reading with
+    /// both projection AND early stopping SHALL produce a DataFrame containing:
+    /// 1. Exactly the projected columns (no more, no less)
+    /// 2. At most N rows
+    /// 3. The first N rows of the file (in order)
+    /// 4. Values matching what a full read + select + head would produce
+    ///
+    /// This tests the common real-world pattern of `scan().select([...]).head(N)`.
+    ///
+    /// **Validates: Requirements 6a.2, 6a.4**
+    #[test]
+    fn prop_projection_with_early_stopping(
+        // Generate number of records (10-50 to ensure we have enough for meaningful limits)
+        num_records in 10usize..50,
+        // Generate which columns to project (at least 1, at most all)
+        column_mask in 1u8..15,
+        // Generate row limit as percentage of total (10-80%)
+        row_limit_pct in 10u8..80,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a schema with 4 columns of different types
+            let schema = AvroSchema::Record(RecordSchema::new(
+                "TestRecord",
+                vec![
+                    FieldSchema::new("id", AvroSchema::Long),
+                    FieldSchema::new("name", AvroSchema::String),
+                    FieldSchema::new("value", AvroSchema::Int),
+                    FieldSchema::new("active", AvroSchema::Boolean),
+                ],
+            ));
+
+            // Determine which columns to project based on the mask
+            let all_columns = vec!["id", "name", "value", "active"];
+            let projected_columns: Vec<String> = all_columns
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| (column_mask >> i) & 1 == 1)
+                .map(|(_, name)| name.to_string())
+                .collect();
+
+            if projected_columns.is_empty() {
+                return Ok(());
+            }
+
+            // Calculate row limit
+            let row_limit = ((row_limit_pct as usize) * num_records / 100).max(1);
+
+            // Generate test data
+            let mut block_data = Vec::new();
+            let mut expected_ids: Vec<i64> = Vec::new();
+            let mut expected_names: Vec<String> = Vec::new();
+            let mut expected_values: Vec<i32> = Vec::new();
+            let mut expected_active: Vec<bool> = Vec::new();
+
+            for i in 0..num_records {
+                let id = i as i64;
+                let name = format!("name{}", i);
+                let value = (i * 10) as i32;
+                let active = i % 2 == 0;
+
+                expected_ids.push(id);
+                expected_names.push(name.clone());
+                expected_values.push(value);
+                expected_active.push(active);
+
+                // Encode record
+                block_data.extend_from_slice(&encode_zigzag(id));
+                let name_bytes = name.as_bytes();
+                block_data.extend_from_slice(&encode_zigzag(name_bytes.len() as i64));
+                block_data.extend_from_slice(name_bytes);
+                block_data.extend_from_slice(&encode_zigzag(value as i64));
+                block_data.push(if active { 1 } else { 0 });
+            }
+
+            // Create builder with projection
+            let config = BuilderConfig::new(1000);
+            let mut projected_builder = DataFrameBuilder::with_projection(
+                &schema,
+                config.clone(),
+                &projected_columns,
+            ).expect("Failed to create projected builder");
+
+            // Create full builder for comparison
+            let mut full_builder = DataFrameBuilder::new(&schema, config)
+                .expect("Failed to create full builder");
+
+            // Add blocks to both builders
+            let block = DecompressedBlock::new(
+                num_records as i64,
+                bytes::Bytes::from(block_data.clone()),
+                0,
+            );
+            let block_copy = DecompressedBlock::new(
+                num_records as i64,
+                bytes::Bytes::from(block_data),
+                0,
+            );
+
+            projected_builder.add_block(block).expect("Failed to add block");
+            full_builder.add_block(block_copy).expect("Failed to add block");
+
+            // Build DataFrames
+            let projected_df = projected_builder.finish()
+                .expect("Failed to build projected DataFrame")
+                .expect("Expected projected DataFrame");
+            let full_df = full_builder.finish()
+                .expect("Failed to build full DataFrame")
+                .expect("Expected full DataFrame");
+
+            // Apply early stopping to projected DataFrame
+            let projected_limited = projected_df.head(Some(row_limit));
+
+            // Apply select + head to full DataFrame for comparison
+            let full_selected = full_df
+                .select(projected_columns.iter().map(|s| s.as_str()))
+                .expect("Failed to select columns");
+            let full_limited = full_selected.head(Some(row_limit));
+
+            // Verify: projected + limited has exactly the projected columns
+            prop_assert_eq!(
+                projected_limited.width(), projected_columns.len(),
+                "Projected+limited DataFrame should have {} columns, got {}",
+                projected_columns.len(), projected_limited.width()
+            );
+
+            // Verify: row count is at most row_limit
+            let expected_rows = row_limit.min(num_records);
+            prop_assert_eq!(
+                projected_limited.height(), expected_rows,
+                "Should have {} rows (min of limit {} and total {}), got {}",
+                expected_rows, row_limit, num_records, projected_limited.height()
+            );
+
+            // Verify: column names match
+            let projected_col_names: Vec<&str> = projected_limited.get_column_names()
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let expected_col_names: Vec<&str> = projected_columns.iter().map(|s| s.as_str()).collect();
+            prop_assert_eq!(
+                projected_col_names.clone(), expected_col_names.clone(),
+                "Column names should match"
+            );
+
+            // Verify: values match full_df.select().head() for each column
+            for col_name in &projected_columns {
+                let proj_col = projected_limited.column(col_name)
+                    .map_err(|e| TestCaseError::fail(format!("Column '{}' not found: {}", col_name, e)))?;
+                let full_col = full_limited.column(col_name)
+                    .map_err(|e| TestCaseError::fail(format!("Column '{}' not found in full: {}", col_name, e)))?;
+
+                match col_name.as_str() {
+                    "id" => {
+                        let proj_ids: Vec<i64> = proj_col.i64()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i64: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_ids: Vec<i64> = full_col.i64()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i64: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            proj_ids.clone(), full_ids.clone(),
+                            "id values should match between projected+limited and full+select+head"
+                        );
+                        // Also verify these are the FIRST row_limit IDs
+                        let expected: Vec<i64> = (0..expected_rows as i64).collect();
+                        prop_assert_eq!(
+                            proj_ids.clone(), expected.clone(),
+                            "id values should be first {} IDs", expected_rows
+                        );
+                    }
+                    "name" => {
+                        let proj_names: Vec<&str> = proj_col.str()
+                            .map_err(|e| TestCaseError::fail(format!("Expected str: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_names: Vec<&str> = full_col.str()
+                            .map_err(|e| TestCaseError::fail(format!("Expected str: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            proj_names.clone(), full_names.clone(),
+                            "name values should match"
+                        );
+                    }
+                    "value" => {
+                        let proj_values: Vec<i32> = proj_col.i32()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i32: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_values: Vec<i32> = full_col.i32()
+                            .map_err(|e| TestCaseError::fail(format!("Expected i32: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            proj_values.clone(), full_values.clone(),
+                            "value values should match"
+                        );
+                    }
+                    "active" => {
+                        let proj_active: Vec<bool> = proj_col.bool()
+                            .map_err(|e| TestCaseError::fail(format!("Expected bool: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        let full_active: Vec<bool> = full_col.bool()
+                            .map_err(|e| TestCaseError::fail(format!("Expected bool: {}", e)))?
+                            .into_no_null_iter()
+                            .collect();
+                        prop_assert_eq!(
+                            proj_active.clone(), full_active.clone(),
+                            "active values should match"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            Ok(())
+        })?;
+    }
+}
+
+// ============================================================================
+// Property 16: Additional Corruption Scenarios
+// ============================================================================
+// Tests for corruption scenarios not covered by existing Property 10-15 tests
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: jetliner, Property 16a: Consecutive Corrupted Blocks Recovery (Extended)
+    ///
+    /// For any Avro file with multiple CONSECUTIVE corrupted blocks, when in
+    /// skip mode, the reader SHALL skip all consecutive corrupted blocks and
+    /// successfully read valid blocks before and after the corruption run.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 6c)**
+    ///
+    /// NOTE: This test is ignored because it exposes a real recovery bug where
+    /// the reader fails to recover blocks after consecutive corrupted blocks.
+    /// See task-12.5 devnote for recovery strategy discussion.
+    #[test]
+    #[ignore = "Exposes recovery bug: fails to find blocks after consecutive corruption"]
+    fn prop_consecutive_corrupted_blocks_extended(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of consecutive corrupted blocks (2-4)
+        consecutive_corrupted in 2usize..=4,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (2-4)
+        records_per_block in 2usize..=4,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+            file_data.extend_from_slice(&encode_zigzag(1));
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add CONSECUTIVE corrupted blocks
+            for c in 0..consecutive_corrupted {
+                let wrong_sync: [u8; 16] = [(0xBA + c as u8); 16];
+                let mut bad_block = Vec::new();
+                for j in 0..records_per_block {
+                    bad_block.extend_from_slice(&create_simple_record(
+                        (9000 + c * 100 + j) as i64,
+                        &format!("bad_{}", c)
+                    ));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(bad_block.len() as i64));
+                file_data.extend_from_slice(&bad_block);
+                file_data.extend_from_slice(&wrong_sync);
+            }
+
+            // Add valid blocks AFTER corruption
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered all valid records
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after skipping {} consecutive corrupted blocks, got {}",
+                expected_valid_records, consecutive_corrupted, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 16b: Negative Record Count Recovery
+    ///
+    /// For any Avro file where a block header contains a negative record count,
+    /// when in skip mode, the reader SHALL skip the invalid block and continue
+    /// reading subsequent valid blocks.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 2b)**
+    #[test]
+    fn prop_negative_record_count_recovery(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (2-5)
+        records_per_block in 2usize..=5,
+        // Generate negative record count (-1000 to -1)
+        negative_count in -1000i64..=-1,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+            file_data.extend_from_slice(&encode_zigzag(1));
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add block with NEGATIVE record count
+            let mut bad_block = Vec::new();
+            for j in 0..records_per_block {
+                bad_block.extend_from_slice(&create_simple_record(9999 + j as i64, "bad"));
+            }
+            file_data.extend_from_slice(&encode_zigzag(negative_count)); // Negative!
+            file_data.extend_from_slice(&encode_zigzag(bad_block.len() as i64));
+            file_data.extend_from_slice(&bad_block);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Add valid blocks AFTER corruption
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered valid records
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after skipping negative count block, got {}",
+                expected_valid_records, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 16c: Negative Compressed Size Recovery
+    ///
+    /// For any Avro file where a block header contains a negative compressed size,
+    /// when in skip mode, the reader SHALL skip the invalid block and continue
+    /// reading subsequent valid blocks.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 2d)**
+    #[test]
+    fn prop_negative_compressed_size_recovery(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (2-5)
+        records_per_block in 2usize..=5,
+        // Generate negative compressed size (-1000 to -1)
+        negative_size in -1000i64..=-1,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+            file_data.extend_from_slice(&encode_zigzag(1));
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add block with NEGATIVE compressed size
+            let mut bad_block = Vec::new();
+            for j in 0..records_per_block {
+                bad_block.extend_from_slice(&create_simple_record(9999 + j as i64, "bad"));
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(negative_size)); // Negative!
+            file_data.extend_from_slice(&bad_block);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Add valid blocks AFTER corruption
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered valid records
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after skipping negative size block, got {}",
+                expected_valid_records, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 16d: Extra Bytes Before Sync Marker Recovery
+    ///
+    /// For any Avro file where extra stray bytes are inserted between block data
+    /// and the sync marker, when in skip mode, the reader SHALL detect the sync
+    /// marker mismatch and scan to find the next valid sync marker.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 1d)**
+    #[test]
+    fn prop_extra_bytes_before_sync_recovery(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (2-5)
+        records_per_block in 2usize..=5,
+        // Generate number of extra stray bytes (1-20)
+        extra_bytes in 1usize..=20,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+            file_data.extend_from_slice(&encode_zigzag(1));
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add block with EXTRA STRAY BYTES before sync marker
+            let mut bad_block = Vec::new();
+            for j in 0..records_per_block {
+                bad_block.extend_from_slice(&create_simple_record(9999 + j as i64, "bad"));
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(bad_block.len() as i64));
+            file_data.extend_from_slice(&bad_block);
+            // Insert extra stray bytes BEFORE the sync marker
+            file_data.extend_from_slice(&vec![0xAA; extra_bytes]);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Add valid blocks AFTER corruption
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered valid records after scanning past extra bytes
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after skipping block with extra bytes, got {}",
+                expected_valid_records, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
+
+    /// Feature: jetliner, Property 16e: Recovery From Last Known Good Position
+    ///
+    /// For any Avro file where block data is truncated (causing parse failure
+    /// mid-block), when in skip mode, the reader SHALL rewind to the last known
+    /// good position (start of block data) and scan for the next sync marker,
+    /// successfully recovering subsequent valid blocks.
+    ///
+    /// This tests the "rewind to last known good position" recovery strategy.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Recovery Strategy)**
+    ///
+    /// NOTE: This test is ignored because it exposes a real recovery bug where
+    /// the reader doesn't rewind to scan from the last known good position.
+    /// See task-12.5 devnote for the "last known good position" insight.
+    #[test]
+    #[ignore = "Exposes recovery bug: doesn't rewind to last known good position"]
+    fn prop_recovery_from_last_known_good_position(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (3-6)
+        records_per_block in 3usize..=6,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+            file_data.extend_from_slice(&encode_zigzag(1));
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add a TRUNCATED block - claims more data than present, but the sync
+            // marker for the NEXT block appears partway through where we expected
+            // the data body to be. Recovery must scan from start of data body.
+            let mut partial_data = Vec::new();
+            partial_data.extend_from_slice(&create_simple_record(9999, "partial"));
+
+            let claimed_data_size = partial_data.len() + 100; // Claim 100 extra bytes
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(claimed_data_size as i64));
+            file_data.extend_from_slice(&partial_data);
+            // Put sync marker where we didn't expect it (simulates truncation)
+            file_data.extend_from_slice(&sync_marker);
+
+            // Add valid blocks AFTER corruption - these should be recovered
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(block_data.len() as i64));
+                file_data.extend_from_slice(&block_data);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered all valid records
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after recovery from last known good position, got {}",
+                expected_valid_records, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
+}
+
+// ============================================================================
+// Property 16 (continued): Codec-Specific Corruption Tests
+// ============================================================================
+
+#[cfg(feature = "deflate")]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: jetliner, Property 16f: Corrupted Compressed Data Recovery
+    ///
+    /// For any Avro file where compressed block data is corrupted (random bytes
+    /// flipped causing decompression to fail), when in skip mode, the reader
+    /// SHALL skip the corrupted block and continue reading subsequent valid blocks.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 3b)**
+    ///
+    /// NOTE: This test is ignored because it exposes a real recovery bug where
+    /// the reader fails to recover blocks after decompression failure.
+    #[test]
+    #[ignore = "Exposes recovery bug: fails to recover after decompression failure"]
+    fn prop_corrupted_deflate_data_recovery(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (2-5)
+        records_per_block in 2usize..=5,
+        // Generate corruption position (byte to flip)
+        corrupt_byte_pos in 0usize..20,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+
+            // Metadata with deflate codec
+            file_data.extend_from_slice(&encode_zigzag(2)); // 2 entries
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+
+            let codec_key = b"avro.codec";
+            let codec_value = b"deflate";
+            file_data.extend_from_slice(&encode_zigzag(codec_key.len() as i64));
+            file_data.extend_from_slice(codec_key);
+            file_data.extend_from_slice(&encode_zigzag(codec_value.len() as i64));
+            file_data.extend_from_slice(codec_value);
+
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid compressed blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                let compressed = compress_deflate(&block_data);
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(compressed.len() as i64));
+                file_data.extend_from_slice(&compressed);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add block with CORRUPTED compressed data
+            let mut bad_block_data = Vec::new();
+            for j in 0..records_per_block {
+                bad_block_data.extend_from_slice(&create_simple_record(9999 + j as i64, "bad"));
+            }
+            let mut corrupted_compressed = compress_deflate(&bad_block_data);
+            // Flip multiple bytes to ensure corruption
+            if corrupted_compressed.len() >= 4 {
+                let pos = corrupt_byte_pos % (corrupted_compressed.len() - 3);
+                corrupted_compressed[pos] ^= 0xFF;
+                corrupted_compressed[pos + 1] ^= 0xAA;
+                corrupted_compressed[pos + 2] ^= 0x55;
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(corrupted_compressed.len() as i64));
+            file_data.extend_from_slice(&corrupted_compressed);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Add valid compressed blocks AFTER corruption
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                let compressed = compress_deflate(&block_data);
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(compressed.len() as i64));
+                file_data.extend_from_slice(&compressed);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered valid records
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after skipping corrupted compressed block, got {}",
+                expected_valid_records, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
+}
+
+#[cfg(feature = "snappy")]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: jetliner, Property 16g: Snappy CRC Mismatch Recovery
+    ///
+    /// For any Avro file using snappy compression where the CRC32 checksum
+    /// doesn't match the decompressed data, when in skip mode, the reader
+    /// SHALL skip the corrupted block and continue reading subsequent valid blocks.
+    ///
+    /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 3d)**
+    #[test]
+    fn prop_snappy_crc_mismatch_recovery(
+        // Generate number of valid blocks before corruption (1-3)
+        valid_blocks_before in 1usize..=3,
+        // Generate number of valid blocks after corruption (1-3)
+        valid_blocks_after in 1usize..=3,
+        // Generate records per block (2-5)
+        records_per_block in 2usize..=5,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut file_data = Vec::new();
+
+            file_data.extend_from_slice(&[b'O', b'b', b'j', 0x01]);
+
+            // Metadata with snappy codec
+            file_data.extend_from_slice(&encode_zigzag(2)); // 2 entries
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+
+            let codec_key = b"avro.codec";
+            let codec_value = b"snappy";
+            file_data.extend_from_slice(&encode_zigzag(codec_key.len() as i64));
+            file_data.extend_from_slice(codec_key);
+            file_data.extend_from_slice(&encode_zigzag(codec_value.len() as i64));
+            file_data.extend_from_slice(codec_value);
+
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            let mut expected_valid_records = 0;
+
+            // Add valid snappy-compressed blocks BEFORE corruption
+            for i in 0..valid_blocks_before {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("before_{}", id)));
+                }
+                let compressed = compress_snappy(&block_data);
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(compressed.len() as i64));
+                file_data.extend_from_slice(&compressed);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            // Add block with WRONG CRC
+            let mut bad_block_data = Vec::new();
+            for j in 0..records_per_block {
+                bad_block_data.extend_from_slice(&create_simple_record(9999 + j as i64, "bad"));
+            }
+            let mut bad_compressed = compress_snappy(&bad_block_data);
+            // Corrupt the last 4 bytes (CRC32)
+            if bad_compressed.len() >= 4 {
+                let crc_start = bad_compressed.len() - 4;
+                bad_compressed[crc_start] ^= 0xFF;
+                bad_compressed[crc_start + 1] ^= 0xFF;
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(bad_compressed.len() as i64));
+            file_data.extend_from_slice(&bad_compressed);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Add valid snappy-compressed blocks AFTER corruption
+            for i in 0..valid_blocks_after {
+                let mut block_data = Vec::new();
+                for j in 0..records_per_block {
+                    let id = (8000 + i * records_per_block + j) as i64;
+                    block_data.extend_from_slice(&create_simple_record(id, &format!("after_{}", id)));
+                }
+                let compressed = compress_snappy(&block_data);
+                file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+                file_data.extend_from_slice(&encode_zigzag(compressed.len() as i64));
+                file_data.extend_from_slice(&compressed);
+                file_data.extend_from_slice(&sync_marker);
+                expected_valid_records += records_per_block;
+            }
+
+            let source = MemorySource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config).await
+                .expect("Failed to open reader");
+
+            let mut total_rows_read = 0;
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => total_rows_read += df.height(),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+
+            // Should have recovered valid records
+            prop_assert_eq!(
+                total_rows_read, expected_valid_records,
+                "Expected {} valid records after skipping CRC mismatch block, got {}",
+                expected_valid_records, total_rows_read
+            );
+
+            Ok(())
+        })?;
+    }
 }

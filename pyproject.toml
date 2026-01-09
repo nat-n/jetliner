@@ -7,7 +7,7 @@ name = "jetliner"
 version = "0.1.0"
 description = "High-performance Avro streaming reader for Polars DataFrames"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 classifiers = [
   "Programming Language :: Rust",
@@ -19,6 +19,7 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Topic :: Software Development :: Libraries",
+  "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = ["polars>=0.52"]
 
@@ -30,7 +31,9 @@ dev = [
   "crc32c>=2.8",
   "fastavro>=1.12.1",
   "maturin>=1.11.2",
+  "psutil>=7.2.1",
   "pytest>=9.0.2",
+  "pytest-cov>=7.0.0",
   "python-snappy>=0.7.3",
   "ruff>=0.8.0",
 ]
@@ -39,6 +42,9 @@ dev = [
 features = ["extension-module"]
 python-source = "python"
 module-name = "jetliner"
+
+[tool.pytest.ini_options]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [tool.poe.executor]
 type = "uv"
@@ -73,7 +79,11 @@ cmd = "cargo test --test schema_tests --features test-features"
 
 [tool.poe.tasks.test-python]
 help = "Run Python unit tests"
-cmd = "pytest python/tests -v"
+cmd = "pytest python/tests -v -m 'not slow'"
+
+[tool.poe.tasks.test-python-slow]
+help = "Run slow Python tests (large file stress tests)"
+cmd = "pytest python/tests -v -m slow"
 
 [tool.poe.tasks.test-all]
 help = "Run all tests"
@@ -109,7 +119,13 @@ help = "Check Python code formatting without changes"
 cmd = "ruff check python/"
 
 [tool.poe.tasks.check-rust]
-sequence = ["style-rust", "lint-rust", "test-rust", "test-property", "test-schema"]
+sequence = [
+  "style-rust",
+  "lint-rust",
+  "test-rust",
+  "test-property",
+  "test-schema",
+]
 
 [tool.poe.tasks.check-python]
 sequence = ["lint-python", "test-python"]

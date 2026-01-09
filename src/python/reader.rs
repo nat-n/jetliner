@@ -830,7 +830,7 @@ pub fn parse_avro_schema(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
         let header_bytes = source
             .read_range(0, 64 * 1024)
             .await
-            .map_err(|e| ReaderError::Source(e))?;
+            .map_err(ReaderError::Source)?;
 
         // Parse the header to get the Avro schema
         let header = AvroHeader::parse(&header_bytes)?;
