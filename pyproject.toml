@@ -31,12 +31,15 @@ dev = ["pytest>=7.0", "hypothesis>=6.0", "maturin>=1.4"]
 dev = [
   "crc32c>=2.8",
   "fastavro>=1.12.1",
+  "hypothesis>=6.150.0",
   "maturin>=1.11.2",
+  "moto[s3]>=5.0",
   "psutil>=7.2.1",
   "pytest>=9.0.2",
   "pytest-cov>=7.0.0",
   "python-snappy>=0.7.3",
   "ruff>=0.8.0",
+  "testcontainers[minio]>=4.0",
 ]
 
 [tool.maturin]
@@ -45,11 +48,14 @@ python-source = "python"
 module-name = "jetliner"
 
 [tool.pytest.ini_options]
-markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "container: marks tests that require Docker containers (deselect with '-m \"not container\"')",
+]
 
 [tool.poe.executor]
 type = "uv"
-no-sync = true
+no-sync = true # Don't rebuild & resync the project for every task run!
 
 [tool.poe.env]
 PYO3_PYTHON = "${POE_ROOT}/.venv/bin/python"

@@ -2,7 +2,7 @@
 
 **Date**: 2026-01-09
 **Reviewer**: Claude (based on original plan research)
-**Plan Document**: `.kiro/appendix/B_e2e-test-plan.md`
+**Plan Document**: `.kiro/specs/jetliner/appendix/B_e2e-test-plan.md`
 
 ## Executive Summary
 
@@ -435,86 +435,86 @@ This was **PRIORITY 4** (lowest) and correctly deprioritized. The sanity checks 
 
 #### Type Coverage
 
-| Category | Target | Achieved | Status |
-|----------|--------|----------|--------|
-| **Primitive Types** (8 types) | 100% | ~40% | ⚠️ **Partial** |
-| - null | ✓ | ⚠️ | Limited (fastavro/null.avro XFAIL) |
-| - boolean | ✓ | ❓ | Not explicitly tested |
-| - int | ✓ | ✅ | weather.temp field |
-| - long | ✓ | ✅ | weather.time field |
-| - float | ✓ | ❓ | Not tested |
-| - double | ✓ | ❓ | Not tested |
-| - bytes | ✓ | ❓ | Not tested |
-| - string | ✓ | ✅ | weather.station field |
-| **Complex Types** | 100% | ~15% | ❌ **Mostly Missing** |
-| - record | ✓ | ✅ | weather record |
-| - array | ✓ | ❓ | Not tested |
-| - map | ✓ | ❓ | Not tested |
-| - union | ✓ | ❓ | Not tested |
-| - enum | ✓ | ❓ | Not tested |
-| - fixed | ✓ | ❓ | Not tested |
-| **Logical Types** | 100% | ~10% | ❌ **Mostly Missing** |
-| - decimal | ✓ | ❓ | Not tested |
-| - date | ✓ | ❓ | Not tested |
-| - time-millis/micros | ✓ | ❓ | Not tested |
-| - timestamp-millis/micros | ✓ | ❓ | Not tested |
-| - local-timestamp-* | ✓ | ❓ | Not tested |
-| - uuid | ✓ | ⚠️ | java-generated-uuid.avro exists but not validated |
-| - duration | ✓ | ❓ | Not tested |
+| Category                      | Target | Achieved | Status                                            |
+| ----------------------------- | ------ | -------- | ------------------------------------------------- |
+| **Primitive Types** (8 types) | 100%   | ~40%     | ⚠️ **Partial**                                     |
+| - null                        | ✓      | ⚠️        | Limited (fastavro/null.avro XFAIL)                |
+| - boolean                     | ✓      | ❓        | Not explicitly tested                             |
+| - int                         | ✓      | ✅        | weather.temp field                                |
+| - long                        | ✓      | ✅        | weather.time field                                |
+| - float                       | ✓      | ❓        | Not tested                                        |
+| - double                      | ✓      | ❓        | Not tested                                        |
+| - bytes                       | ✓      | ❓        | Not tested                                        |
+| - string                      | ✓      | ✅        | weather.station field                             |
+| **Complex Types**             | 100%   | ~15%     | ❌ **Mostly Missing**                              |
+| - record                      | ✓      | ✅        | weather record                                    |
+| - array                       | ✓      | ❓        | Not tested                                        |
+| - map                         | ✓      | ❓        | Not tested                                        |
+| - union                       | ✓      | ❓        | Not tested                                        |
+| - enum                        | ✓      | ❓        | Not tested                                        |
+| - fixed                       | ✓      | ❓        | Not tested                                        |
+| **Logical Types**             | 100%   | ~10%     | ❌ **Mostly Missing**                              |
+| - decimal                     | ✓      | ❓        | Not tested                                        |
+| - date                        | ✓      | ❓        | Not tested                                        |
+| - time-millis/micros          | ✓      | ❓        | Not tested                                        |
+| - timestamp-millis/micros     | ✓      | ❓        | Not tested                                        |
+| - local-timestamp-*           | ✓      | ❓        | Not tested                                        |
+| - uuid                        | ✓      | ⚠️        | java-generated-uuid.avro exists but not validated |
+| - duration                    | ✓      | ❓        | Not tested                                        |
 
 **Overall Type Coverage**: ~25% (only basic types from weather schema)
 
 #### Codec Coverage
 
-| Codec | Target | Achieved | Status |
-|-------|--------|----------|--------|
-| null (no compression) | ✓ | ✅ | Working |
-| deflate | ✓ | ✅ | Working |
-| snappy (with CRC32) | ✓ | ❌ | **BROKEN** (0 records bug) |
-| zstd | ✓ | ✅ | Working |
-| bzip2 | Optional | ❓ | Not tested |
-| xz | Optional | ❓ | Not tested |
+| Codec                 | Target   | Achieved | Status                     |
+| --------------------- | -------- | -------- | -------------------------- |
+| null (no compression) | ✓        | ✅        | Working                    |
+| deflate               | ✓        | ✅        | Working                    |
+| snappy (with CRC32)   | ✓        | ❌        | **BROKEN** (0 records bug) |
+| zstd                  | ✓        | ✅        | Working                    |
+| bzip2                 | Optional | ❓        | Not tested                 |
+| xz                    | Optional | ❓        | Not tested                 |
 
 **Overall Codec Coverage**: 60% (3 of 5, critical codec broken)
 
 #### Interoperability
 
-| Source | Target | Achieved | Status |
-|--------|--------|----------|--------|
-| Apache Avro (Java/Python/C++) | ✓ | ✅ | Weather files work |
-| fastavro | ✓ | ⚠️ | Partial (some files XFAIL) |
-| Other implementations | ✓ | ⚠️ | Limited testing |
+| Source                        | Target | Achieved | Status                     |
+| ----------------------------- | ------ | -------- | -------------------------- |
+| Apache Avro (Java/Python/C++) | ✓      | ✅        | Weather files work         |
+| fastavro                      | ✓      | ⚠️        | Partial (some files XFAIL) |
+| Other implementations         | ✓      | ⚠️        | Limited testing            |
 
 **Overall Interoperability**: 70% (basic files work, edge cases fail)
 
 #### Edge Cases Coverage
 
-| Edge Case | Target | Achieved | Status |
-|-----------|--------|----------|--------|
-| Empty files/blocks | ✓ | ❌ | Not tested |
-| Single record | ✓ | ⚠️ | Implicit in small files |
-| Large files (10K+ records) | ✓ | ❌ | Not tested |
-| Recursive types | ✓ | ❌ | XFAIL limitation |
-| Deeply nested structures | ✓ | ❌ | Not tested |
-| Records with no fields | ✓ | ⚠️ | Tested but minimal validation |
-| All null values | ✓ | ❌ | XFAIL (non-record schema) |
-| Special float values (NaN, Inf) | ✓ | ❌ | Not tested |
-| Max/min int/long values | ✓ | ❌ | Not tested |
-| Empty strings/bytes/arrays/maps | ✓ | ❌ | Not tested |
-| Unicode strings | ✓ | ❓ | Not explicitly tested |
+| Edge Case                       | Target | Achieved | Status                        |
+| ------------------------------- | ------ | -------- | ----------------------------- |
+| Empty files/blocks              | ✓      | ❌        | Not tested                    |
+| Single record                   | ✓      | ⚠️        | Implicit in small files       |
+| Large files (10K+ records)      | ✓      | ❌        | Not tested                    |
+| Recursive types                 | ✓      | ❌        | XFAIL limitation              |
+| Deeply nested structures        | ✓      | ❌        | Not tested                    |
+| Records with no fields          | ✓      | ⚠️        | Tested but minimal validation |
+| All null values                 | ✓      | ❌        | XFAIL (non-record schema)     |
+| Special float values (NaN, Inf) | ✓      | ❌        | Not tested                    |
+| Max/min int/long values         | ✓      | ❌        | Not tested                    |
+| Empty strings/bytes/arrays/maps | ✓      | ❌        | Not tested                    |
+| Unicode strings                 | ✓      | ❓        | Not explicitly tested         |
 
 **Overall Edge Case Coverage**: 15%
 
 #### Error Handling
 
-| Scenario | Target | Achieved | Status |
-|----------|--------|----------|--------|
-| Invalid magic bytes | ✓ | ❌ | Not tested |
-| Truncated files | ✓ | ❌ | Not tested |
-| Corrupted sync markers | ✓ | ❌ | Not tested |
-| Invalid block counts | ✓ | ❌ | Not tested |
-| Missing codecs | ✓ | ❌ | Not tested |
-| Schema incompatibilities | ✓ | ❌ | Not tested |
+| Scenario                 | Target | Achieved | Status     |
+| ------------------------ | ------ | -------- | ---------- |
+| Invalid magic bytes      | ✓      | ❌        | Not tested |
+| Truncated files          | ✓      | ❌        | Not tested |
+| Corrupted sync markers   | ✓      | ❌        | Not tested |
+| Invalid block counts     | ✓      | ❌        | Not tested |
+| Missing codecs           | ✓      | ❌        | Not tested |
+| Schema incompatibilities | ✓      | ❌        | Not tested |
 
 **Overall Error Handling Coverage**: 0% (infrastructure exists, not tested)
 
@@ -588,15 +588,15 @@ This was **PRIORITY 4** (lowest) and correctly deprioritized. The sanity checks 
 
 ### From "Expected Outcomes" Section
 
-| Expected Outcome | Status | Achievement |
-|------------------|--------|-------------|
-| **1. Proven Interoperability** | ⚠️ Partial | 70% - Weather files work, edge cases fail, snappy broken |
-| **2. Comprehensive Type Coverage** | ❌ Missing | 25% - Only basic types from weather schema tested |
-| **3. Codec Validation** | ⚠️ Partial | 60% - 3 of 5 codecs work, snappy critical bug |
-| **4. Edge Case Handling** | ❌ Mostly Missing | 15% - Minimal edge case testing |
-| **5. Performance Baseline** | ❌ Missing | 5% - Sanity checks only, no benchmarks |
-| **6. Regression Prevention** | ✅ Good | 80% - Weather files provide good regression testing |
-| **7. User Confidence** | ⚠️ Limited | 60% - Can trust for basic files, concerns for complex data |
+| Expected Outcome                   | Status           | Achievement                                                |
+| ---------------------------------- | ---------------- | ---------------------------------------------------------- |
+| **1. Proven Interoperability**     | ⚠️ Partial        | 70% - Weather files work, edge cases fail, snappy broken   |
+| **2. Comprehensive Type Coverage** | ❌ Missing        | 25% - Only basic types from weather schema tested          |
+| **3. Codec Validation**            | ⚠️ Partial        | 60% - 3 of 5 codecs work, snappy critical bug              |
+| **4. Edge Case Handling**          | ❌ Mostly Missing | 15% - Minimal edge case testing                            |
+| **5. Performance Baseline**        | ❌ Missing        | 5% - Sanity checks only, no benchmarks                     |
+| **6. Regression Prevention**       | ✅ Good           | 80% - Weather files provide good regression testing        |
+| **7. User Confidence**             | ⚠️ Limited        | 60% - Can trust for basic files, concerns for complex data |
 
 **Overall Goal Achievement**: ~45%
 
@@ -756,25 +756,25 @@ This was **PRIORITY 4** (lowest) and correctly deprioritized. The sanity checks 
 
 ### Test File Summary
 
-| Category | Planned | Implemented | Status |
-|----------|---------|-------------|--------|
-| **Rust Tests** | `tests/e2e_real_files_tests.rs` | None | ❌ 0% |
-| **Python Tests** | `python/tests/test_e2e_files.py` | 730 lines, 12 classes | ✅ 85% |
-| **Test Data** | Downloaded + Generated | Downloaded only | ⚠️ 60% |
-| **Generation Script** | `scripts/generate_test_data.py` | None | ❌ 0% |
-| **License Files** | 3 files (Apache, MIT, combined) | 3 files | ✅ 100% |
-| **Poe Tasks** | 3 tasks (e2e-rust, e2e-python, e2e-all) | None | ❌ 0% |
+| Category              | Planned                                 | Implemented           | Status |
+| --------------------- | --------------------------------------- | --------------------- | ------ |
+| **Rust Tests**        | `tests/e2e_real_files_tests.rs`         | None                  | ❌ 0%   |
+| **Python Tests**      | `python/tests/test_e2e_files.py`        | 730 lines, 12 classes | ✅ 85%  |
+| **Test Data**         | Downloaded + Generated                  | Downloaded only       | ⚠️ 60%  |
+| **Generation Script** | `scripts/generate_test_data.py`         | None                  | ❌ 0%   |
+| **License Files**     | 3 files (Apache, MIT, combined)         | 3 files               | ✅ 100% |
+| **Poe Tasks**         | 3 tasks (e2e-rust, e2e-python, e2e-all) | None                  | ❌ 0%   |
 
 ### Coverage Summary
 
-| Metric | Plan Target | Achieved | Gap |
-|--------|-------------|----------|-----|
-| **Type Coverage** | 100% (all types) | ~25% | -75% |
-| **Codec Coverage** | 100% (all codecs) | 60% (3 work) | -40% |
-| **Interoperability** | 100% | 70% | -30% |
-| **Edge Cases** | High coverage | 15% | -85% |
-| **Performance** | Benchmarks vs others | Sanity only | N/A |
-| **Test Files** | Rust + Python | Python only | -50% |
+| Metric               | Plan Target          | Achieved     | Gap  |
+| -------------------- | -------------------- | ------------ | ---- |
+| **Type Coverage**    | 100% (all types)     | ~25%         | -75% |
+| **Codec Coverage**   | 100% (all codecs)    | 60% (3 work) | -40% |
+| **Interoperability** | 100%                 | 70%          | -30% |
+| **Edge Cases**       | High coverage        | 15%          | -85% |
+| **Performance**      | Benchmarks vs others | Sanity only  | N/A  |
+| **Test Files**       | Rust + Python        | Python only  | -50% |
 
 ---
 

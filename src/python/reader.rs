@@ -40,7 +40,7 @@ use crate::error::{
 };
 use crate::reader::{AvroHeader, AvroStreamReader, BufferConfig, ReaderConfig};
 use crate::schema::AvroSchema;
-use crate::source::{BoxedSource, LocalSource, S3Source};
+use crate::source::{BoxedSource, LocalSource, S3Config, S3Source};
 
 // =============================================================================
 // Custom Python Exception Types
@@ -281,6 +281,7 @@ impl AvroReaderCore {
     /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
     /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
     /// * `projected_columns` - Optional list of column names to read (default: all columns)
+    /// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
     ///
     /// # Returns
     /// A new AvroReaderCore instance ready for iteration.
@@ -289,6 +290,10 @@ impl AvroReaderCore {
     /// * `FileNotFoundError` - If the file does not exist
     /// * `PermissionError` - If access is denied
     /// * `RuntimeError` - For other errors (S3, parsing, etc.)
+    ///
+    /// # Requirements
+    /// - 4.8: Accept optional `storage_options` parameter
+    /// - 4.11: `storage_options` takes precedence over environment variables
     #[new]
     #[pyo3(signature = (
         path,
@@ -296,7 +301,8 @@ impl AvroReaderCore {
         buffer_blocks = 4,
         buffer_bytes = 67_108_864,
         strict = false,
-        projected_columns = None
+        projected_columns = None,
+        storage_options = None
     ))]
     fn new(
         path: String,
@@ -305,6 +311,7 @@ impl AvroReaderCore {
         buffer_bytes: usize,
         strict: bool,
         projected_columns: Option<Vec<String>>,
+        storage_options: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Self> {
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -314,10 +321,13 @@ impl AvroReaderCore {
             ))
         })?;
 
+        // Convert storage_options to S3Config
+        let s3_config = storage_options.map(|opts| parse_storage_options(&opts));
+
         // Create source and reader within the runtime
         let result = runtime.block_on(async {
             // Create the appropriate source based on path
-            let source = create_source(&path).await?;
+            let source = create_source(&path, s3_config).await?;
 
             // Build reader configuration
             let buffer_config = BufferConfig::new(buffer_blocks, buffer_bytes);
@@ -560,18 +570,64 @@ impl AvroReaderCore {
     }
 }
 
+/// Parse Python storage_options dict into Rust S3Config.
+///
+/// Supported keys:
+/// - `endpoint_url`: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+/// - `aws_access_key_id`: AWS access key (overrides environment)
+/// - `aws_secret_access_key`: AWS secret key (overrides environment)
+/// - `region`: AWS region (overrides environment)
+///
+/// # Requirements
+/// - 4.8: Accept optional `storage_options` parameter
+/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+/// - 4.10: Use provided credentials when specified
+fn parse_storage_options(opts: &std::collections::HashMap<String, String>) -> S3Config {
+    let mut config = S3Config::new();
+
+    if let Some(endpoint_url) = opts.get("endpoint_url") {
+        config = config.with_endpoint_url(endpoint_url);
+    }
+
+    if let Some(access_key_id) = opts.get("aws_access_key_id") {
+        config = config.with_access_key_id(access_key_id);
+    }
+
+    if let Some(secret_access_key) = opts.get("aws_secret_access_key") {
+        config = config.with_secret_access_key(secret_access_key);
+    }
+
+    if let Some(region) = opts.get("region") {
+        config = config.with_region(region);
+    }
+
+    config
+}
+
 /// Create a StreamSource from a path string.
 ///
 /// Automatically detects S3 URIs (s3://) vs local file paths.
-async fn create_source(path: &str) -> Result<BoxedSource, ReaderError> {
+/// When an S3 URI is detected and config is provided, uses the config
+/// for custom endpoints and credentials.
+///
+/// # Arguments
+/// * `path` - Path to the file (local path or s3:// URI)
+/// * `config` - Optional S3 configuration for custom endpoints/credentials
+///
+/// # Requirements
+/// - 4.8: Accept optional `storage_options` parameter
+/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+/// - 4.10: Use provided credentials when specified
+/// - 4.11: `storage_options` takes precedence over environment variables
+async fn create_source(path: &str, config: Option<S3Config>) -> Result<BoxedSource, ReaderError> {
     if path.starts_with("s3://") {
-        // S3 source
-        let source = S3Source::from_uri(path)
+        // S3 source with optional config
+        let source = S3Source::from_uri_with_config(path, config)
             .await
             .map_err(ReaderError::Source)?;
         Ok(Box::new(source) as BoxedSource)
     } else {
-        // Local file source
+        // Local file source (config is ignored for local files)
         let source = LocalSource::open(path).await.map_err(ReaderError::Source)?;
         Ok(Box::new(source) as BoxedSource)
     }
@@ -781,6 +837,7 @@ fn json_value_to_py_dict<'py>(
 ///
 /// # Arguments
 /// * `path` - Path to the Avro file (local path or s3:// URI)
+/// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
 ///
 /// # Returns
 /// A Polars Schema (as a Python dict mapping column names to dtypes)
@@ -799,6 +856,16 @@ fn json_value_to_py_dict<'py>(
 /// # Get schema for IO plugin
 /// schema = jetliner.parse_avro_schema("data.avro")
 ///
+/// # Get schema from S3-compatible service
+/// schema = jetliner.parse_avro_schema(
+///     "s3://bucket/data.avro",
+///     storage_options={
+///         "endpoint_url": "http://localhost:9000",
+///         "aws_access_key_id": "minioadmin",
+///         "aws_secret_access_key": "minioadmin",
+///     }
+/// )
+///
 /// # Use with register_io_source
 /// lf = pl.LazyFrame.register_io_source(
 ///     io_source=my_generator,
@@ -807,10 +874,18 @@ fn json_value_to_py_dict<'py>(
 /// ```
 ///
 /// # Requirements
+/// - 4.8: Accept optional `storage_options` parameter
+/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+/// - 4.10: Use provided credentials when specified
 /// - 6a.5: Expose Avro schema as Polars schema for query planning
 /// - 9.3: Expose parsed schema for inspection
 #[pyfunction]
-pub fn parse_avro_schema(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (path, storage_options = None))]
+pub fn parse_avro_schema(
+    py: Python<'_>,
+    path: String,
+    storage_options: Option<std::collections::HashMap<String, String>>,
+) -> PyResult<Py<PyAny>> {
     use pyo3_polars::PySchema;
 
     // Create a tokio runtime for async operations
@@ -821,10 +896,13 @@ pub fn parse_avro_schema(py: Python<'_>, path: String) -> PyResult<Py<PyAny>> {
         ))
     })?;
 
+    // Convert storage_options to S3Config
+    let s3_config = storage_options.map(|opts| parse_storage_options(&opts));
+
     // Read the header and extract schema
     let result = runtime.block_on(async {
         // Create the appropriate source based on path
-        let source = create_source(&path).await?;
+        let source = create_source(&path, s3_config).await?;
 
         // Read enough bytes for the header (typically < 4KB, but allow more for large schemas)
         let header_bytes = source
@@ -939,6 +1017,7 @@ impl AvroReader {
     /// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
     /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
     /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
+    /// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
     ///
     /// # Returns
     /// A new AvroReader instance ready for iteration.
@@ -962,14 +1041,29 @@ impl AvroReader {
     ///     batch_size=50000,
     ///     strict=True
     /// )
+    ///
+    /// # S3-compatible services (MinIO, LocalStack, R2)
+    /// reader = jetliner.AvroReader(
+    ///     "s3://bucket/key.avro",
+    ///     storage_options={
+    ///         "endpoint_url": "http://localhost:9000",
+    ///         "aws_access_key_id": "minioadmin",
+    ///         "aws_secret_access_key": "minioadmin",
+    ///     }
+    /// )
     /// ```
+    ///
+    /// # Requirements
+    /// - 4.8: Accept optional `storage_options` parameter
+    /// - 4.11: `storage_options` takes precedence over environment variables
     #[new]
     #[pyo3(signature = (
         path,
         batch_size = 100_000,
         buffer_blocks = 4,
         buffer_bytes = 67_108_864,
-        strict = false
+        strict = false,
+        storage_options = None
     ))]
     fn new(
         path: String,
@@ -977,6 +1071,7 @@ impl AvroReader {
         buffer_blocks: usize,
         buffer_bytes: usize,
         strict: bool,
+        storage_options: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Self> {
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -986,10 +1081,13 @@ impl AvroReader {
             ))
         })?;
 
+        // Convert storage_options to S3Config
+        let s3_config = storage_options.map(|opts| parse_storage_options(&opts));
+
         // Create source and reader within the runtime
         let result = runtime.block_on(async {
             // Create the appropriate source based on path
-            let source = create_source(&path).await?;
+            let source = create_source(&path, s3_config).await?;
 
             // Build reader configuration (no projection for user-facing API)
             let buffer_config = BufferConfig::new(buffer_blocks, buffer_bytes);
@@ -1296,6 +1394,11 @@ impl AvroReader {
 /// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
 /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
 /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
+/// * `storage_options` - Optional dict for S3 configuration. Supported keys:
+///   - `endpoint_url`: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+///   - `aws_access_key_id`: AWS access key (overrides environment)
+///   - `aws_secret_access_key`: AWS secret key (overrides environment)
+///   - `region`: AWS region (overrides environment)
 ///
 /// # Returns
 /// An `AvroReader` instance that can be iterated to get DataFrames.
@@ -1330,6 +1433,18 @@ impl AvroReader {
 ///     for df in reader:
 ///         process(df)
 ///
+/// # S3-compatible services (MinIO, LocalStack, R2)
+/// with jetliner.open(
+///     "s3://bucket/data.avro",
+///     storage_options={
+///         "endpoint_url": "http://localhost:9000",
+///         "aws_access_key_id": "minioadmin",
+///         "aws_secret_access_key": "minioadmin",
+///     }
+/// ) as reader:
+///     for df in reader:
+///         process(df)
+///
 /// # Access schema
 /// with jetliner.open("data.avro") as reader:
 ///     print(reader.schema)  # JSON string
@@ -1349,13 +1464,16 @@ impl AvroReader {
 /// - 4.1: Unified interface for S3 and local filesystem access
 /// - 4.2: S3 URI support (s3://bucket/key)
 /// - 4.3: Local filesystem path support
+/// - 4.8: Accept optional `storage_options` parameter
+/// - 4.11: `storage_options` takes precedence over environment variables
 #[pyfunction]
 #[pyo3(signature = (
     path,
     batch_size = 100_000,
     buffer_blocks = 4,
     buffer_bytes = 67_108_864,
-    strict = false
+    strict = false,
+    storage_options = None
 ))]
 pub fn open(
     path: String,
@@ -1363,8 +1481,16 @@ pub fn open(
     buffer_blocks: usize,
     buffer_bytes: usize,
     strict: bool,
+    storage_options: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<AvroReader> {
-    AvroReader::new(path, batch_size, buffer_blocks, buffer_bytes, strict)
+    AvroReader::new(
+        path,
+        batch_size,
+        buffer_blocks,
+        buffer_bytes,
+        strict,
+        storage_options,
+    )
 }
 
 #[cfg(test)]

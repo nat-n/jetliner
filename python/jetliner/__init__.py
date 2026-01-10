@@ -73,6 +73,7 @@ def scan(
     buffer_blocks: int = 4,
     buffer_bytes: int = 64 * 1024 * 1024,
     strict: bool = False,
+    storage_options: dict[str, str] | None = None,
 ) -> pl.LazyFrame:
     """
     Scan an Avro file, returning a LazyFrame with query optimization support.
@@ -94,6 +95,12 @@ def scan(
         Maximum bytes to buffer during prefetching.
     strict : bool, default False
         If True, fail on first error. If False, skip bad records and continue.
+    storage_options : dict[str, str] | None, default None
+        Configuration for S3 connections. Supported keys:
+        - endpoint_url: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - aws_access_key_id: AWS access key (overrides environment)
+        - aws_secret_access_key: AWS secret key (overrides environment)
+        - region: AWS region (overrides environment)
 
     Returns
     -------
@@ -141,6 +148,20 @@ def scan(
 
     >>> result = jetliner.scan("file.avro").head(1000).collect()
 
+    S3-compatible services (MinIO, LocalStack, R2):
+
+    >>> result = (
+    ...     jetliner.scan(
+    ...         "s3://bucket/file.avro",
+    ...         storage_options={
+    ...             "endpoint_url": "http://localhost:9000",
+    ...             "aws_access_key_id": "minioadmin",
+    ...             "aws_secret_access_key": "minioadmin",
+    ...         }
+    ...     )
+    ...     .collect()
+    ... )
+
     Full query optimization example:
 
     >>> result = (
@@ -163,6 +184,8 @@ def scan(
 
     Requirements
     -----------
+    - 4.8: Accept optional `storage_options` parameter
+    - 4.11: `storage_options` takes precedence over environment variables
     - 6a.1: Return LazyFrame via register_io_source
     - 6a.2: Projection pushdown (only allocate memory for selected columns)
     - 6a.3: Predicate pushdown (apply filter to each batch)
@@ -172,7 +195,7 @@ def scan(
     """
     # Parse schema to get Polars schema (calls into Rust)
     # This reads only the header to extract the schema
-    polars_schema = parse_avro_schema(path)
+    polars_schema = parse_avro_schema(path, storage_options=storage_options)
 
     def source_generator(
         with_columns: list[str] | None,
@@ -202,6 +225,7 @@ def scan(
             buffer_bytes=buffer_bytes,
             strict=strict,
             projected_columns=with_columns,  # Pass projection to Rust
+            storage_options=storage_options,  # Pass storage_options to Rust
         )
 
         rows_yielded = 0

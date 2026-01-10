@@ -75,6 +75,11 @@ This document specifies requirements for Jetliner, a high-performance Rust libra
 5. WHEN reading from S3, THE Stream_Source SHALL authenticate using environment credentials (access key/secret or web identity tokens)
 6. IF authentication fails, THEN THE Stream_Source SHALL return a descriptive error
 7. IF the file does not exist, THEN THE Stream_Source SHALL return a descriptive error
+8. THE scan and open functions SHALL accept an optional `storage_options` parameter of type `dict[str, str] | None`
+9. WHEN `storage_options` contains `endpoint_url`, THE Stream_Source SHALL connect to the specified endpoint instead of AWS S3
+10. WHEN `storage_options` contains credentials (`aws_access_key_id`, `aws_secret_access_key`), THE Stream_Source SHALL use those credentials
+11. WHERE both `storage_options` and environment variables are set, THE `storage_options` values SHALL take precedence
+12. WHEN `endpoint_url` points to an S3-compatible service (MinIO, LocalStack, R2), THE Stream_Source SHALL successfully read files
 
 ### Requirement 5: Polars DataFrame Integration
 

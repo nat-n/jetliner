@@ -97,6 +97,23 @@ pub struct S3Source {
     key: String,
 }
 
+/// Configuration options for S3 connections (passed via storage_options)
+pub struct S3Config {
+    pub endpoint_url: Option<String>,
+    pub aws_access_key_id: Option<String>,
+    pub aws_secret_access_key: Option<String>,
+    pub region: Option<String>,
+}
+
+impl S3Source {
+    /// Create S3Source with optional configuration overrides
+    pub async fn new(
+        bucket: String,
+        key: String,
+        config: Option<S3Config>,
+    ) -> Result<Self, SourceError>;
+}
+
 pub struct LocalSource {
     file: tokio::fs::File,
     path: PathBuf,
@@ -572,6 +589,16 @@ reader = jetliner.open(
     strict=False,
 )
 
+# S3-compatible services (MinIO, LocalStack, R2, etc.)
+reader = jetliner.open(
+    "s3://bucket/file.avro",
+    storage_options={
+        "endpoint_url": "http://localhost:9000",
+        "aws_access_key_id": "minioadmin",
+        "aws_secret_access_key": "minioadmin",
+    },
+)
+
 # Sync iteration (async iteration is NOT supported)
 for df in reader:
     process(df)
@@ -803,6 +830,7 @@ def scan(
     buffer_bytes: int = 64 * 1024 * 1024,
     strict: bool = False,
     validate_schema: bool = False,
+    storage_options: dict[str, str] | None = None,
 ) -> pl.LazyFrame:
     """
     Scan an Avro file, returning a LazyFrame with query optimization support.
@@ -822,6 +850,12 @@ def scan(
     validate_schema : bool
         If True, Polars validates each batch matches declared schema (default: False)
         Useful for debugging but adds overhead.
+    storage_options : dict[str, str] | None
+        Configuration for S3 connections. Supported keys:
+        - endpoint_url: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - aws_access_key_id: AWS access key (overrides environment)
+        - aws_secret_access_key: AWS secret key (overrides environment)
+        - region: AWS region (overrides environment)
     """
     # Parse schema to get Polars schema (calls into Rust)
     polars_schema = parse_avro_schema(path)

@@ -19,6 +19,7 @@ High-performance Polars plugin for streaming Avro files into DataFrames.
 ## Testing
 
 - E2E behavior is covered by python tests under python/tests and are organized in subdirectories and files for different concerns
+- Reusable python pytest fixtures should be placed in a conftest.py
 - Property tests use `proptest` with 100 iterations minimum
 - Property tests live in `tests/property_tests.rs`
 - Each property test references its design document property number
@@ -45,6 +46,6 @@ This project uses uv for python dependency management.
 
 ### Implementation time decision records
 
-If significant decisions are made whilst implementing tasks that are potentially useful in future for understanding how things work and why but beyond the granularity of the design document or the task description then on completion on the task (and not sooner) a file corresponding to the task should be created under ./kiro/devnotes to document the important details in an concise ADR style. These documents should focus on non-obvious details that took some research, non-trivial reasoning effort, or user judgement to arrive at.
+If significant decisions are made whilst implementing tasks that are potentially useful in future for understanding how things work and why but beyond the granularity of the design document or the task description then on completion on the task (and not sooner) a file corresponding to the task should be created under ./kiro/<spec>/devnotes to document the important details in an concise ADR style. These documents should focus on non-obvious details that took some research, non-trivial reasoning effort, or user judgement to arrive at.
 
 If a decision is overridden by a later decision, then the later should be documented as usual and the original should be amended to include a pointer to it's successor.

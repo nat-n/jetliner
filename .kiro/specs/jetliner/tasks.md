@@ -317,7 +317,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
 - [x] 14. Checkpoint - Streaming and error handling
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 15. Python bindings
+- [x] 15. Python bindings
   - [x] 15.1 Implement AvroReaderCore PyClass (internal)
     - Constructor with path, configuration kwargs, and projected_columns
     - Implement __iter__ and __next__ for sync iteration
@@ -403,13 +403,13 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
   - [x] 17.1 Add Apache Avro interoperability test files ✓
     - See Appendix: A_avro_java_test_research.md
     - See Appendix: B_e2e-test-plan.md
-    - ✓ Downloaded official test files from Apache Avro and fastavro
-    - ✓ Created license attribution files (Apache 2.0, MIT)
-    - ✓ Verify all primitive types (weather files)
-    - ✓ Verify all complex types (recursive, arrays, maps)
-    - ✓ Verify all logical types (UUID via java-generated-uuid.avro)
-    - ✓ Verify all codecs (null, deflate, snappy, zstd)
-    - ✓ 166 tests passing, 16 xfailed for known Polars limitations
+    - Downloaded official test files from Apache Avro and fastavro
+    - Created license attribution files (Apache 2.0, MIT)
+    - Verify all primitive types (weather files)
+    - Verify all complex types (recursive, arrays, maps)
+    - Verify all logical types (UUID via java-generated-uuid.avro)
+    - Verify all codecs (null, deflate, snappy, zstd)
+    - 166 tests passing, 16 xfailed for known Polars limitations
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
 
   - [x] 17.2 Fix interoperability gaps discovered in E2E testing
@@ -438,7 +438,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - Removed xfail markers from tests
       - _Requirements: 1.7_
 
-  - [ ] 17.3 Multi-block and large file testing
+  - [x] 17.3 Multi-block and large file testing
     - See Appendix: C_functional_coverage_gap_analysis.md (Gap 1)
     - [x] 17.3.1 Generate large test file (10K+ records)
       - Create Python script using fastavro to generate file spanning multiple blocks
@@ -484,7 +484,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
 
   - [ ] 17.5 Error recovery E2E tests with corrupted files
     - See Appendix: C_functional_coverage_gap_analysis.md (Gap 3)
-    - [ ] 17.5.1 Generate corrupted test files
+    - [x] 17.5.1 Generate corrupted test files
       - Create Python script to generate files with specific corruption patterns
       - File with invalid magic bytes
       - Truncated file (EOF mid-block)
@@ -493,13 +493,13 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - File with invalid record data
       - _Requirements: 7.1, 7.2_
 
-    - [ ] 17.5.2 Add skip mode recovery tests
+    - [x] 17.5.2 Add skip mode recovery tests
       - Test recovery from each corruption type
       - Verify valid data before/after corruption is read
       - Verify error tracking (error_count, errors list)
       - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-    - [ ] 17.5.3 Add strict mode failure tests
+    - [x] 17.5.3 Add strict mode failure tests
       - Verify immediate failure on each corruption type
       - Verify descriptive error messages
       - _Requirements: 7.5, 7.7_
@@ -529,7 +529,26 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Benchmark with different batch sizes
     - _Requirements: 10.8_
 
-- [ ] 19. Final checkpoint
+- [ ] 19. storage_options support for S3-compatible services
+  - [x] 19.1 Add S3Config struct to Rust S3Source
+    - Define S3Config with endpoint_url, aws_access_key_id, aws_secret_access_key, region
+    - Update S3Source::new() to accept optional S3Config
+    - Configure AWS SDK client with custom endpoint when provided
+    - _Requirements: 4.8, 4.9, 4.10_
+
+  - [x] 19.2 Add storage_options parameter to Python API
+    - Add storage_options: dict[str, str] | None to scan() and open()
+    - Parse storage_options dict and pass to Rust S3Config
+    - Ensure storage_options takes precedence over environment variables
+    - _Requirements: 4.8, 4.11_
+
+  - [x] 19.3 Write tests for S3-compatible service support
+    - Test with MinIO endpoint_url
+    - Test credential override via storage_options
+    - Test that storage_options takes precedence over environment
+    - _Requirements: 4.9, 4.10, 4.11, 4.12_
+
+- [ ] 20. Final checkpoint
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
