@@ -441,8 +441,7 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
     #[allow(dead_code)]
     fn start_prefetch(&mut self) {
         // Don't start if already running or finished
-        if self.fetch_task.is_some() || self.finished {
-        }
+        if self.fetch_task.is_some() || self.finished {}
 
         // We need to move the reader temporarily to the task
         // Since we can't move out of &mut self, we'll use a different approach:
