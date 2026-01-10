@@ -6,58 +6,59 @@ This plan implements a comprehensive documentation system for Jetliner, starting
 
 ## Tasks
 
-- [ ] 1. Set up MkDocs infrastructure
-  - [ ] 1.1 Create mkdocs.yml configuration file
+- [x] 1. Set up MkDocs infrastructure
+  - [x] 1.1 Create mkdocs.yml configuration file
     - Configure Material theme with dark/light mode
     - Enable search, mkdocstrings, and markdown extensions
     - Define navigation structure
     - _Requirements: 2.1, 2.7, 2.8_
-  - [ ] 1.2 Add documentation dependencies to pyproject.toml
+  - [x] 1.2 Add documentation dependencies to pyproject.toml
     - Add mkdocs-material and mkdocstrings[python] to dev dependencies
     - Add poe task for docs preview and build
     - _Requirements: 2.1_
 
-- [ ] 2. Create documentation site content
-  - [ ] 2.1 Create Getting Started page (docs/index.md)
+- [x] 2. Create documentation site content
+  - [x] 2.1 Create Getting Started page (docs/index.md)
+    - Explain motivation for this library (High performance streaming of large avro files from s3 with minimal memory footprint)
     - Installation instructions (pip, uv, from source)
     - Minimal working example
     - Explain scan() vs open() APIs
     - Verification steps
     - System requirements
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
-  - [ ] 2.2 Create Installation page (docs/installation.md)
+  - [x] 2.2 Create Installation page (docs/installation.md)
     - Detailed installation methods
     - Optional dependencies (codec features)
     - Troubleshooting common issues
     - _Requirements: 3.1_
-  - [ ] 2.3 Create User Guide pages
-    - [ ] 2.3.1 Create docs/user-guide/index.md (overview)
-    - [ ] 2.3.2 Create docs/user-guide/local-files.md
+  - [x] 2.3 Create User Guide pages
+    - [x] 2.3.1 Create docs/user-guide/index.md (overview)
+    - [x] 2.3.2 Create docs/user-guide/local-files.md
       - _Requirements: 4.1_
-    - [ ] 2.3.3 Create docs/user-guide/s3-access.md
+    - [x] 2.3.3 Create docs/user-guide/s3-access.md
       - _Requirements: 4.2_
-    - [ ] 2.3.4 Create docs/user-guide/query-optimization.md
+    - [x] 2.3.4 Create docs/user-guide/query-optimization.md
       - _Requirements: 4.3_
-    - [ ] 2.3.5 Create docs/user-guide/streaming.md
+    - [x] 2.3.5 Create docs/user-guide/streaming.md
       - _Requirements: 4.4_
-    - [ ] 2.3.6 Create docs/user-guide/error-handling.md
+    - [x] 2.3.6 Create docs/user-guide/error-handling.md
       - _Requirements: 4.5_
-    - [ ] 2.3.7 Create docs/user-guide/schemas.md
+    - [x] 2.3.7 Create docs/user-guide/schemas.md
       - _Requirements: 4.6_
-    - [ ] 2.3.8 Create docs/user-guide/codecs.md
+    - [x] 2.3.8 Create docs/user-guide/codecs.md
       - _Requirements: 4.7_
-  - [ ] 2.4 Create API Reference pages
-    - [ ] 2.4.1 Create docs/api/index.md (API overview)
-    - [ ] 2.4.2 Create docs/api/reference.md (auto-generated from docstrings)
+  - [x] 2.4 Create API Reference pages
+    - [x] 2.4.1 Create docs/api/index.md (API overview)
+    - [x] 2.4.2 Create docs/api/reference.md (auto-generated from docstrings)
       - Use mkdocstrings to document all __all__ exports
       - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
-  - [ ] 2.5 Create Performance pages
-    - [ ] 2.5.1 Create docs/performance/index.md (overview)
-    - [ ] 2.5.2 Create docs/performance/benchmarks.md
+  - [ ]* 2.5 Create Performance pages
+    - [ ]* 2.5.1 Create docs/performance/index.md (overview)
+    - [ ]* 2.5.2 Create docs/performance/benchmarks.md
       - _Requirements: 6.1_
-    - [ ] 2.5.3 Create docs/performance/optimization.md
+    - [ ]* 2.5.3 Create docs/performance/optimization.md
       - _Requirements: 6.2, 6.3, 6.4, 6.5_
-  - [ ] 2.6 Create Contributing guide (docs/contributing.md)
+  - [ ]* 2.6 Create Contributing guide (docs/contributing.md)
     - Development setup
     - Running tests
     - Code style guidelines
@@ -70,14 +71,14 @@ This plan implements a comprehensive documentation system for Jetliner, starting
   - Ensure all tests pass, ask the user if questions arise
 
 - [ ] 4. Enhance README
-  - [ ] 4.1 Add badges section
+  - [x] 4.1 Add badges section
     - PyPI version, Python versions, License, CI status, Docs status
-  - [ ] 4.2 Add Features section
+  - [x] 4.2 Add Features section
     - Bullet list of key capabilities
-  - [ ] 4.3 Add Installation section
+  - [x] 4.3 Add Installation section
     - pip and uv installation commands
     - _Requirements: 1.5_
-  - [ ] 4.4 Add Quick Start section with examples
+  - [x] 4.4 Add Quick Start section with examples
     - Basic scan() example
     - S3 access example
     - Query optimization example

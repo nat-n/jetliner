@@ -1,0 +1,83 @@
+site_name: Jetliner
+site_description: High-performance Avro streaming reader for Polars DataFrames
+site_url: https://github.com/jetliner/jetliner/
+repo_url: https://github.com/jetliner/jetliner
+repo_name: jetliner
+
+theme:
+  name: material
+  logo: assets/jetliner_icon.png
+  favicon: assets/favicon.ico
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            show_category_heading: true
+            docstring_style: google
+            merge_init_into_class: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Getting Started: index.md
+  - Installation: installation.md
+  - User Guide:
+      - Overview: user-guide/index.md
+      - Local Files: user-guide/local-files.md
+      - S3 Access: user-guide/s3-access.md
+      - Query Optimization: user-guide/query-optimization.md
+      - Streaming Large Files: user-guide/streaming.md
+      - Error Handling: user-guide/error-handling.md
+      - Schema Inspection: user-guide/schemas.md
+      - Codec Support: user-guide/codecs.md
+  - API Reference:
+      - Overview: api/index.md
+      - Reference: api/reference.md
+  - Performance:
+      - Overview: performance/index.md
+      - Benchmarks: performance/benchmarks.md
+      - Optimization Tips: performance/optimization.md
+  - Contributing: contributing.md

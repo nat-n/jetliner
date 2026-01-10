@@ -1,0 +1,102 @@
+# Contributing
+
+Thank you for your interest in contributing to Jetliner!
+
+## Development Setup
+
+### Prerequisites
+
+- Python 3.11+
+- Rust toolchain (install via [rustup](https://rustup.rs/))
+- [uv](https://docs.astral.sh/uv/) for Python dependency management
+- [poe](https://poethepoet.natn.io/) for task management
+
+### Getting Started
+
+```bash
+# Clone the repository
+git clone https://github.com/jetliner/jetliner.git
+cd jetliner
+
+# Install Rust toolchain
+poe rustup
+
+# Create virtual environment and install dependencies
+uv sync --group dev
+
+# Build the Rust extension
+poe build-dev
+
+# Verify installation
+uv run python -c "import jetliner; print('OK')"
+```
+
+## Running Tests
+
+```bash
+# Run all checks (formatting, linting, tests)
+poe check
+
+# Run specific test suites
+poe test-rust      # Rust unit tests
+poe test-python    # Python e2e tests
+```
+
+## Code Style
+
+The following tasks are available to help with ensuring rust code meets formatting and linting standards:
+
+```bash
+poe format-rust
+poe lint-rust
+```
+
+This project uses rust for python code formatting and linting python code. The following tasks are available to help:
+
+```bash
+poe format-python
+poe lint-python
+```
+
+## Project Structure
+
+```
+jetliner/
+├── src/                   # Rust source code
+│   ├── codec/             # Compression codecs
+│   ├── convert/           # Arrow/DataFrame conversion
+│   ├── python/            # PyO3 bindings
+│   ├── reader/            # Core Avro reader
+│   ├── schema/            # Schema parsing
+│   └── source/            # File/S3 sources
+├── python/
+│   ├── jetliner/          # Python package for bindings
+│   └── tests/             # Pytest tests
+├── tests/                 # Rust integration tests
+├── benches/               # Benchmarks
+└── docs/                  # Documentation
+```
+
+## Reporting Issues
+
+When reporting issues, please include:
+
+- Jetliner version
+- Python version
+- Operating system
+- Minimal reproduction case
+- Error messages and stack traces
+
+## Documentation
+
+To preview documentation locally:
+
+```bash
+poe docs-serve
+```
+
+Then open http://localhost:8000 in your browser.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the Apache License 2.0.

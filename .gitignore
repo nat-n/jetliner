@@ -21,6 +21,12 @@ htmlcov/
 venv/
 .venv
 
+# Benchmarks
+benches/data/
+
+# Documentation
+site/
+
 # IDE
 .vscode/
 .idea/

@@ -1,13 +1,141 @@
-Jetliner
-========
+<p align="center">
+  <img src="docs/assets/jetliner_logo.png" alt="Jetliner" width="400">
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/jetliner/"><img src="https://img.shields.io/pypi/v/jetliner.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/jetliner/"><img src="https://img.shields.io/pypi/pyversions/jetliner.svg" alt="Python versions"></a>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/jetliner/jetliner/actions/workflows/ci.yml"><img src="https://github.com/jetliner/jetliner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://jetliner.github.io/jetliner/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
+</p>
 
 A high-performance Polars plugin written in Rust for streaming Avro files into DataFrames with minimal memory overhead and maximal throughput.
 
 Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques with `bytes::Bytes`, and handles all standard Avro codecs (null, snappy, deflate, zstd, bzip2, xz). The Rust core does the heavy lifting while Python bindings via PyO3 make it accessible from your existing Polars workflows.
 
-## Usage
+## Features
 
-TODO...
+- **High-performance streaming** — Block-by-block processing with minimal memory footprint, ideal for large files
+- **S3 and local file support** — Read Avro files from Amazon S3 or local disk with the same API
+- **Query optimization** — Projection pushdown (select columns) and predicate pushdown (filter rows) at the source
+- **All standard codecs** — null, snappy, deflate, zstd, bzip2, and xz compression out of the box
+- **Polars-native integration** — Returns LazyFrames for seamless integration with Polars query plans
+- **Flexible error handling** — Optionally skip bad blocks for resilience to data corruption
+
+## Installation
+
+Install from PyPI using pip:
+
+```bash
+pip install jetliner
+```
+
+Or with uv:
+
+```bash
+uv add jetliner
+```
+
+## Quick Start
+
+### Basic File Reading
+
+Use `scan()` to read an Avro file into a Polars LazyFrame:
+
+```python
+import jetliner
+
+# Read a local file
+df = jetliner.scan("data.avro").collect()
+
+# Read from S3
+df = jetliner.scan("s3://my-bucket/data.avro").collect()
+```
+
+### Streaming with open()
+
+Use `open()` for fine-grained control over batch processing — useful for progress tracking, or memory-constrained environments:
+
+```python
+import jetliner
+
+# Process batches one at a time
+with jetliner.open("large_file.avro") as reader:
+    for batch in reader:
+        print(f"Processing batch with {batch.height} rows")
+        process(batch)
+
+# Configure batch size and buffer settings
+with jetliner.open(
+    "large_file.avro",
+    batch_size=50_000,
+    buffer_blocks=2,
+) as reader:
+    for batch in reader:
+        process(batch)
+```
+
+### S3 Access
+
+Jetliner reads from S3 using default AWS credentials (environment variables, IAM roles, or AWS config):
+
+```python
+import jetliner
+
+# Uses AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from environment
+df = jetliner.scan("s3://my-bucket/data.avro").collect()
+
+# Or pass credentials explicitly
+df = jetliner.scan(
+    "s3://my-bucket/data.avro",
+    storage_options={
+        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "region": "us-east-1",
+    }
+).collect()
+
+# S3-compatible services (MinIO, LocalStack, R2)
+df = jetliner.scan(
+    "s3://my-bucket/data.avro",
+    storage_options={
+        "endpoint_url": "http://localhost:9000",
+        "aws_access_key_id": "minioadmin",
+        "aws_secret_access_key": "minioadmin",
+    }
+).collect()
+```
+
+### Query Optimization
+
+The `scan()` API enables Polars query optimizations — projection pushdown, predicate pushdown, and early stopping:
+
+```python
+import jetliner
+import polars as pl
+
+# Only reads the columns you select (projection pushdown)
+# Filters during read, not after (predicate pushdown)
+# Stops reading after 1000 rows (early stopping)
+result = (
+    jetliner.scan("s3://bucket/large_file.avro")
+    .select(["user_id", "amount", "status"])
+    .filter(pl.col("status") == "active")
+    .filter(pl.col("amount") > 100)
+    .head(1000)
+    .collect()
+)
+```
+
+### scan() vs open()
+
+| Feature            | `scan()`                                | `open()`                            |
+| ------------------ | --------------------------------------- | ----------------------------------- |
+| Returns            | LazyFrame                               | Iterator of DataFrames              |
+| Query optimization | ✅ Projection, predicate, early stopping | ❌ Manual                            |
+| Batch control      | Automatic                               | Full control                        |
+| Best for           | Most queries                            | Custom streaming, progress tracking |
 
 ## Benchmarks
 

@@ -41,6 +41,7 @@ dev = [
   "ruff>=0.8.0",
   "testcontainers[minio]>=4.0",
 ]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 
 [tool.maturin]
 features = ["extension-module"]
@@ -99,10 +100,58 @@ sequence = ["test-rust", "test-property", "test-schema", "test-python"]
 [tool.poe.tasks.bench]
 help = "Run benchmarks"
 cmd = "cargo bench"
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_SAMPLE_SIZE"
+help = "Number of samples to collect"
+options = ["--sample-size", "-s"]
+type = "integer"
+default = 100
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_MEASUREMENT_TIME"
+help = "Measurement time in seconds"
+options = ["--measurement-time", "-t"]
+type = "integer"
+default = 5
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_WARM_UP_TIME"
+help = "Warm-up time in seconds"
+options = ["--warm-up-time", "-w"]
+type = "integer"
+default = 3
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_NOISE_THRESHOLD"
+help = "Noise threshold as a fraction"
+options = ["--noise-threshold", "-n"]
+type = "float"
+default = 0.01
 
 [tool.poe.tasks.bench-read]
 help = "Run read throughput benchmark"
 cmd = "cargo bench --bench read_throughput"
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_SAMPLE_SIZE"
+help = "Number of samples to collect"
+options = ["--sample-size", "-s"]
+type = "integer"
+default = 100
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_MEASUREMENT_TIME"
+help = "Measurement time in seconds"
+options = ["--measurement-time", "-t"]
+type = "integer"
+default = 5
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_WARM_UP_TIME"
+help = "Warm-up time in seconds"
+options = ["--warm-up-time", "-w"]
+type = "integer"
+default = 3
+[[tool.poe.tasks.build-bench.args]]
+name = "BENCH_NOISE_THRESHOLD"
+help = "Noise threshold as a fraction"
+options = ["--noise-threshold", "-n"]
+type = "float"
+default = 0.01
 
 [tool.poe.tasks.format-rust]
 help = "Format Rust code"
@@ -170,3 +219,11 @@ expr = """pprint.pprint(list(itertools.islice(fastavro.reader(open(avro_path, 'r
 args.avro_path = { positional = true }
 args.take_n = { options = ["-n"], type = "integer" }
 imports = ["json", "fastavro", "itertools", "pprint"]
+
+[tool.poe.tasks.docs-serve]
+help = "Start local documentation server for preview"
+cmd = "mkdocs serve"
+
+[tool.poe.tasks.docs-build]
+help = "Build documentation site"
+cmd = "mkdocs build --strict"
