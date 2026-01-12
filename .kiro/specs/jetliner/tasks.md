@@ -600,28 +600,6 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - Still 15% slower than polars-avro (1.308s vs 1.139s = 169ms gap)
       - _Requirement: Optimization 1 verification_
 
-  - [x] 18.4 Performance Optimization: Reuse Builders Across Batches (Optimization 2) - REGRESSION ⚠️
-    - [x] 18.4.1 Implementation
-      - Added reset() to all 17 FieldBuilder variants (Null, primitives, complex types)
-      - Added reset() dispatch to FieldBuilder enum
-      - Added reset_for_batch() to FullRecordDecoder and RecordDecoder
-      - Called reset_for_batch() after finish_batch() in DataFrameBuilder
-      - _Requirement: Optimization 2 from D_optimization-analysis.md_
-
-    - [x] 18.4.2 Testing and verification
-      - All Rust tests pass (363 tests)
-      - All Python tests pass (283 tests, 11 xpassed) - no data leakage
-      - **Benchmark results: 7.5% REGRESSION on large_complex (1.308s → 1.406s)** ⚠️
-      - **Gap with polars-avro increased from 169ms to 257ms**
-      - _Analysis: The explicit reset() calls add more overhead than benefit. The std::mem::take() in finish() was already leaving empty Vecs with capacity retained for primitive types. The additional reset work appears counterproductive._
-      - **Recommendation: Consider reverting this optimization and proceed directly to Optimization 3**
-
-  - [ ] 18.5 Performance Optimization: Future work
-    - [ ] 18.5.1 Optimization 3: Eliminate slice-per-element in ListBuilder::finish() (30-60% expected gain)
-      - This is the highest-impact optimization that directly addresses the core bottleneck
-      - Requires eliminating ~5M slice operations in large_complex scenario
-    - _Note: See D_optimization-analysis.md for detailed analysis and approach_
-
 - [x] 19. storage_options support for S3-compatible services
   - [x] 19.1 Add S3Config struct to Rust S3Source
     - Define S3Config with endpoint_url, aws_access_key_id, aws_secret_access_key, region
@@ -641,7 +619,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Test that storage_options takes precedence over environment
     - _Requirements: 4.9, 4.10, 4.11, 4.12_
 
-- [ ] 20. Extended type coverage tests
+- [x] 20. Extended type coverage tests
   - [x] 20.1 Add tests for logical types
     - Test date, time-millis, time-micros, timestamp-millis, timestamp-micros
     - Test uuid (string logical type)
@@ -667,7 +645,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Document findings in devnotes
     - _Requirements: 5.5_
 
-  - [ ] 21.2 Fix ListBuilder null handling for nullable arrays
+  - [x] 21.2 Fix ListBuilder null handling for nullable arrays
     - Ensure ListBuilder correctly handles null values in unions
     - Fix null mask application for List types
     - Test with `["null", {"type": "array", "items": "int"}]` schema

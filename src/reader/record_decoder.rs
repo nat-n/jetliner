@@ -12,6 +12,7 @@
 use crate::convert::avro_to_arrow_schema;
 use crate::error::{DecodeError, SchemaError};
 use crate::schema::{AvroSchema, LogicalTypeName, RecordSchema};
+use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 
 use super::decode::{
@@ -121,6 +122,21 @@ impl FullRecordDecoder {
     }
 }
 
+impl FullRecordDecoder {
+    /// Reserve capacity for expected number of records in the next batch.
+    ///
+    /// Call this before processing a block when the record count is known
+    /// to reduce reallocation overhead during the hot decode loop.
+    ///
+    /// # Arguments
+    /// * `record_count` - The number of records expected
+    pub fn reserve_for_batch(&mut self, record_count: usize) {
+        for builder in &mut self.builders {
+            builder.reserve(record_count);
+        }
+    }
+}
+
 impl RecordDecode for FullRecordDecoder {
     fn decode_record(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
         // Decode each field in order
@@ -225,6 +241,21 @@ impl ProjectedRecordDecoder {
             record_count: 0,
         })
     }
+
+    /// Reserve capacity for expected number of records in the next batch.
+    ///
+    /// Call this before processing a block when the record count is known
+    /// to reduce reallocation overhead during the hot decode loop.
+    ///
+    /// # Arguments
+    /// * `record_count` - The number of records expected
+    pub fn reserve_for_batch(&mut self, record_count: usize) {
+        for builder_opt in &mut self.builders {
+            if let Some(builder) = builder_opt {
+                builder.reserve(record_count);
+            }
+        }
+    }
 }
 
 impl RecordDecode for ProjectedRecordDecoder {
@@ -303,6 +334,20 @@ impl RecordDecoder {
             Some(cols) => Ok(RecordDecoder::Projected(ProjectedRecordDecoder::new(
                 schema, cols,
             )?)),
+        }
+    }
+
+    /// Reserve capacity for expected number of records in the next batch.
+    ///
+    /// Call this before processing a block when the record count is known
+    /// to reduce reallocation overhead during the hot decode loop.
+    ///
+    /// # Arguments
+    /// * `record_count` - The number of records expected
+    pub fn reserve_for_batch(&mut self, record_count: usize) {
+        match self {
+            RecordDecoder::Full(d) => d.reserve_for_batch(record_count),
+            RecordDecoder::Projected(d) => d.reserve_for_batch(record_count),
         }
     }
 }
@@ -592,6 +637,40 @@ impl FieldBuilder {
             FieldBuilder::Recursive(b) => b.finish(),
         }
     }
+
+    /// Reserve capacity for additional elements in this builder.
+    ///
+    /// This is a hint to pre-allocate memory and reduce reallocations.
+    /// If the builder cannot determine appropriate capacity or doesn't
+    /// support reservation, this is a no-op. Builders will still grow
+    /// automatically if the hint is incorrect.
+    ///
+    /// # Arguments
+    /// * `additional` - The number of additional elements expected
+    fn reserve(&mut self, additional: usize) {
+        match self {
+            FieldBuilder::Null(b) => b.reserve(additional),
+            FieldBuilder::Boolean(b) => b.reserve(additional),
+            FieldBuilder::Int32(b) => b.reserve(additional),
+            FieldBuilder::Int64(b) => b.reserve(additional),
+            FieldBuilder::Float32(b) => b.reserve(additional),
+            FieldBuilder::Float64(b) => b.reserve(additional),
+            FieldBuilder::Binary(b) => b.reserve(additional),
+            FieldBuilder::String(b) => b.reserve(additional),
+            FieldBuilder::Nullable(b) => b.reserve(additional),
+            FieldBuilder::List(b) => b.reserve(additional),
+            FieldBuilder::Map(b) => b.reserve(additional),
+            FieldBuilder::Struct(b) => b.reserve(additional),
+            FieldBuilder::Enum(b) => b.reserve(additional),
+            FieldBuilder::Fixed(b) => b.reserve(additional),
+            FieldBuilder::Date(b) => b.reserve(additional),
+            FieldBuilder::Time(b) => b.reserve(additional),
+            FieldBuilder::Datetime(b) => b.reserve(additional),
+            FieldBuilder::Duration(b) => b.reserve(additional),
+            FieldBuilder::Decimal(b) => b.reserve(additional),
+            FieldBuilder::Recursive(b) => b.reserve(additional),
+        }
+    }
 }
 
 // ============================================================================
@@ -623,6 +702,10 @@ impl NullBuilder {
         self.count = 0;
         Ok(Series::new_null(self.name.clone().into(), count))
     }
+
+    fn reserve(&mut self, _additional: usize) {
+        // No-op: null values have no storage
+    }
 }
 
 /// Builder for boolean values.
@@ -648,6 +731,10 @@ impl BooleanBuilder {
     fn finish(&mut self) -> Result<Series, DecodeError> {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -675,6 +762,10 @@ impl Int32Builder {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 /// Builder for 64-bit integers.
@@ -700,6 +791,10 @@ impl Int64Builder {
     fn finish(&mut self) -> Result<Series, DecodeError> {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -727,6 +822,10 @@ impl Float32Builder {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 /// Builder for 64-bit floats.
@@ -752,6 +851,10 @@ impl Float64Builder {
     fn finish(&mut self) -> Result<Series, DecodeError> {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -780,6 +883,10 @@ impl BinaryBuilder {
         let series = Series::new(self.name.clone().into(), values);
         Ok(series)
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 /// Builder for UTF-8 strings.
@@ -805,6 +912,10 @@ impl StringBuilder {
     fn finish(&mut self) -> Result<Series, DecodeError> {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -921,16 +1032,28 @@ impl NullableBuilder {
         // Create a boolean chunked array for validity mask (true = valid, false = null)
         let mask = BooleanChunked::new("mask".into(), &validity);
 
-        // Use filter to set nulls - we need to create a new series with nulls
-        // where validity is false
+        // Create a null series with the same dtype as the inner series.
+        // This is necessary because zip_with requires both series to have compatible types.
+        // Using Series::new_null creates a Null dtype series which can't be combined with
+        // complex types like List or Struct.
+        let null_series = Series::full_null(
+            self.name.clone().into(),
+            inner_series.len(),
+            inner_series.dtype(),
+        );
+
+        // Use zip_with to apply the null mask - where mask is true, use inner_series value,
+        // where mask is false, use null_series value (which is null)
         let result = inner_series
-            .zip_with(
-                &mask,
-                &Series::new_null(self.name.clone().into(), inner_series.len()),
-            )
+            .zip_with(&mask, &null_series)
             .map_err(|e| DecodeError::InvalidData(format!("Failed to apply null mask: {}", e)))?;
 
         Ok(result.with_name(self.name.clone().into()))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.validity.reserve(additional);
+        self.inner.reserve(additional);
     }
 }
 
@@ -979,6 +1102,58 @@ fn append_default_to_builder(
     Ok(())
 }
 
+/// Enum to hold type-specific list builders for optimal performance.
+/// Created once at schema parse time based on the inner element type.
+enum ListBuilderKind {
+    // Numeric types use specialized primitive builders
+    Int8(ListPrimitiveChunkedBuilder<Int8Type>),
+    Int16(ListPrimitiveChunkedBuilder<Int16Type>),
+    Int32(ListPrimitiveChunkedBuilder<Int32Type>),
+    Int64(ListPrimitiveChunkedBuilder<Int64Type>),
+    UInt8(ListPrimitiveChunkedBuilder<UInt8Type>),
+    UInt16(ListPrimitiveChunkedBuilder<UInt16Type>),
+    UInt32(ListPrimitiveChunkedBuilder<UInt32Type>),
+    UInt64(ListPrimitiveChunkedBuilder<UInt64Type>),
+    Float32(ListPrimitiveChunkedBuilder<Float32Type>),
+    Float64(ListPrimitiveChunkedBuilder<Float64Type>),
+    // All other types (String, Binary, Struct, List, etc.) use the general builder
+    General(AnonymousOwnedListBuilder),
+}
+
+impl ListBuilderKind {
+    fn append_series(&mut self, s: &Series) -> PolarsResult<()> {
+        match self {
+            ListBuilderKind::Int8(b) => b.append_series(s),
+            ListBuilderKind::Int16(b) => b.append_series(s),
+            ListBuilderKind::Int32(b) => b.append_series(s),
+            ListBuilderKind::Int64(b) => b.append_series(s),
+            ListBuilderKind::UInt8(b) => b.append_series(s),
+            ListBuilderKind::UInt16(b) => b.append_series(s),
+            ListBuilderKind::UInt32(b) => b.append_series(s),
+            ListBuilderKind::UInt64(b) => b.append_series(s),
+            ListBuilderKind::Float32(b) => b.append_series(s),
+            ListBuilderKind::Float64(b) => b.append_series(s),
+            ListBuilderKind::General(b) => b.append_series(s),
+        }
+    }
+
+    fn finish(&mut self) -> Series {
+        match self {
+            ListBuilderKind::Int8(b) => b.finish().into_series(),
+            ListBuilderKind::Int16(b) => b.finish().into_series(),
+            ListBuilderKind::Int32(b) => b.finish().into_series(),
+            ListBuilderKind::Int64(b) => b.finish().into_series(),
+            ListBuilderKind::UInt8(b) => b.finish().into_series(),
+            ListBuilderKind::UInt16(b) => b.finish().into_series(),
+            ListBuilderKind::UInt32(b) => b.finish().into_series(),
+            ListBuilderKind::UInt64(b) => b.finish().into_series(),
+            ListBuilderKind::Float32(b) => b.finish().into_series(),
+            ListBuilderKind::Float64(b) => b.finish().into_series(),
+            ListBuilderKind::General(b) => b.finish().into_series(),
+        }
+    }
+}
+
 /// Builder for list/array values.
 struct ListBuilder {
     name: String,
@@ -986,16 +1161,114 @@ struct ListBuilder {
     inner_schema: AvroSchema,
     offsets: Vec<i64>,
     current_offset: i64,
+    /// The inner element DataType, used to create the right builder kind
+    inner_dtype: DataType,
 }
 
 impl ListBuilder {
     fn new(name: &str, inner: Box<FieldBuilder>, inner_schema: &AvroSchema) -> Self {
+        // Determine the inner dtype from the schema
+        let inner_dtype = crate::convert::avro_to_arrow(inner_schema).unwrap_or(DataType::Null);
+
         Self {
             name: name.to_string(),
             inner,
             inner_schema: inner_schema.clone(),
             offsets: vec![0], // Start with offset 0
             current_offset: 0,
+            inner_dtype,
+        }
+    }
+
+    /// Create the appropriate builder kind based on inner dtype
+    fn create_builder_kind(&self, capacity: usize) -> ListBuilderKind {
+        let name: PlSmallStr = self.name.clone().into();
+        let values_capacity = capacity * 4; // estimate
+
+        match &self.inner_dtype {
+            DataType::Int8 => ListBuilderKind::Int8(ListPrimitiveChunkedBuilder::<Int8Type>::new(
+                name,
+                capacity,
+                values_capacity,
+                self.inner_dtype.clone(),
+            )),
+            DataType::Int16 => {
+                ListBuilderKind::Int16(ListPrimitiveChunkedBuilder::<Int16Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::Int32 => {
+                ListBuilderKind::Int32(ListPrimitiveChunkedBuilder::<Int32Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::Int64 => {
+                ListBuilderKind::Int64(ListPrimitiveChunkedBuilder::<Int64Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::UInt8 => {
+                ListBuilderKind::UInt8(ListPrimitiveChunkedBuilder::<UInt8Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::UInt16 => {
+                ListBuilderKind::UInt16(ListPrimitiveChunkedBuilder::<UInt16Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::UInt32 => {
+                ListBuilderKind::UInt32(ListPrimitiveChunkedBuilder::<UInt32Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::UInt64 => {
+                ListBuilderKind::UInt64(ListPrimitiveChunkedBuilder::<UInt64Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::Float32 => {
+                ListBuilderKind::Float32(ListPrimitiveChunkedBuilder::<Float32Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            DataType::Float64 => {
+                ListBuilderKind::Float64(ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                    name,
+                    capacity,
+                    values_capacity,
+                    self.inner_dtype.clone(),
+                ))
+            }
+            _ => ListBuilderKind::General(AnonymousOwnedListBuilder::new(
+                name,
+                capacity,
+                Some(self.inner_dtype.clone()),
+            )),
         }
     }
 
@@ -1017,6 +1290,9 @@ impl ListBuilder {
                 count as usize
             };
 
+            // Pre-allocate for this array's items
+            self.inner.reserve(item_count);
+
             // Decode each item
             for _ in 0..item_count {
                 self.inner.decode_field(data, &self.inner_schema)?;
@@ -1034,15 +1310,9 @@ impl ListBuilder {
         self.offsets = vec![0];
         self.current_offset = 0;
 
-        // Build list from slices of the inner series
-        let mut builder = ListPrimitiveChunkedBuilder::<Int64Type>::new(
-            self.name.clone().into(),
-            offsets.len().saturating_sub(1),
-            offsets.len() * 4, // estimate capacity
-            inner_series.dtype().clone(),
-        );
+        // Create the appropriate builder kind based on inner dtype (determined at schema parse time)
+        let mut builder = self.create_builder_kind(offsets.len().saturating_sub(1));
 
-        // For each list element, slice the inner series
         for window in offsets.windows(2) {
             let start = window[0];
             let len = (window[1] - window[0]) as usize;
@@ -1052,7 +1322,12 @@ impl ListBuilder {
             })?;
         }
 
-        Ok(builder.finish().into_series())
+        Ok(builder.finish())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.offsets.reserve(additional);
+        // Inner builder grows automatically during decode
     }
 }
 
@@ -1096,6 +1371,10 @@ impl MapBuilder {
                 count as usize
             };
 
+            // Pre-allocate for this map's entries
+            self.key_builder.reserve(entry_count);
+            self.value_builder.reserve(entry_count);
+
             // Decode each key-value pair
             for _ in 0..entry_count {
                 // Decode key (always string)
@@ -1126,12 +1405,11 @@ impl MapBuilder {
         .map_err(|e| DecodeError::InvalidData(format!("Failed to create struct: {}", e)))?
         .into_series();
 
-        // Build list from slices of the struct series
-        let mut builder = ListPrimitiveChunkedBuilder::<Int64Type>::new(
+        // Use AnonymousOwnedListBuilder which supports Struct inner dtype
+        let mut builder = AnonymousOwnedListBuilder::new(
             self.name.clone().into(),
             offsets.len().saturating_sub(1),
-            offsets.len() * 4,
-            struct_series.dtype().clone(),
+            Some(struct_series.dtype().clone()),
         );
 
         for window in offsets.windows(2) {
@@ -1144,6 +1422,11 @@ impl MapBuilder {
         }
 
         Ok(builder.finish().into_series())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.offsets.reserve(additional);
+        // Key/value builders grow during decode
     }
 }
 
@@ -1183,6 +1466,12 @@ impl StructBuilder {
                 .map_err(|e| DecodeError::InvalidData(format!("Failed to create struct: {}", e)))?;
 
         Ok(struct_chunked.into_series())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        for builder in &mut self.builders {
+            builder.reserve(additional);
+        }
     }
 }
 
@@ -1227,6 +1516,10 @@ impl EnumBuilder {
 
         Ok(ca.into_series())
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.indices.reserve(additional);
+    }
 }
 
 /// Builder for fixed-size binary values.
@@ -1270,6 +1563,10 @@ impl FixedBuilder {
 
         Ok(array_chunked.with_name(self.name.clone().into()))
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 /// Builder for date values (days since epoch).
@@ -1296,6 +1593,10 @@ impl DateBuilder {
         let values = std::mem::take(&mut self.values);
         let ca = Int32Chunked::new(self.name.clone().into(), &values);
         Ok(ca.into_date().into_series())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -1329,6 +1630,10 @@ impl TimeBuilder {
         let ca = Int64Chunked::new(self.name.clone().into(), &values);
         Ok(ca.into_time().into_series())
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 /// Builder for datetime/timestamp values.
@@ -1361,6 +1666,10 @@ impl DatetimeBuilder {
         Ok(ca
             .into_datetime(self.unit, self.timezone.clone())
             .into_series())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -1398,6 +1707,10 @@ impl DurationBuilder {
         let values = std::mem::take(&mut self.values);
         let ca = Int64Chunked::new(self.name.clone().into(), &values);
         Ok(ca.into_duration(TimeUnit::Microseconds).into_series())
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 
@@ -1456,6 +1769,10 @@ impl DecimalBuilder {
             .into_decimal_unchecked(self.precision, self.scale)
             .into_series())
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
+    }
 }
 
 /// Builder for recursive type values (serialized to JSON string).
@@ -1504,6 +1821,10 @@ impl RecursiveBuilder {
     fn finish(&mut self) -> Result<Series, DecodeError> {
         let values = std::mem::take(&mut self.values);
         Ok(Series::new(self.name.clone().into(), values))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.values.reserve(additional);
     }
 }
 

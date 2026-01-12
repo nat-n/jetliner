@@ -5197,6 +5197,7 @@ fn arb_writer_reader_schema_pair() -> impl Strategy<Value = (RecordSchema, Recor
 }
 
 /// Generate a value compatible with the writer schema.
+#[allow(dead_code)]
 fn arb_value_for_writer_schema(writer: &RecordSchema) -> BoxedStrategy<Vec<(String, AvroValue)>> {
     let field_strategies: Vec<BoxedStrategy<(String, AvroValue)>> = writer
         .fields
@@ -5616,7 +5617,7 @@ proptest! {
             }
 
             // Calculate which block to seek to based on percentage
-            let seek_to_block = ((seek_to_block_pct as usize) * (num_blocks - 1) / 100).max(1);
+            let _seek_to_block = ((seek_to_block_pct as usize) * (num_blocks - 1) / 100).max(1);
 
             // Now test seeking using BlockReader directly
             let source2 = MemorySource::new(file_data.clone());

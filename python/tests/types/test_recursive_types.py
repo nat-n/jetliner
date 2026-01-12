@@ -70,18 +70,12 @@ class TestComplexRecursiveStructures:
                     assert "left" in parsed
                     assert "right" in parsed
 
-    @pytest.mark.xfail(
-        reason="N-ary trees with array children not yet fully supported - list builder struct error"
-    )
     def test_nary_tree_structure(self, get_test_data_path):
         """
         Test reading file with n-ary tree recursive structure.
 
         Schema defines a GraphNode with array of children.
         Tests more complex recursive patterns with variable branching.
-
-        Known Limitation: Currently fails with Polars list builder error when handling
-        arrays of recursive types. This is a more complex case than simple binary trees.
         """
         path = get_test_data_path("fastavro/graph-recursive.avro")
 

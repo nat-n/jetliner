@@ -9,8 +9,8 @@ Requirements tested:
 - 1.4: Primitive type support
 - 1.5: Complex type support
 
-Note: Enum and fixed types are not yet implemented in jetliner.
-All tests are marked xfail until support is added.
+Note: Enum and fixed types cause pyo3-polars panic during schema conversion.
+All tests are marked xfail until the pyo3-polars issue is resolved.
 """
 
 import tempfile
@@ -121,13 +121,13 @@ def fixed_avro_file():
 class TestEnumType:
     """Test reading Avro files with enum types."""
 
-    @pytest.mark.xfail(reason="Enum type not yet implemented")
+    @pytest.mark.xfail(reason="Enum type causes pyo3-polars panic on schema conversion")
     def test_read_enum_file(self, enum_avro_file):
         """Test that enum file can be read without errors."""
         df = jetliner.scan(enum_avro_file).collect()
         assert df.height == 5
 
-    @pytest.mark.xfail(reason="Enum type not yet implemented")
+    @pytest.mark.xfail(reason="Enum type causes pyo3-polars panic on schema conversion")
     def test_enum_dtype(self, enum_avro_file):
         """Test enum is read as Categorical type."""
         df = jetliner.scan(enum_avro_file).collect()
@@ -136,7 +136,7 @@ class TestEnumType:
         assert df["status"].dtype == pl.Categorical
         assert df["priority"].dtype == pl.Categorical
 
-    @pytest.mark.xfail(reason="Enum type not yet implemented")
+    @pytest.mark.xfail(reason="Enum type causes pyo3-polars panic on schema conversion")
     def test_enum_values(self, enum_avro_file):
         """Test enum values are read correctly."""
         df = jetliner.scan(enum_avro_file).collect()
@@ -148,7 +148,7 @@ class TestEnumType:
         assert df["status"][3] == "CANCELLED"
         assert df["status"][4] == "PENDING"  # Wraps around
 
-    @pytest.mark.xfail(reason="Enum type not yet implemented")
+    @pytest.mark.xfail(reason="Enum type causes pyo3-polars panic on schema conversion")
     def test_enum_categories(self, enum_avro_file):
         """Test enum categories are preserved."""
         df = jetliner.scan(enum_avro_file).collect()
@@ -166,13 +166,13 @@ class TestEnumType:
 class TestFixedType:
     """Test reading Avro files with fixed types."""
 
-    @pytest.mark.xfail(reason="Fixed type not yet implemented")
+    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_read_fixed_file(self, fixed_avro_file):
         """Test that fixed file can be read without errors."""
         df = jetliner.scan(fixed_avro_file).collect()
         assert df.height == 3
 
-    @pytest.mark.xfail(reason="Fixed type not yet implemented")
+    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_fixed_dtype(self, fixed_avro_file):
         """Test fixed is read as Binary type."""
         df = jetliner.scan(fixed_avro_file).collect()
@@ -181,7 +181,7 @@ class TestFixedType:
         assert df["uuid_bytes"].dtype == pl.Binary
         assert df["hash"].dtype == pl.Binary
 
-    @pytest.mark.xfail(reason="Fixed type not yet implemented")
+    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_fixed_size_preserved(self, fixed_avro_file):
         """Test fixed-size values have correct length."""
         df = jetliner.scan(fixed_avro_file).collect()
@@ -192,7 +192,7 @@ class TestFixedType:
         # Hash should be 32 bytes
         assert len(df["hash"][0]) == 32
 
-    @pytest.mark.xfail(reason="Fixed type not yet implemented")
+    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_fixed_values(self, fixed_avro_file):
         """Test fixed values are read correctly."""
         df = jetliner.scan(fixed_avro_file).collect()

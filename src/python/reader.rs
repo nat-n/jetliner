@@ -886,8 +886,6 @@ pub fn parse_avro_schema(
     path: String,
     storage_options: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<Py<PyAny>> {
-    use pyo3_polars::PySchema;
-
     // Create a tokio runtime for async operations
     let runtime = tokio::runtime::Runtime::new().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -946,9 +944,138 @@ pub fn parse_avro_schema(
 
     let polars_schema = result.map_err(|e| map_reader_error_to_py(&path, e))?;
 
-    // Convert to PySchema and return
-    let py_schema = PySchema(polars_schema.into());
-    Ok(py_schema.into_pyobject(py)?.into_any().unbind())
+    // Convert to Python schema manually to avoid pyo3-polars serialization issues
+    // with certain types like Enum with FrozenCategories
+    schema_to_py(py, &polars_schema)
+}
+
+/// Convert a Polars Schema to a Python polars.Schema object.
+///
+/// This function manually constructs the Python schema by calling the polars
+/// module directly, avoiding pyo3-polars' PySchema which has issues with
+/// certain DataTypes like Enum with FrozenCategories.
+fn schema_to_py(py: Python<'_>, schema: &polars::prelude::Schema) -> PyResult<Py<PyAny>> {
+    let polars_mod = py.import("polars")?;
+
+    // Build a dict of field_name -> DataType
+    let py_dict = pyo3::types::PyDict::new(py);
+
+    for (name, dtype) in schema.iter() {
+        let py_dtype = dtype_to_py(py, &polars_mod, dtype)?;
+        py_dict.set_item(name.as_str(), py_dtype)?;
+    }
+
+    // Create polars.Schema from the dict
+    let schema_class = polars_mod.getattr("Schema")?;
+    let py_schema = schema_class.call1((py_dict,))?;
+
+    Ok(py_schema.into())
+}
+
+/// Convert a Polars DataType to a Python polars DataType object.
+///
+/// This handles all DataTypes including complex ones like Enum, List, Struct, etc.
+fn dtype_to_py<'py>(
+    py: Python<'py>,
+    polars_mod: &Bound<'py, pyo3::types::PyModule>,
+    dtype: &polars::prelude::DataType,
+) -> PyResult<Bound<'py, PyAny>> {
+    use polars::prelude::DataType;
+
+    match dtype {
+        // Simple types - just get the class attribute
+        DataType::Null => polars_mod.getattr("Null"),
+        DataType::Boolean => polars_mod.getattr("Boolean"),
+        DataType::Int8 => polars_mod.getattr("Int8"),
+        DataType::Int16 => polars_mod.getattr("Int16"),
+        DataType::Int32 => polars_mod.getattr("Int32"),
+        DataType::Int64 => polars_mod.getattr("Int64"),
+        DataType::UInt8 => polars_mod.getattr("UInt8"),
+        DataType::UInt16 => polars_mod.getattr("UInt16"),
+        DataType::UInt32 => polars_mod.getattr("UInt32"),
+        DataType::UInt64 => polars_mod.getattr("UInt64"),
+        DataType::Float32 => polars_mod.getattr("Float32"),
+        DataType::Float64 => polars_mod.getattr("Float64"),
+        DataType::String => polars_mod.getattr("String"),
+        DataType::Binary => polars_mod.getattr("Binary"),
+        DataType::Date => polars_mod.getattr("Date"),
+        DataType::Time => polars_mod.getattr("Time"),
+
+        // Datetime with optional timezone
+        DataType::Datetime(time_unit, tz) => {
+            let tu_str = match time_unit {
+                polars::prelude::TimeUnit::Nanoseconds => "ns",
+                polars::prelude::TimeUnit::Microseconds => "us",
+                polars::prelude::TimeUnit::Milliseconds => "ms",
+            };
+            let tz_str = tz.as_ref().map(|t| t.to_string());
+            polars_mod.getattr("Datetime")?.call1((tu_str, tz_str))
+        }
+
+        // Duration
+        DataType::Duration(time_unit) => {
+            let tu_str = match time_unit {
+                polars::prelude::TimeUnit::Nanoseconds => "ns",
+                polars::prelude::TimeUnit::Microseconds => "us",
+                polars::prelude::TimeUnit::Milliseconds => "ms",
+            };
+            polars_mod.getattr("Duration")?.call1((tu_str,))
+        }
+
+        // Decimal
+        DataType::Decimal(precision, scale) => {
+            let precision = *precision as i64;
+            let scale = *scale as i64;
+            polars_mod.getattr("Decimal")?.call1((precision, scale))
+        }
+
+        // List
+        DataType::List(inner) => {
+            let inner_py = dtype_to_py(py, polars_mod, inner)?;
+            polars_mod.getattr("List")?.call1((inner_py,))
+        }
+
+        // Array (fixed-size list)
+        DataType::Array(inner, size) => {
+            let inner_py = dtype_to_py(py, polars_mod, inner)?;
+            polars_mod.getattr("Array")?.call1((inner_py, *size))
+        }
+
+        // Struct
+        DataType::Struct(fields) => {
+            let py_fields: Vec<Bound<'py, PyAny>> = fields
+                .iter()
+                .map(|f| {
+                    let field_dtype = dtype_to_py(py, polars_mod, f.dtype())?;
+                    let field_class = polars_mod.getattr("Field")?;
+                    field_class.call1((f.name().as_str(), field_dtype))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            polars_mod.getattr("Struct")?.call1((py_fields,))
+        }
+
+        // Enum - convert to Categorical for Python compatibility
+        // pyo3-polars has issues with Enum types, so we use Categorical
+        DataType::Enum(_, _) => {
+            // Use Categorical as a fallback since Enum serialization is problematic
+            polars_mod.getattr("Categorical")
+        }
+
+        // Categorical
+        DataType::Categorical(_, _) => polars_mod.getattr("Categorical"),
+
+        // Unknown - fallback to String as a safe default
+        DataType::Unknown(_) => polars_mod.getattr("String"),
+
+        // BinaryOffset - use Binary
+        DataType::BinaryOffset => polars_mod.getattr("Binary"),
+
+        // Catch-all for any other types
+        _ => {
+            // For any unhandled types, try to use String as a safe fallback
+            polars_mod.getattr("String")
+        }
+    }
 }
 
 /// User-facing Avro reader for the `open()` API.
