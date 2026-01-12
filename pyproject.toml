@@ -29,15 +29,20 @@ dev = ["pytest>=7.0", "hypothesis>=6.0", "maturin>=1.4"]
 
 [dependency-groups]
 dev = [
+  "avro>=1.11.0",
   "crc32c>=2.8",
   "fastavro>=1.12.1",
   "hypothesis>=6.150.0",
   "maturin>=1.11.2",
   "moto[s3]>=5.0",
+  "pandas>=2.3.3",
+  "polars-avro>=0.7.1",
   "psutil>=7.2.1",
+  "pyperf>=2.9.0",
   "pytest>=9.0.2",
   "pytest-cov>=7.0.0",
   "python-snappy>=0.7.3",
+  "rich>=13.0.0",
   "ruff>=0.8.0",
   "testcontainers[minio]>=4.0",
 ]
@@ -74,19 +79,15 @@ help = "Build production python wheel"
 cmd = "maturin build --release"
 
 [tool.poe.tasks.test-rust]
-help = "Run all Rust tests with all codec features"
+help = "Run all Rust tests"
 cmd = "cargo test --features test-features"
 
-[tool.poe.tasks.test-property]
-help = "Run rust property-based tests"
-cmd = "cargo test --test property_tests --features test-features"
-
-[tool.poe.tasks.test-schema]
-help = "Run schema tests"
-cmd = "cargo test --test schema_tests --features test-features"
+[tool.poe.tasks.test-rust-cov]
+help = "Run all Rust tests and report on coverage"
+cmd = "cargo llvm-cov --features test-features --html --open"
 
 [tool.poe.tasks.test-python]
-help = "Run Python unit tests"
+help = "Run Python tests (excluding slow tests)"
 cmd = "pytest python/tests -v -m 'not slow'"
 
 [tool.poe.tasks.test-python-slow]
@@ -95,30 +96,30 @@ cmd = "pytest python/tests -v -m slow"
 
 [tool.poe.tasks.test-all]
 help = "Run all tests"
-sequence = ["test-rust", "test-property", "test-schema", "test-python"]
+sequence = ["test-rust", "test-python"]
 
 [tool.poe.tasks.bench]
 help = "Run benchmarks"
 cmd = "cargo bench"
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench.args]]
 name = "BENCH_SAMPLE_SIZE"
 help = "Number of samples to collect"
 options = ["--sample-size", "-s"]
 type = "integer"
 default = 100
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench.args]]
 name = "BENCH_MEASUREMENT_TIME"
 help = "Measurement time in seconds"
 options = ["--measurement-time", "-t"]
 type = "integer"
 default = 5
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench.args]]
 name = "BENCH_WARM_UP_TIME"
 help = "Warm-up time in seconds"
 options = ["--warm-up-time", "-w"]
 type = "integer"
 default = 3
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench.args]]
 name = "BENCH_NOISE_THRESHOLD"
 help = "Noise threshold as a fraction"
 options = ["--noise-threshold", "-n"]
@@ -128,30 +129,86 @@ default = 0.01
 [tool.poe.tasks.bench-read]
 help = "Run read throughput benchmark"
 cmd = "cargo bench --bench read_throughput"
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench-read.args]]
 name = "BENCH_SAMPLE_SIZE"
 help = "Number of samples to collect"
 options = ["--sample-size", "-s"]
 type = "integer"
 default = 100
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench-read.args]]
 name = "BENCH_MEASUREMENT_TIME"
 help = "Measurement time in seconds"
 options = ["--measurement-time", "-t"]
 type = "integer"
 default = 5
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench-read.args]]
 name = "BENCH_WARM_UP_TIME"
 help = "Warm-up time in seconds"
 options = ["--warm-up-time", "-w"]
 type = "integer"
 default = 3
-[[tool.poe.tasks.build-bench.args]]
+[[tool.poe.tasks.bench-read.args]]
 name = "BENCH_NOISE_THRESHOLD"
 help = "Noise threshold as a fraction"
 options = ["--noise-threshold", "-n"]
 type = "float"
 default = 0.01
+
+[tool.poe.tasks.bench-compare]
+help = "Run comparative Python benchmarks (jetliner vs other libraries)"
+control.expr = "bench_not_nice"
+switch = [
+  { case = true, cmd = "nice -n -20 python benches/python/compare.py ${BENCH_READERS:+ --readers $BENCH_READERS} ${BENCH_SCENARIO:+ --scenario $BENCH_SCENARIO}" },
+  { cmd = "python benches/python/compare.py ${BENCH_READERS:+ --readers $BENCH_READERS} ${BENCH_SCENARIO:+ --scenario $BENCH_SCENARIO}" },
+]
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_QUICK"
+help = "Reduce the number of iterations"
+options = ["--quick"]
+type = "boolean"
+default = false
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_FULL"
+help = "Execute more iterations for statistical rigor"
+options = ["--full"]
+type = "boolean"
+default = false
+[[tool.poe.tasks.bench-compare.args]]
+name = "bench_not_nice"
+help = "Prioritize benchmarks over other processes (MacOS only, requires sudo)"
+options = ["--not-nice"]
+type = "boolean"
+default = false
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_SCENARIO"
+help = "Select benchmark scenarios to run"
+options = ["--scenario", "-s"]
+multiple = true
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_READERS"
+help = "Select avro readers to benchmark"
+options = ["--readers", "-r"]
+multiple = true
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_FAIL_FAST"
+help = "Abort on first error instead of continuing"
+options = ["--fail-fast"]
+type = "boolean"
+default = false
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_PREVIOUS"
+help = "Path to previous output JSON for baseline comparison"
+options = ["--previous"]
+type = "string"
+[[tool.poe.tasks.bench-compare.args]]
+name = "BENCH_OUTPUT"
+help = "Output complete JSON report file path"
+options = ["--output"]
+type = "string"
+
+[tool.poe.tasks.bench-data]
+help = "Generate benchmark data files"
+cmd = "python benches/python/generate_data.py"
 
 [tool.poe.tasks.format-rust]
 help = "Format Rust code"
@@ -175,21 +232,19 @@ help = "Check Python code formatting without changes"
 cmd = "ruff check python/"
 
 [tool.poe.tasks.check-rust]
-sequence = [
-  "style-rust",
-  "lint-rust",
-  "test-rust",
-  "test-property",
-  "test-schema",
-]
+help = "Run all Rust checks (format, lint, test)"
+sequence = ["style-rust", "lint-rust", "test-rust"]
 
 [tool.poe.tasks.check-python]
+help = "Run all Python checks (lint, test)"
 sequence = ["lint-python", "test-python"]
 
 [tool.poe.tasks.format]
+help = "Format all code (Rust + Python)"
 sequence = ["format-rust", "format-python"]
 
 [tool.poe.tasks.check]
+help = "Run all checks (format, lint, test)"
 sequence = ["check-rust", "check-python"]
 
 [tool.poe.tasks.clean]
@@ -203,21 +258,25 @@ sequence = [
 help = "Install rust toolchain to get started"
 shell = """
 command -v rustup >/dev/null || curl https://sh.rustup.rs -sSf | sh -s -- -y
+cargo install cargo-llvm-cov
 rustup component add rustfmt
 rustup component add clippy
+rustup component add llvm-tools-preview
 """
 
 [tool.poe.tasks.avro-schema]
 help = "Print the schema of the given avro file"
 expr = """json.dumps(fastavro.reader(open(avro_path, 'rb')).writer_schema, indent=2)"""
-args.avro_path = { positional = true }
+args.avro_path = { positional = true, help = "Local path to the avro file" }
 imports = ["json", "fastavro"]
 
 [tool.poe.tasks.avro-head]
 help = "Print the first n entries in the given avro file"
 expr = """pprint.pprint(list(itertools.islice(fastavro.reader(open(avro_path, 'rb')), take_n)))"""
-args.avro_path = { positional = true }
-args.take_n = { options = ["-n"], type = "integer" }
+args.avro_path = { positional = true, help = "Local path to the avro file" }
+args.take_n = { options = [
+  "-n",
+], type = "integer", help = "Number of items to show" }
 imports = ["json", "fastavro", "itertools", "pprint"]
 
 [tool.poe.tasks.docs-serve]

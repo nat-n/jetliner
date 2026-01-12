@@ -285,53 +285,90 @@ class TestEdgeCaseValues:
         assert all(b == 0xFF for b in ones_bytes), "All bytes should be 0xFF"
 
     def test_empty_array(self, get_test_data_path):
-        """Test empty array is read correctly.
+        """Test empty array is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
 
-        Note: Array fields are currently not included in the edge case file
-        due to a known Polars list builder limitation. This test is marked
-        as xfail until the limitation is resolved.
-        """
-        pytest.xfail("Array fields not included due to Polars list builder limitation")
+        first_row = df.head(1)
+        empty_array = first_row["array_empty"][0]
+
+        assert empty_array.len() == 0, "array_empty should be empty"
 
     def test_single_element_array(self, get_test_data_path):
-        """Test single element array is read correctly.
+        """Test single element array is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
 
-        Note: Array fields are currently not included in the edge case file
-        due to a known Polars list builder limitation.
-        """
-        pytest.xfail("Array fields not included due to Polars list builder limitation")
+        first_row = df.head(1)
+        single_array = first_row["array_single"][0]
+
+        assert single_array.len() == 1, "array_single should have 1 element"
+        assert single_array[0] == 42, "array_single[0] should be 42"
 
     def test_large_array(self, get_test_data_path):
-        """Test large array (1000 elements) is read correctly.
+        """Test large array (1000 elements) is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
 
-        Note: Array fields are currently not included in the edge case file
-        due to a known Polars list builder limitation.
-        """
-        pytest.xfail("Array fields not included due to Polars list builder limitation")
+        first_row = df.head(1)
+        large_array = first_row["array_large"][0]
+
+        assert large_array.len() == 1000, f"array_large should have 1000 elements, got {large_array.len()}"
+        # Verify first and last elements
+        assert large_array[0] == 0, "First element should be 0"
+        assert large_array[999] == 999, "Last element should be 999"
+
+    def test_array_of_strings(self, get_test_data_path):
+        """Test array of strings is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        string_array = first_row["array_strings"][0]
+
+        assert string_array.len() == 3, "array_strings should have 3 elements"
+        assert string_array[0] == "hello"
+        assert string_array[1] == "world"
+        assert string_array[2] == "test"
 
     def test_empty_map(self, get_test_data_path):
-        """Test empty map is read correctly.
+        """Test empty map is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
 
-        Note: Map fields are currently not included in the edge case file
-        due to a known Polars list builder limitation with structs.
-        """
-        pytest.xfail("Map fields not included due to Polars list builder limitation")
+        first_row = df.head(1)
+        empty_map = first_row["map_empty"][0]
+
+        assert empty_map.len() == 0, "map_empty should be empty"
 
     def test_single_entry_map(self, get_test_data_path):
-        """Test single entry map is read correctly.
+        """Test single entry map is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
 
-        Note: Map fields are currently not included in the edge case file
-        due to a known Polars list builder limitation with structs.
-        """
-        pytest.xfail("Map fields not included due to Polars list builder limitation")
+        first_row = df.head(1)
+        single_map = first_row["map_single"][0]
+
+        assert single_map.len() == 1, "map_single should have 1 entry"
+        # Maps are stored as List<Struct{key, value}>
+        entry = single_map[0]
+        assert entry["key"] == "key1"
+        assert entry["value"] == "value1"
 
     def test_map_with_unicode_keys(self, get_test_data_path):
-        """Test map with unicode keys is read correctly.
+        """Test map with unicode keys is read correctly."""
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
 
-        Note: Map fields are currently not included in the edge case file
-        due to a known Polars list builder limitation with structs.
-        """
-        pytest.xfail("Map fields not included due to Polars list builder limitation")
+        first_row = df.head(1)
+        unicode_map = first_row["map_unicode_keys"][0]
+
+        assert unicode_map.len() == 3, "map_unicode_keys should have 3 entries"
+        # Convert to dict for easier checking
+        map_dict = {entry["key"]: entry["value"] for entry in unicode_map}
+        assert "🔑" in map_dict, "Should have emoji key"
+        assert "مفتاح" in map_dict, "Should have Arabic key"
+        assert "键" in map_dict, "Should have Chinese key"
 
     def test_boolean_values(self, get_test_data_path):
         """Test boolean true/false values are read correctly."""
@@ -352,7 +389,7 @@ class TestEdgeCaseValues:
 
         df = lf.collect()
         assert df.height == 3
-        assert df.width == 34  # 34 fields in schema (arrays and maps removed)
+        assert df.width == 41  # 41 fields in schema (including arrays and maps)
 
     def test_edge_case_projection(self, get_test_data_path):
         """Test projection works with edge case file."""

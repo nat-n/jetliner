@@ -63,40 +63,43 @@ EDGE_CASE_SCHEMA = {
         {"name": "bytes_all_zeros", "type": "bytes", "doc": "Bytes with all zeros"},
         {"name": "bytes_all_ones", "type": "bytes", "doc": "Bytes with all 0xFF"},
         {"name": "bytes_long", "type": "bytes", "doc": "Long bytes (~10KB)"},
-        # Array edge cases - REMOVED: Known limitation with list builder
-        # See test_e2e_real_files.py::TestNonRecordTopLevelSchemas for details
-        # {
-        #     "name": "array_empty",
-        #     "type": {"type": "array", "items": "int"},
-        #     "doc": "Empty array",
-        # },
-        # {
-        #     "name": "array_single",
-        #     "type": {"type": "array", "items": "int"},
-        #     "doc": "Single element array",
-        # },
-        # {
-        #     "name": "array_large",
-        #     "type": {"type": "array", "items": "int"},
-        #     "doc": "Large array (1000 elements)",
-        # },
-        # Map edge cases - REMOVED: Known limitation with struct in list builder
-        # See test_e2e_real_files.py::TestNonRecordTopLevelSchemas for details
-        # {
-        #     "name": "map_empty",
-        #     "type": {"type": "map", "values": "string"},
-        #     "doc": "Empty map",
-        # },
-        # {
-        #     "name": "map_single",
-        #     "type": {"type": "map", "values": "string"},
-        #     "doc": "Single entry map",
-        # },
-        # {
-        #     "name": "map_unicode_keys",
-        #     "type": {"type": "map", "values": "string"},
-        #     "doc": "Map with unicode keys",
-        # },
+        # Array edge cases
+        {
+            "name": "array_empty",
+            "type": {"type": "array", "items": "int"},
+            "doc": "Empty array",
+        },
+        {
+            "name": "array_single",
+            "type": {"type": "array", "items": "int"},
+            "doc": "Single element array",
+        },
+        {
+            "name": "array_large",
+            "type": {"type": "array", "items": "int"},
+            "doc": "Large array (1000 elements)",
+        },
+        {
+            "name": "array_strings",
+            "type": {"type": "array", "items": "string"},
+            "doc": "Array of strings",
+        },
+        # Map edge cases
+        {
+            "name": "map_empty",
+            "type": {"type": "map", "values": "string"},
+            "doc": "Empty map",
+        },
+        {
+            "name": "map_single",
+            "type": {"type": "map", "values": "string"},
+            "doc": "Single entry map",
+        },
+        {
+            "name": "map_unicode_keys",
+            "type": {"type": "map", "values": "string"},
+            "doc": "Map with unicode keys",
+        },
         # Boolean
         {"name": "bool_true", "type": "boolean", "doc": "True value"},
         {"name": "bool_false", "type": "boolean", "doc": "False value"},
@@ -164,8 +167,15 @@ def create_edge_case_record(record_id: int) -> dict:
         "bytes_all_zeros": bytes(100),
         "bytes_all_ones": bytes([0xFF] * 100),
         "bytes_long": long_bytes,
-        # Array and Map edge cases removed due to known Polars list builder limitation
-        # See test_e2e_real_files.py::TestNonRecordTopLevelSchemas for details
+        # Array edge cases
+        "array_empty": [],
+        "array_single": [42],
+        "array_large": list(range(1000)),
+        "array_strings": ["hello", "world", "test"],
+        # Map edge cases
+        "map_empty": {},
+        "map_single": {"key1": "value1"},
+        "map_unicode_keys": {"🔑": "emoji key", "مفتاح": "arabic key", "键": "chinese key"},
         # Boolean
         "bool_true": True,
         "bool_false": False,

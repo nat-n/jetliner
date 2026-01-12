@@ -482,7 +482,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - **Property 15: Early Stopping Respects Row Limit**
       - **Validates: Requirements 6a.4**
 
-  - [ ] 17.5 Error recovery E2E tests with corrupted files
+  - [x] 17.5 Error recovery E2E tests with corrupted files
     - See Appendix: C_functional_coverage_gap_analysis.md (Gap 3)
     - [x] 17.5.1 Generate corrupted test files
       - Create Python script to generate files with specific corruption patterns
@@ -522,14 +522,107 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - _Requirements: 1.4, 1.5_
 
 - [ ] 18. Performance benchmarks
-  - [ ] 18.1 Create benchmark suite with criterion
+  - [x] 18.1 Create benchmark suite with criterion
     - Benchmark read throughput (records/sec)
     - Benchmark memory usage
     - Benchmark with different codecs
     - Benchmark with different batch sizes
     - _Requirements: 10.8_
 
-- [ ] 19. storage_options support for S3-compatible services
+  - [x] 18.2 Create comparative benchmark suite
+    - Compare jetliner against polars read_avro, fastavro, fastavro+pandas, apache-avro
+    - Use pytest-benchmark for timing with statistical rigor
+    - Track peak memory (RSS delta via psutil) alongside timing
+    - All test files use snappy codec
+    - _Requirements: 10.8_
+
+    - [x] 18.2.1 Add benchmark dependencies
+      - Add apache-avro as dev dependencies
+      - Ensure psutil is available (already a dev dependency)
+      - _Requirements: 10.8_
+
+    - [x] 18.2.2 Create benchmark data generator
+      - Generate files to `benches/data/` (gitignored)
+      - Skip generation if files already exist
+      - Use fastavro with snappy codec for all files
+      - Schemas:
+        - small: 100 records, simple schema (id, name, value)
+        - large_simple: 1M records, 1 string + 4 numeric columns
+        - large_wide: 1M records, 100 columns (mixed types)
+        - large_complex: 1M records, nested structs/arrays/maps (no recursion)
+      - _Requirements: 10.8_
+
+    - [x] 18.2.3 Implement benchmark fixtures
+      - Create fixtures for each library: jetliner, polars, fastavro, fastavro+pandas, apache-avro, polars-avro
+      - Each fixture reads file and returns DataFrame/records
+      - Add memory tracking fixture using psutil RSS delta
+      - _Requirements: 10.8_
+
+    - [x] 18.2.4 Implement benchmark scenarios
+      - Scenario: read_small (100 records) - measures overhead/startup
+      - Scenario: read_large_simple (1M records, 5 cols) - raw throughput
+      - Scenario: read_large_wide (1M records, 100 cols) - column handling
+      - Scenario: read_large_complex (1M records, nested) - complex type handling
+      - Scenario: read_with_projection (1M records, select 5 of 100 cols) - projection pushdown
+      - _Requirements: 10.8_
+
+    - [x] 18.2.5 Create benchmark runner and reporting
+      - Add poe task for running comparative benchmarks
+      - Generate comparison table (time + memory per library per scenario)
+      - Output results to console and optionally JSON for CI tracking
+      - _Requirements: 10.8_
+
+  - [x] 18.3 Performance Optimization: Pre-allocate Builders (Optimization 1)
+    - [x] 18.3.1 Add reserve() to all FieldBuilder variants
+      - Add reserve() to primitive builders (Boolean, Int32, Int64, Float32, Float64, etc.)
+      - Add reserve() to Binary and String builders
+      - Add no-op reserve() to NullBuilder
+      - Add recursive reserve() to NullableBuilder, StructBuilder
+      - Add reserve() to List, Map, Enum, Fixed, Recursive builders
+      - Add reserve() dispatch to FieldBuilder enum
+      - _Requirement: Optimization 1 from D_optimization-analysis.md_
+
+    - [x] 18.3.2 Add reserve_for_batch() to decoders
+      - Add reserve_for_batch() to FullRecordDecoder
+      - Add reserve_for_batch() to RecordDecoder wrapper
+      - Call from DataFrameBuilder::add_block() before decode loop
+      - _Requirement: Optimization 1 from D_optimization-analysis.md_
+
+    - [x] 18.3.3 Add reserve calls in array/map decode
+      - Call reserve() in ListBuilder::decode() after reading item_count
+      - Call reserve() in MapBuilder::decode() after reading entry_count
+      - _Requirement: Optimization 1 from D_optimization-analysis.md_
+
+    - [x] 18.3.4 Testing and verification
+      - All Rust tests pass (363 tests)
+      - All Python tests pass (283 tests, 11 xpassed)
+      - Benchmark results: 2.2% improvement on large_complex (1.338s → 1.308s)
+      - Still 15% slower than polars-avro (1.308s vs 1.139s = 169ms gap)
+      - _Requirement: Optimization 1 verification_
+
+  - [x] 18.4 Performance Optimization: Reuse Builders Across Batches (Optimization 2) - REGRESSION ⚠️
+    - [x] 18.4.1 Implementation
+      - Added reset() to all 17 FieldBuilder variants (Null, primitives, complex types)
+      - Added reset() dispatch to FieldBuilder enum
+      - Added reset_for_batch() to FullRecordDecoder and RecordDecoder
+      - Called reset_for_batch() after finish_batch() in DataFrameBuilder
+      - _Requirement: Optimization 2 from D_optimization-analysis.md_
+
+    - [x] 18.4.2 Testing and verification
+      - All Rust tests pass (363 tests)
+      - All Python tests pass (283 tests, 11 xpassed) - no data leakage
+      - **Benchmark results: 7.5% REGRESSION on large_complex (1.308s → 1.406s)** ⚠️
+      - **Gap with polars-avro increased from 169ms to 257ms**
+      - _Analysis: The explicit reset() calls add more overhead than benefit. The std::mem::take() in finish() was already leaving empty Vecs with capacity retained for primitive types. The additional reset work appears counterproductive._
+      - **Recommendation: Consider reverting this optimization and proceed directly to Optimization 3**
+
+  - [ ] 18.5 Performance Optimization: Future work
+    - [ ] 18.5.1 Optimization 3: Eliminate slice-per-element in ListBuilder::finish() (30-60% expected gain)
+      - This is the highest-impact optimization that directly addresses the core bottleneck
+      - Requires eliminating ~5M slice operations in large_complex scenario
+    - _Note: See D_optimization-analysis.md for detailed analysis and approach_
+
+- [x] 19. storage_options support for S3-compatible services
   - [x] 19.1 Add S3Config struct to Rust S3Source
     - Define S3Config with endpoint_url, aws_access_key_id, aws_secret_access_key, region
     - Update S3Source::new() to accept optional S3Config
@@ -548,7 +641,124 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Test that storage_options takes precedence over environment
     - _Requirements: 4.9, 4.10, 4.11, 4.12_
 
-- [ ] 20. Final checkpoint
+- [ ] 20. Extended type coverage tests
+  - [x] 20.1 Add tests for logical types
+    - Test date, time-millis, time-micros, timestamp-millis, timestamp-micros
+    - Test uuid (string logical type)
+    - Test decimal (bytes with precision/scale)
+    - Some logical types have value interpretation issues (xfail)
+    - _Requirements: 1.6_
+
+  - [x] 20.2 Add tests for enum and fixed types
+    - Test enum as Categorical type
+    - Test fixed as Binary type
+    - Currently not implemented (xfail)
+    - _Requirements: 1.4, 1.5_
+
+  - [x] 20.3 Add tests for nullable complex types
+    - Test nullable arrays and records
+    - Currently fails with null mask error (xfail)
+    - _Requirements: 5.5_
+
+- [ ] 21. Fix nullable complex types
+  - [x] 21.1 Investigate null mask error for nullable arrays/records
+    - Debug the "Failed to apply null mask: failed to determine supertype" error
+    - Identify root cause in `src/reader/record_decoder.rs` union handling
+    - Document findings in devnotes
+    - _Requirements: 5.5_
+
+  - [ ] 21.2 Fix ListBuilder null handling for nullable arrays
+    - Ensure ListBuilder correctly handles null values in unions
+    - Fix null mask application for List types
+    - Test with `["null", {"type": "array", "items": "int"}]` schema
+    - Input: 21.1-nullable-complex-types-investigation.md
+    - _Requirements: 5.5_
+
+  - [ ] 21.3 Fix StructBuilder null handling for nullable records
+    - Ensure StructBuilder correctly handles null values in unions
+    - Fix null mask application for Struct types
+    - Test with `["null", {"type": "record", ...}]` schema
+    - Input: 21.1-nullable-complex-types-investigation.md
+    - _Requirements: 5.5_
+
+  - [ ] 21.4 Remove xfail markers from nullable type tests
+    - Update `python/tests/types/test_nullable_types.py`
+    - Verify all nullable primitive and complex type tests pass
+    - _Requirements: 5.5_
+
+- [ ] 22. Implement enum type support
+  - [ ] 22.1 Add EnumBuilder for Avro enum decoding
+    - Create builder that maps enum index to symbol string
+    - Use Arrow Dictionary type (Int32 keys, Utf8 values)
+    - Store enum symbols from schema for lookup
+    - _Requirements: 1.5_
+
+  - [ ] 22.2 Implement enum decoding in record_decoder.rs
+    - Decode varint index from Avro binary
+    - Look up symbol string from schema
+    - Append to DictionaryBuilder
+    - _Requirements: 1.5_
+
+  - [ ] 22.3 Add Arrow type mapping for enum
+    - Map Avro enum to Arrow Dictionary(Int32, Utf8)
+    - Ensure Polars reads as Categorical type
+    - Update `src/convert/arrow.rs`
+    - _Requirements: 5.4_
+
+  - [ ] 22.4 Remove xfail markers from enum tests
+    - Update `python/tests/types/test_enum_fixed.py`
+    - Verify enum values and categories are correct
+    - _Requirements: 1.5_
+
+- [ ] 23. Implement fixed type support
+  - [ ] 23.1 Add FixedBuilder for Avro fixed decoding
+    - Create builder for fixed-size binary data
+    - Use Arrow FixedSizeBinary or Binary type
+    - Store size from schema for validation
+    - _Requirements: 1.5_
+
+  - [ ] 23.2 Implement fixed decoding in record_decoder.rs
+    - Read exactly N bytes from Avro binary (N from schema)
+    - Append to BinaryBuilder
+    - _Requirements: 1.5_
+
+  - [ ] 23.3 Add Arrow type mapping for fixed
+    - Map Avro fixed to Arrow FixedSizeBinary(N) or Binary
+    - Ensure Polars reads as Binary type
+    - Update `src/convert/arrow.rs`
+    - _Requirements: 5.4_
+
+  - [ ] 23.4 Remove xfail markers from fixed tests
+    - Update `python/tests/types/test_enum_fixed.py`
+    - Verify fixed values have correct size and content
+    - _Requirements: 1.5_
+
+- [ ] 24. Fix logical type value interpretation
+  - [ ] 24.1 Fix date logical type (off by one day)
+    - Investigate date calculation in `src/reader/decode.rs`
+    - Ensure days-since-epoch is correctly converted
+    - May be timezone or epoch definition issue
+    - _Requirements: 1.6_
+
+  - [ ] 24.2 Fix time-millis/time-micros interpretation
+    - Investigate time value decoding
+    - Ensure milliseconds/microseconds since midnight is correct
+    - Check Arrow Time32/Time64 unit handling
+    - Write thorough tests
+    - _Requirements: 1.6_
+
+  - [ ] 24.3 Fix timestamp-millis timezone handling
+    - Investigate 1-hour offset issue
+    - Ensure UTC timezone is correctly applied
+    - Check Arrow Timestamp timezone handling
+    - _Requirements: 1.6_
+
+  - [ ] 24.4 Remove xfail markers from logical type tests
+    - Update `python/tests/types/test_logical_types.py`
+    - Verify all date/time values match expected
+    - _Requirements: 1.6_
+
+- [ ] 25. Final checkpoint
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

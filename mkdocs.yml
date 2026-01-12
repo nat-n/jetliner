@@ -1,7 +1,7 @@
 site_name: Jetliner
 site_description: High-performance Avro streaming reader for Polars DataFrames
-site_url: https://github.com/jetliner/jetliner/
-repo_url: https://github.com/jetliner/jetliner
+site_url: https://github.com/nat-n/jetliner/
+repo_url: https://github.com/nat-n/jetliner
 repo_name: jetliner
 
 theme:

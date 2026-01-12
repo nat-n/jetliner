@@ -10,6 +10,7 @@ High-performance Polars plugin for streaming Avro files into DataFrames.
 
 ## Performance
 
+- Remember that performance is critical, always consider whether code is optimal
 - Use `bytes::Bytes` for zero-copy data handling
 - Prefer streaming over loading entire files into memory
 - Async I/O with `tokio` for S3 and local sources

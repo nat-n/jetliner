@@ -34,3 +34,4 @@ site/
 *.swo
 *~
 .DS_Store
+NOTES.md

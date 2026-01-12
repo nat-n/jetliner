@@ -16,12 +16,15 @@ Jetliner is designed for data pipelines where Avro files live on S3 or local dis
 
 ## Features
 
-- **High-performance streaming** — Block-by-block processing with minimal memory footprint, ideal for large files
+- **High-performance streaming** — Supports block-by-block processing with minimal memory footprint, ideal for large files
+- **Query optimization** — Projection pushdown (select columns) and predicate pushdown (filter rows) at the source via Polars LazyFrames
 - **S3 and local file support** — Read Avro files from Amazon S3 or local disk with the same API
-- **Query optimization** — Projection pushdown (select columns) and predicate pushdown (filter rows) at the source
 - **All standard codecs** — null, snappy, deflate, zstd, bzip2, and xz compression out of the box
-- **Polars-native integration** — Returns LazyFrames for seamless integration with Polars query plans
+- **(Almost) complete avro schema support** — reads almost any valid avro (see limitations)
 - **Flexible error handling** — Optionally skip bad blocks for resilience to data corruption
+- **Ridiculously fast reads** — Check the benchmarks!
+
+This library was created to serve performance critical scenarios around processing large avro files from python. It's fast but limited to read use cases. If you also need to write avro files from Polars then you should check [polars-avro](https://github.com/hafaio/polars-avro).
 
 ## Installation
 
@@ -143,7 +146,7 @@ TODO...
 
 ## Development
 
-The project uses spec driven development via [kiro](https://kiro.dev/). See `./.kiro` for the specs.
+The project uses spec driven development via [kiro](https://kiro.dev/). See `./.kiro` for the specs and related documentation.
 
 ### Project tasks
 

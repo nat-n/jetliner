@@ -222,6 +222,10 @@ impl DataFrameBuilder {
         let mut data = block.data.as_ref();
         let record_count = block.record_count as usize;
 
+        // Pre-allocate capacity for this block's records
+        // This reduces reallocations during the decode loop
+        self.decoder.reserve_for_batch(record_count);
+
         for record_index in 0..record_count {
             match self.decoder.decode_record(&mut data) {
                 Ok(()) => {}

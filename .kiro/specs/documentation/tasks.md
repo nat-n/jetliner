@@ -58,7 +58,7 @@ This plan implements a comprehensive documentation system for Jetliner, starting
       - _Requirements: 6.1_
     - [ ]* 2.5.3 Create docs/performance/optimization.md
       - _Requirements: 6.2, 6.3, 6.4, 6.5_
-  - [ ]* 2.6 Create Contributing guide (docs/contributing.md)
+  - [x] 2.6 Create Contributing guide (docs/contributing.md)
     - Development setup
     - Running tests
     - Code style guidelines
@@ -93,7 +93,7 @@ This plan implements a comprehensive documentation system for Jetliner, starting
   - **Validates: Requirements 1.6**
 
 - [ ] 5. Set up GitHub Actions for documentation publishing
-  - [ ] 5.1 Create .github/workflows/docs.yml
+  - [x] 5.1 Create .github/workflows/docs.yml
     - Build on push to main (docs/, mkdocs.yml, python/jetliner/__init__.py)
     - Support workflow_dispatch for manual triggers
     - Deploy to GitHub Pages
