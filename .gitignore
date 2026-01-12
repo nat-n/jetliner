@@ -35,3 +35,5 @@ site/
 *~
 .DS_Store
 NOTES.md
+
+benchmark_report*.json

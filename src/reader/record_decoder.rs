@@ -12,8 +12,9 @@
 use crate::convert::avro_to_arrow_schema;
 use crate::error::{DecodeError, SchemaError};
 use crate::schema::{AvroSchema, LogicalTypeName, RecordSchema};
-use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
+use polars_arrow::array::ListArray;
+use polars_arrow::offset::Offsets;
 
 use super::decode::{
     decode_boolean, decode_bytes, decode_double, decode_enum_index, decode_fixed, decode_float,
@@ -250,10 +251,8 @@ impl ProjectedRecordDecoder {
     /// # Arguments
     /// * `record_count` - The number of records expected
     pub fn reserve_for_batch(&mut self, record_count: usize) {
-        for builder_opt in &mut self.builders {
-            if let Some(builder) = builder_opt {
-                builder.reserve(record_count);
-            }
+        for builder in self.builders.iter_mut().flatten() {
+            builder.reserve(record_count);
         }
     }
 }
@@ -1102,58 +1101,6 @@ fn append_default_to_builder(
     Ok(())
 }
 
-/// Enum to hold type-specific list builders for optimal performance.
-/// Created once at schema parse time based on the inner element type.
-enum ListBuilderKind {
-    // Numeric types use specialized primitive builders
-    Int8(ListPrimitiveChunkedBuilder<Int8Type>),
-    Int16(ListPrimitiveChunkedBuilder<Int16Type>),
-    Int32(ListPrimitiveChunkedBuilder<Int32Type>),
-    Int64(ListPrimitiveChunkedBuilder<Int64Type>),
-    UInt8(ListPrimitiveChunkedBuilder<UInt8Type>),
-    UInt16(ListPrimitiveChunkedBuilder<UInt16Type>),
-    UInt32(ListPrimitiveChunkedBuilder<UInt32Type>),
-    UInt64(ListPrimitiveChunkedBuilder<UInt64Type>),
-    Float32(ListPrimitiveChunkedBuilder<Float32Type>),
-    Float64(ListPrimitiveChunkedBuilder<Float64Type>),
-    // All other types (String, Binary, Struct, List, etc.) use the general builder
-    General(AnonymousOwnedListBuilder),
-}
-
-impl ListBuilderKind {
-    fn append_series(&mut self, s: &Series) -> PolarsResult<()> {
-        match self {
-            ListBuilderKind::Int8(b) => b.append_series(s),
-            ListBuilderKind::Int16(b) => b.append_series(s),
-            ListBuilderKind::Int32(b) => b.append_series(s),
-            ListBuilderKind::Int64(b) => b.append_series(s),
-            ListBuilderKind::UInt8(b) => b.append_series(s),
-            ListBuilderKind::UInt16(b) => b.append_series(s),
-            ListBuilderKind::UInt32(b) => b.append_series(s),
-            ListBuilderKind::UInt64(b) => b.append_series(s),
-            ListBuilderKind::Float32(b) => b.append_series(s),
-            ListBuilderKind::Float64(b) => b.append_series(s),
-            ListBuilderKind::General(b) => b.append_series(s),
-        }
-    }
-
-    fn finish(&mut self) -> Series {
-        match self {
-            ListBuilderKind::Int8(b) => b.finish().into_series(),
-            ListBuilderKind::Int16(b) => b.finish().into_series(),
-            ListBuilderKind::Int32(b) => b.finish().into_series(),
-            ListBuilderKind::Int64(b) => b.finish().into_series(),
-            ListBuilderKind::UInt8(b) => b.finish().into_series(),
-            ListBuilderKind::UInt16(b) => b.finish().into_series(),
-            ListBuilderKind::UInt32(b) => b.finish().into_series(),
-            ListBuilderKind::UInt64(b) => b.finish().into_series(),
-            ListBuilderKind::Float32(b) => b.finish().into_series(),
-            ListBuilderKind::Float64(b) => b.finish().into_series(),
-            ListBuilderKind::General(b) => b.finish().into_series(),
-        }
-    }
-}
-
 /// Builder for list/array values.
 struct ListBuilder {
     name: String,
@@ -1161,114 +1108,16 @@ struct ListBuilder {
     inner_schema: AvroSchema,
     offsets: Vec<i64>,
     current_offset: i64,
-    /// The inner element DataType, used to create the right builder kind
-    inner_dtype: DataType,
 }
 
 impl ListBuilder {
     fn new(name: &str, inner: Box<FieldBuilder>, inner_schema: &AvroSchema) -> Self {
-        // Determine the inner dtype from the schema
-        let inner_dtype = crate::convert::avro_to_arrow(inner_schema).unwrap_or(DataType::Null);
-
         Self {
             name: name.to_string(),
             inner,
             inner_schema: inner_schema.clone(),
             offsets: vec![0], // Start with offset 0
             current_offset: 0,
-            inner_dtype,
-        }
-    }
-
-    /// Create the appropriate builder kind based on inner dtype
-    fn create_builder_kind(&self, capacity: usize) -> ListBuilderKind {
-        let name: PlSmallStr = self.name.clone().into();
-        let values_capacity = capacity * 4; // estimate
-
-        match &self.inner_dtype {
-            DataType::Int8 => ListBuilderKind::Int8(ListPrimitiveChunkedBuilder::<Int8Type>::new(
-                name,
-                capacity,
-                values_capacity,
-                self.inner_dtype.clone(),
-            )),
-            DataType::Int16 => {
-                ListBuilderKind::Int16(ListPrimitiveChunkedBuilder::<Int16Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::Int32 => {
-                ListBuilderKind::Int32(ListPrimitiveChunkedBuilder::<Int32Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::Int64 => {
-                ListBuilderKind::Int64(ListPrimitiveChunkedBuilder::<Int64Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::UInt8 => {
-                ListBuilderKind::UInt8(ListPrimitiveChunkedBuilder::<UInt8Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::UInt16 => {
-                ListBuilderKind::UInt16(ListPrimitiveChunkedBuilder::<UInt16Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::UInt32 => {
-                ListBuilderKind::UInt32(ListPrimitiveChunkedBuilder::<UInt32Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::UInt64 => {
-                ListBuilderKind::UInt64(ListPrimitiveChunkedBuilder::<UInt64Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::Float32 => {
-                ListBuilderKind::Float32(ListPrimitiveChunkedBuilder::<Float32Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            DataType::Float64 => {
-                ListBuilderKind::Float64(ListPrimitiveChunkedBuilder::<Float64Type>::new(
-                    name,
-                    capacity,
-                    values_capacity,
-                    self.inner_dtype.clone(),
-                ))
-            }
-            _ => ListBuilderKind::General(AnonymousOwnedListBuilder::new(
-                name,
-                capacity,
-                Some(self.inner_dtype.clone()),
-            )),
         }
     }
 
@@ -1310,19 +1159,24 @@ impl ListBuilder {
         self.offsets = vec![0];
         self.current_offset = 0;
 
-        // Create the appropriate builder kind based on inner dtype (determined at schema parse time)
-        let mut builder = self.create_builder_kind(offsets.len().saturating_sub(1));
+        // Direct ListArray construction - avoids slice-per-element overhead
+        // Get the underlying arrow array from the inner series
+        let inner_chunks = inner_series.to_arrow(0, CompatLevel::newest());
+        let inner_dtype = inner_chunks.dtype().clone();
 
-        for window in offsets.windows(2) {
-            let start = window[0];
-            let len = (window[1] - window[0]) as usize;
-            let slice = inner_series.slice(start, len);
-            builder.append_series(&slice).map_err(|e| {
-                DecodeError::InvalidData(format!("Failed to append to list: {}", e))
-            })?;
-        }
+        // Create ListArray directly from offsets and values
+        let list_dtype = ListArray::<i64>::default_datatype(inner_dtype);
+        let list_arr = ListArray::<i64>::new(
+            list_dtype,
+            // SAFETY: offsets are monotonically increasing (we build them that way)
+            unsafe { Offsets::new_unchecked(offsets).into() },
+            inner_chunks,
+            None,
+        );
 
-        Ok(builder.finish())
+        // Wrap in ListChunked
+        let list_chunked = ListChunked::with_chunk(self.name.clone().into(), list_arr);
+        Ok(list_chunked.into_series())
     }
 
     fn reserve(&mut self, additional: usize) {
@@ -1405,23 +1259,21 @@ impl MapBuilder {
         .map_err(|e| DecodeError::InvalidData(format!("Failed to create struct: {}", e)))?
         .into_series();
 
-        // Use AnonymousOwnedListBuilder which supports Struct inner dtype
-        let mut builder = AnonymousOwnedListBuilder::new(
-            self.name.clone().into(),
-            offsets.len().saturating_sub(1),
-            Some(struct_series.dtype().clone()),
+        // Direct ListArray construction - avoids slice-per-element overhead
+        let inner_chunks = struct_series.to_arrow(0, CompatLevel::newest());
+        let inner_dtype = inner_chunks.dtype().clone();
+
+        let list_dtype = ListArray::<i64>::default_datatype(inner_dtype);
+        let list_arr = ListArray::<i64>::new(
+            list_dtype,
+            // SAFETY: offsets are monotonically increasing (we build them that way)
+            unsafe { Offsets::new_unchecked(offsets).into() },
+            inner_chunks,
+            None,
         );
 
-        for window in offsets.windows(2) {
-            let start = window[0];
-            let len = (window[1] - window[0]) as usize;
-            let slice = struct_series.slice(start, len);
-            builder.append_series(&slice).map_err(|e| {
-                DecodeError::InvalidData(format!("Failed to append to map list: {}", e))
-            })?;
-        }
-
-        Ok(builder.finish().into_series())
+        let list_chunked = ListChunked::with_chunk(self.name.clone().into(), list_arr);
+        Ok(list_chunked.into_series())
     }
 
     fn reserve(&mut self, additional: usize) {

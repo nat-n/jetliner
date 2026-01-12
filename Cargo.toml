@@ -39,6 +39,7 @@ polars = { version = "0.52", features = [
   "dtype-decimal",
   "dtype-array",
 ] }
+polars-arrow = "0.52"
 
 # Compression codecs (optional)
 snap = { version = "1", optional = true }

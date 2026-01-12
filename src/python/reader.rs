@@ -975,6 +975,7 @@ fn schema_to_py(py: Python<'_>, schema: &polars::prelude::Schema) -> PyResult<Py
 /// Convert a Polars DataType to a Python polars DataType object.
 ///
 /// This handles all DataTypes including complex ones like Enum, List, Struct, etc.
+#[allow(clippy::only_used_in_recursion)]
 fn dtype_to_py<'py>(
     py: Python<'py>,
     polars_mod: &Bound<'py, pyo3::types::PyModule>,
