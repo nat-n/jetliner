@@ -235,6 +235,88 @@ class TestEdgeCaseValues:
         assert "\r" in newline_str, "Should contain CR"
         assert "line1" in newline_str and "line2" in newline_str
 
+    def test_very_long_string(self, get_test_data_path):
+        """Test very long string (~100KB) is read correctly.
+
+        This tests the MutableBinaryViewArray handling of large strings
+        that exceed the inline limit and must be stored in separate buffers.
+        """
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        very_long_str = first_row["string_very_long"][0]
+
+        # Should be 100000 characters
+        assert len(very_long_str) == 100000, f"string_very_long should be 100000 chars, got {len(very_long_str)}"
+        assert very_long_str == "X" * 100000, "string_very_long should be all 'X' characters"
+
+    def test_small_string_inlined(self, get_test_data_path):
+        """Test small string (<12 bytes) is read correctly.
+
+        MutableBinaryViewArray inlines strings <= 12 bytes in the view itself.
+        This tests that small strings are handled correctly.
+        """
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        small_str = first_row["string_small"][0]
+
+        assert small_str == "tiny", "string_small should be 'tiny'"
+        assert len(small_str) == 4, "string_small should be 4 bytes"
+
+    def test_string_exactly_12_bytes(self, get_test_data_path):
+        """Test string exactly 12 bytes is read correctly.
+
+        This is the boundary case for MutableBinaryViewArray inline storage.
+        Strings <= 12 bytes are inlined, > 12 bytes go to buffer.
+        """
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        boundary_str = first_row["string_exactly_12"][0]
+
+        assert boundary_str == "exactly12byt", "string_exactly_12 should be 'exactly12byt'"
+        assert len(boundary_str) == 12, "string_exactly_12 should be exactly 12 bytes"
+
+    def test_string_13_bytes(self, get_test_data_path):
+        """Test string 13 bytes is read correctly.
+
+        This is just over the inline limit for MutableBinaryViewArray.
+        Strings > 12 bytes must be stored in separate buffers.
+        """
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+        over_limit_str = first_row["string_13_bytes"][0]
+
+        assert over_limit_str == "thirteen byte", "string_13_bytes should be 'thirteen byte'"
+        assert len(over_limit_str) == 13, "string_13_bytes should be 13 bytes"
+
+    def test_mixed_string_sizes(self, get_test_data_path):
+        """Test that mixed small and large strings are all read correctly.
+
+        This verifies the MutableBinaryViewArray handles the mix of:
+        - Inlined small strings (in view)
+        - Buffer-stored large strings
+        """
+        path = get_test_data_path("edge-cases/edge-cases.avro")
+        df = jetliner.scan(path).collect()
+
+        first_row = df.head(1)
+
+        # Small (inlined)
+        assert first_row["string_small"][0] == "tiny"
+        assert first_row["string_exactly_12"][0] == "exactly12byt"
+
+        # Large (buffered)
+        assert first_row["string_13_bytes"][0] == "thirteen byte"
+        assert len(first_row["string_long"][0]) == 10000
+        assert len(first_row["string_very_long"][0]) == 100000
+
     def test_empty_bytes(self, get_test_data_path):
         """Test empty bytes is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
@@ -389,7 +471,7 @@ class TestEdgeCaseValues:
 
         df = lf.collect()
         assert df.height == 3
-        assert df.width == 41  # 41 fields in schema (including arrays and maps)
+        assert df.width == 45  # 45 fields in schema (including arrays and maps)
 
     def test_edge_case_projection(self, get_test_data_path):
         """Test projection works with edge case file."""

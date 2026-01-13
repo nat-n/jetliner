@@ -58,6 +58,10 @@ EDGE_CASE_SCHEMA = {
         {"name": "string_unicode_surrogate", "type": "string", "doc": "String with surrogate pairs"},
         {"name": "string_null_char", "type": "string", "doc": "String with null character"},
         {"name": "string_newlines", "type": "string", "doc": "String with various newlines"},
+        {"name": "string_very_long", "type": "string", "doc": "Very long string (~100KB)"},
+        {"name": "string_small", "type": "string", "doc": "Small string (<12 bytes, inlined in view)"},
+        {"name": "string_exactly_12", "type": "string", "doc": "Exactly 12 bytes (view boundary)"},
+        {"name": "string_13_bytes", "type": "string", "doc": "13 bytes (just over view inline limit)"},
         # Bytes edge cases
         {"name": "bytes_empty", "type": "bytes", "doc": "Empty bytes"},
         {"name": "bytes_all_zeros", "type": "bytes", "doc": "Bytes with all zeros"},
@@ -117,6 +121,9 @@ def create_edge_case_record(record_id: int) -> dict:
     # Using 10KB which is still substantial but won't exceed buffer limits
     long_string = "A" * 10000  # ~10KB
 
+    # Very long string - 100KB to stress test the view array with large strings
+    very_long_string = "X" * 100000  # ~100KB
+
     # Unicode test strings
     emoji_string = "Hello 👋 World 🌍 Test 🧪 Rocket 🚀 Fire 🔥"
     rtl_string = "مرحبا بالعالم Hello שלום עולם"  # Arabic and Hebrew
@@ -124,6 +131,12 @@ def create_edge_case_record(record_id: int) -> dict:
     surrogate_string = "𝄞 𝕳𝖊𝖑𝖑𝖔 🎵"  # Musical symbols and styled text
     null_char_string = "before\x00after"
     newlines_string = "line1\nline2\rline3\r\nline4"
+
+    # Small strings for view array inline testing
+    # MutableBinaryViewArray inlines strings <= 12 bytes in the view itself
+    small_string = "tiny"  # 4 bytes - definitely inlined
+    exactly_12_string = "exactly12byt"  # exactly 12 bytes - boundary case
+    thirteen_bytes_string = "thirteen byte"  # 13 bytes - just over inline limit
 
     # Long bytes - keep under 64KB to fit in single block read buffer
     long_bytes = bytes([i % 256 for i in range(10000)])
@@ -162,6 +175,10 @@ def create_edge_case_record(record_id: int) -> dict:
         "string_unicode_surrogate": surrogate_string,
         "string_null_char": null_char_string,
         "string_newlines": newlines_string,
+        "string_very_long": very_long_string,
+        "string_small": small_string,
+        "string_exactly_12": exactly_12_string,
+        "string_13_bytes": thirteen_bytes_string,
         # Bytes edge cases
         "bytes_empty": b"",
         "bytes_all_zeros": bytes(100),

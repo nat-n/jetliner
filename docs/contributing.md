@@ -4,12 +4,14 @@ Thank you for your interest in contributing to Jetliner!
 
 ## Development Setup
 
-### Prerequisites
+### Tools
 
 - Python 3.11+
 - Rust toolchain (install via [rustup](https://rustup.rs/))
 - [uv](https://docs.astral.sh/uv/) for Python dependency management
 - [poe](https://poethepoet.natn.io/) for task management
+
+This project was mostly implemented via Spec Driven Development with [kiro](https://kiro.dev/), so requirements, design, and tasks are tracked permanently under the .kiro/specs
 
 ### Getting Started
 
@@ -22,7 +24,7 @@ cd jetliner
 poe rustup
 
 # Create virtual environment and install dependencies
-uv sync --group dev
+uv sync
 
 # Build the Rust extension
 poe build-dev

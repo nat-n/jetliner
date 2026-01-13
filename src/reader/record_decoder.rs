@@ -13,12 +13,12 @@ use crate::convert::avro_to_arrow_schema;
 use crate::error::{DecodeError, SchemaError};
 use crate::schema::{AvroSchema, LogicalTypeName, RecordSchema};
 use polars::prelude::*;
-use polars_arrow::array::ListArray;
+use polars_arrow::array::{ListArray, MutableBinaryViewArray};
 use polars_arrow::offset::Offsets;
 
 use super::decode::{
-    decode_boolean, decode_bytes, decode_double, decode_enum_index, decode_fixed, decode_float,
-    decode_int, decode_long, decode_null, decode_string,
+    decode_boolean, decode_bytes, decode_bytes_ref, decode_double, decode_enum_index, decode_fixed,
+    decode_float, decode_int, decode_long, decode_null, decode_string_ref,
 };
 
 /// Trait for record decoding with direct Arrow builder integration.
@@ -858,63 +858,156 @@ impl Float64Builder {
 }
 
 /// Builder for binary data.
+///
+/// Uses `MutableBinaryViewArray` for efficient Arrow array construction.
+/// This avoids the overhead of `Vec<Vec<u8>>` which requires separate allocations per value.
+///
+/// # Performance
+/// - Uses polars' native `MutableBinaryViewArray` which is optimized for binary data
+/// - Direct construction of `BinaryViewArray` at finish()
+/// - Uses `decode_bytes_ref` to avoid intermediate allocations during decode
 struct BinaryBuilder {
     name: String,
-    values: Vec<Vec<u8>>,
+    /// Mutable binary view array builder
+    builder: MutableBinaryViewArray<[u8]>,
 }
 
 impl BinaryBuilder {
     fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            values: Vec::new(),
+            builder: MutableBinaryViewArray::new(),
         }
     }
 
     fn decode(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
-        let value = decode_bytes(data)?;
-        self.values.push(value);
+        // Use decode_bytes_ref to avoid allocation - push directly into builder
+        let bytes = decode_bytes_ref(data)?;
+        self.builder.push_value(bytes);
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
-        let series = Series::new(self.name.clone().into(), values);
-        Ok(series)
+        // Take the builder and replace with a new one
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
+
+        // Freeze the mutable array into an immutable BinaryViewArray
+        let arr = builder.freeze();
+
+        // Wrap in BinaryChunked and convert to Series
+        let chunked = BinaryChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
+    }
+
+    /// Finish building and return the Series with a validity mask applied.
+    ///
+    /// This is used by NullableBuilder to apply null values.
+    fn finish_with_validity(&mut self, validity: &[bool]) -> Result<Series, DecodeError> {
+        // Take the builder and replace with a new one
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
+
+        // Apply validity mask by setting validity on the builder
+        // We need to create a new builder with validity
+        let mut new_builder = MutableBinaryViewArray::with_capacity(validity.len());
+
+        // Get the frozen array to iterate over values
+        let arr = builder.freeze();
+
+        // Re-add values with validity
+        for (i, &is_valid) in validity.iter().enumerate() {
+            if is_valid {
+                // SAFETY: i is within bounds since validity.len() == arr.len()
+                let value = unsafe { arr.value_unchecked(i) };
+                new_builder.push_value(value);
+            } else {
+                new_builder.push_null();
+            }
+        }
+
+        let arr = new_builder.freeze();
+        let chunked = BinaryChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
     }
 
     fn reserve(&mut self, additional: usize) {
-        self.values.reserve(additional);
+        self.builder.reserve(additional);
     }
 }
 
 /// Builder for UTF-8 strings.
+///
+/// Uses `MutableBinaryViewArray<str>` for efficient Arrow array construction.
+/// This avoids the overhead of `Vec<String>` which requires separate allocations per value.
+///
+/// # Performance
+/// - Uses polars' native `MutableBinaryViewArray<str>` which is optimized for string data
+/// - Direct construction of `Utf8ViewArray` at finish()
+/// - Uses `decode_string_ref` to avoid intermediate allocations during decode
 struct StringBuilder {
     name: String,
-    values: Vec<String>,
+    /// Mutable string view array builder
+    builder: MutableBinaryViewArray<str>,
 }
 
 impl StringBuilder {
     fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            values: Vec::new(),
+            builder: MutableBinaryViewArray::new(),
         }
     }
 
     fn decode(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
-        let value = decode_string(data)?;
-        self.values.push(value);
+        // Use decode_string_ref to avoid allocation - push directly into builder
+        let s = decode_string_ref(data)?;
+        self.builder.push_value(s);
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
-        Ok(Series::new(self.name.clone().into(), values))
+        // Take the builder and replace with a new one
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
+
+        // Freeze the mutable array into an immutable Utf8ViewArray
+        let arr = builder.freeze();
+
+        // Wrap in StringChunked and convert to Series
+        let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
+    }
+
+    /// Finish building and return the Series with a validity mask applied.
+    ///
+    /// This is used by NullableBuilder to apply null values.
+    fn finish_with_validity(&mut self, validity: &[bool]) -> Result<Series, DecodeError> {
+        // Take the builder and replace with a new one
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
+
+        // Apply validity mask by setting validity on the builder
+        // We need to create a new builder with validity
+        let mut new_builder = MutableBinaryViewArray::with_capacity(validity.len());
+
+        // Get the frozen array to iterate over values
+        let arr = builder.freeze();
+
+        // Re-add values with validity
+        for (i, &is_valid) in validity.iter().enumerate() {
+            if is_valid {
+                // SAFETY: i is within bounds since validity.len() == arr.len()
+                let value = unsafe { arr.value_unchecked(i) };
+                new_builder.push_value(value);
+            } else {
+                new_builder.push_null();
+            }
+        }
+
+        let arr = new_builder.freeze();
+        let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
     }
 
     fn reserve(&mut self, additional: usize) {
-        self.values.reserve(additional);
+        self.builder.reserve(additional);
     }
 }
 
@@ -987,8 +1080,14 @@ impl NullableBuilder {
             FieldBuilder::Int64(b) => b.values.push(0),
             FieldBuilder::Float32(b) => b.values.push(0.0),
             FieldBuilder::Float64(b) => b.values.push(0.0),
-            FieldBuilder::Binary(b) => b.values.push(Vec::new()),
-            FieldBuilder::String(b) => b.values.push(String::new()),
+            FieldBuilder::Binary(b) => {
+                // Append empty binary value
+                b.builder.push_value(&[] as &[u8]);
+            }
+            FieldBuilder::String(b) => {
+                // Append empty string value
+                b.builder.push_value("");
+            }
             FieldBuilder::List(b) => b.offsets.push(b.current_offset),
             FieldBuilder::Map(b) => b.offsets.push(b.current_offset),
             FieldBuilder::Struct(b) => {
@@ -1025,8 +1124,21 @@ impl NullableBuilder {
     }
 
     fn finish(&mut self) -> Result<Series, DecodeError> {
-        let inner_series = self.inner.finish()?;
         let validity = std::mem::take(&mut self.validity);
+
+        // For BinaryBuilder, use the specialized finish_with_validity method
+        // to properly apply the validity mask during array construction
+        if let FieldBuilder::Binary(b) = &mut *self.inner {
+            return b.finish_with_validity(&validity);
+        }
+
+        // For StringBuilder, use the specialized finish_with_validity method
+        // to properly apply the validity mask during array construction
+        if let FieldBuilder::String(b) = &mut *self.inner {
+            return b.finish_with_validity(&validity);
+        }
+
+        let inner_series = self.inner.finish()?;
 
         // Create a boolean chunked array for validity mask (true = valid, false = null)
         let mask = BooleanChunked::new("mask".into(), &validity);
@@ -1067,8 +1179,14 @@ fn append_default_to_builder(
         FieldBuilder::Int64(b) => b.values.push(0),
         FieldBuilder::Float32(b) => b.values.push(0.0),
         FieldBuilder::Float64(b) => b.values.push(0.0),
-        FieldBuilder::Binary(b) => b.values.push(Vec::new()),
-        FieldBuilder::String(b) => b.values.push(String::new()),
+        FieldBuilder::Binary(b) => {
+            // Append empty binary value
+            b.builder.push_value(&[] as &[u8]);
+        }
+        FieldBuilder::String(b) => {
+            // Append empty string value
+            b.builder.push_value("");
+        }
         FieldBuilder::Null(b) => b.count += 1,
         FieldBuilder::List(b) => b.offsets.push(b.current_offset),
         FieldBuilder::Map(b) => b.offsets.push(b.current_offset),

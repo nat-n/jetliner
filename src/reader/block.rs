@@ -309,7 +309,81 @@ impl<S: StreamSource> BlockReader<S> {
             return Ok(None);
         }
 
-        // Parse the block
+        // Try to parse the block
+        match AvroBlock::parse(
+            &data,
+            &self.header.sync_marker,
+            self.current_offset,
+            self.block_index,
+        ) {
+            Ok((block, consumed)) => {
+                self.current_offset += consumed as u64;
+                self.block_index += 1;
+                Ok(Some(block))
+            }
+            Err(ReaderError::Parse { message, offset })
+                if message.starts_with("Not enough bytes for block data") =>
+            {
+                // Block is larger than our initial read - need to read more
+                // Parse the required size from the block header we already have
+                self.read_large_block(&data, remaining as usize).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Handle reading a block that's larger than the default buffer size.
+    ///
+    /// This is the slow path - only called when a block exceeds 64KB.
+    async fn read_large_block(
+        &mut self,
+        initial_data: &[u8],
+        remaining_in_file: usize,
+    ) -> Result<Option<AvroBlock>, ReaderError> {
+        // Parse just the header to get the required size
+        let mut cursor = initial_data;
+        let mut offset = 0u64;
+
+        let _record_count =
+            decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
+                offset: self.current_offset,
+                message: format!("Failed to decode block record count: {}", e),
+            })?;
+
+        let compressed_size =
+            decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
+                offset: self.current_offset + offset,
+                message: format!("Failed to decode block compressed size: {}", e),
+            })?;
+
+        if compressed_size < 0 {
+            return Err(ReaderError::Parse {
+                offset: self.current_offset + offset,
+                message: format!("Invalid negative compressed size: {}", compressed_size),
+            });
+        }
+
+        // Calculate total bytes needed: header varints + compressed data + sync marker
+        let header_size = offset as usize;
+        let total_needed = header_size + compressed_size as usize + SYNC_MARKER_SIZE;
+
+        if total_needed > remaining_in_file {
+            return Err(ReaderError::Parse {
+                offset: self.current_offset,
+                message: format!(
+                    "Block size {} exceeds remaining file size {}",
+                    total_needed, remaining_in_file
+                ),
+            });
+        }
+
+        // Read exactly what we need
+        let data = self
+            .source
+            .read_range(self.current_offset, total_needed)
+            .await?;
+
+        // Parse the complete block
         let (block, consumed) = AvroBlock::parse(
             &data,
             &self.header.sync_marker,
@@ -317,10 +391,8 @@ impl<S: StreamSource> BlockReader<S> {
             self.block_index,
         )?;
 
-        // Update state
         self.current_offset += consumed as u64;
         self.block_index += 1;
-
         Ok(Some(block))
     }
 
@@ -1150,6 +1222,517 @@ mod tests {
                 assert_eq!(reader.block_index(), 0);
                 assert!(!reader.is_finished());
                 assert!(reader.current_offset() > 0); // After header
+            });
+        }
+
+        // ====================================================================
+        // Block Size Edge Case Tests
+        // ====================================================================
+        // These tests verify correct handling of blocks at various sizes
+        // relative to the 64KB default read buffer.
+
+        #[test]
+        fn test_block_reader_very_small_blocks() {
+            // Test multiple very small blocks (< 100 bytes each)
+            // All should fit within a single 64KB read
+            run_async(async {
+                let blocks: Vec<(i64, &[u8])> = vec![
+                    (1, b"a"),
+                    (2, b"bb"),
+                    (3, b"ccc"),
+                    (4, b"dddd"),
+                    (5, b"eeeee"),
+                ];
+                let (file_data, _) = create_test_avro_file(r#""string""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                for (i, (expected_count, expected_data)) in blocks.iter().enumerate() {
+                    let block = reader.next_block().await.unwrap().unwrap();
+                    assert_eq!(
+                        block.record_count, *expected_count,
+                        "Block {} record count",
+                        i
+                    );
+                    assert_eq!(&block.data[..], *expected_data, "Block {} data", i);
+                    assert_eq!(block.block_index, i, "Block {} index", i);
+                }
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_block_exactly_64kb() {
+            // Test a block that is exactly 64KB (the buffer size boundary)
+            run_async(async {
+                let block_data = vec![0xABu8; 64 * 1024]; // Exactly 64KB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 64 * 1024);
+                assert_eq!(block.block_index, 0);
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_block_just_over_64kb() {
+            // Test a block that is just over 64KB (triggers slow path)
+            run_async(async {
+                let block_data = vec![0xCDu8; 64 * 1024 + 1]; // 64KB + 1 byte
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 64 * 1024 + 1);
+                assert_eq!(block.block_index, 0);
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_large_block_100kb() {
+            // Test a 100KB block (well over the 64KB buffer)
+            run_async(async {
+                let block_data = vec![0xEFu8; 100 * 1024]; // 100KB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 100 * 1024);
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_large_block_1mb() {
+            // Test a 1MB block (much larger than buffer)
+            run_async(async {
+                let block_data = vec![0x12u8; 1024 * 1024]; // 1MB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 1024 * 1024);
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_mixed_small_and_large_blocks() {
+            // Test a mix of small blocks, then a large block, then small again
+            run_async(async {
+                let small1 = b"small block 1";
+                let small2 = b"small block 2";
+                let large = vec![0x99u8; 100 * 1024]; // 100KB
+                let small3 = b"small block 3";
+
+                let blocks: Vec<(i64, &[u8])> =
+                    vec![(1, small1), (2, small2), (3, &large), (4, small3)];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // First small block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(&block.data[..], small1);
+                assert_eq!(block.block_index, 0);
+
+                // Second small block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 2);
+                assert_eq!(&block.data[..], small2);
+                assert_eq!(block.block_index, 1);
+
+                // Large block (triggers slow path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 3);
+                assert_eq!(block.data.len(), 100 * 1024);
+                assert_eq!(block.block_index, 2);
+
+                // Third small block (back to fast path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 4);
+                assert_eq!(&block.data[..], small3);
+                assert_eq!(block.block_index, 3);
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_multiple_large_blocks() {
+            // Test multiple consecutive large blocks
+            run_async(async {
+                let large1 = vec![0xAAu8; 80 * 1024]; // 80KB
+                let large2 = vec![0xBBu8; 90 * 1024]; // 90KB
+                let large3 = vec![0xCCu8; 70 * 1024]; // 70KB
+
+                let blocks: Vec<(i64, &[u8])> = vec![(10, &large1), (20, &large2), (30, &large3)];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 10);
+                assert_eq!(block.data.len(), 80 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xAA));
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 20);
+                assert_eq!(block.data.len(), 90 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xBB));
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 30);
+                assert_eq!(block.data.len(), 70 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xCC));
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_block_just_under_64kb() {
+            // Test a block that is just under 64KB (should use fast path)
+            run_async(async {
+                // Account for header varints (~4 bytes) and sync marker (16 bytes)
+                // So data should be 64KB - 20 = ~65516 bytes to stay under buffer
+                let block_data = vec![0xDDu8; 64 * 1024 - 100]; // Safe margin under 64KB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 64 * 1024 - 100);
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_many_tiny_blocks() {
+            // Test many tiny blocks (stress test offset tracking)
+            run_async(async {
+                let blocks: Vec<(i64, Vec<u8>)> = (0..100)
+                    .map(|i| (i as i64, vec![i as u8; (i % 10 + 1) as usize]))
+                    .collect();
+                let block_refs: Vec<(i64, &[u8])> =
+                    blocks.iter().map(|(c, d)| (*c, d.as_slice())).collect();
+
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &block_refs);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                for (i, (expected_count, expected_data)) in blocks.iter().enumerate() {
+                    let block = reader.next_block().await.unwrap().unwrap();
+                    assert_eq!(
+                        block.record_count, *expected_count,
+                        "Block {} record count",
+                        i
+                    );
+                    assert_eq!(
+                        &block.data[..],
+                        expected_data.as_slice(),
+                        "Block {} data",
+                        i
+                    );
+                    assert_eq!(block.block_index, i, "Block {} index", i);
+                }
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_alternating_small_large() {
+            // Test alternating between small and large blocks
+            run_async(async {
+                let small = b"tiny";
+                let large = vec![0xFFu8; 100 * 1024];
+
+                let blocks: Vec<(i64, &[u8])> =
+                    vec![(1, small), (2, &large), (3, small), (4, &large), (5, small)];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                for i in 0..5 {
+                    let block = reader.next_block().await.unwrap().unwrap();
+                    assert_eq!(block.record_count, (i + 1) as i64);
+                    assert_eq!(block.block_index, i);
+
+                    if i % 2 == 0 {
+                        assert_eq!(&block.data[..], small, "Block {} should be small", i);
+                    } else {
+                        assert_eq!(block.data.len(), 100 * 1024, "Block {} should be large", i);
+                    }
+                }
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_empty_block_between_large() {
+            // Test empty blocks interspersed with large blocks
+            run_async(async {
+                let large = vec![0x77u8; 80 * 1024];
+                let empty: &[u8] = &[];
+
+                let blocks: Vec<(i64, &[u8])> = vec![
+                    (0, empty),
+                    (10, &large),
+                    (0, empty),
+                    (20, &large),
+                    (0, empty),
+                ];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // Empty block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 0);
+                assert!(block.is_empty());
+
+                // Large block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 10);
+                assert_eq!(block.data.len(), 80 * 1024);
+
+                // Empty block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 0);
+                assert!(block.is_empty());
+
+                // Large block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 20);
+                assert_eq!(block.data.len(), 80 * 1024);
+
+                // Empty block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 0);
+                assert!(block.is_empty());
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_reset_after_large_block() {
+            // Test that reset works correctly after reading a large block
+            run_async(async {
+                let large = vec![0x88u8; 100 * 1024];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(5, &large)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // Read the large block
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 5);
+                assert_eq!(block.data.len(), 100 * 1024);
+
+                // Verify EOF
+                assert!(reader.next_block().await.unwrap().is_none());
+
+                // Reset and read again
+                reader.reset();
+                assert_eq!(reader.block_index(), 0);
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 5);
+                assert_eq!(block.data.len(), 100 * 1024);
+                assert_eq!(block.block_index, 0);
+            });
+        }
+
+        #[test]
+        fn test_block_reader_large_block_512kb() {
+            // Test a 512KB block (8x the 64KB buffer)
+            run_async(async {
+                let block_data = vec![0x34u8; 512 * 1024]; // 512KB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 512 * 1024);
+                // Verify data integrity
+                assert!(block.data.iter().all(|&b| b == 0x34));
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_large_block_5mb() {
+            // Test a 5MB block (extreme case, ~80x the buffer)
+            run_async(async {
+                let block_data = vec![0x56u8; 5 * 1024 * 1024]; // 5MB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 5 * 1024 * 1024);
+                // Verify data integrity
+                assert!(block.data.iter().all(|&b| b == 0x56));
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_multiple_512kb_blocks() {
+            // Test multiple 512KB blocks in sequence
+            run_async(async {
+                let block1 = vec![0xAAu8; 512 * 1024];
+                let block2 = vec![0xBBu8; 512 * 1024];
+                let block3 = vec![0xCCu8; 512 * 1024];
+
+                let blocks: Vec<(i64, &[u8])> = vec![(10, &block1), (20, &block2), (30, &block3)];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 10);
+                assert_eq!(block.data.len(), 512 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xAA));
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 20);
+                assert_eq!(block.data.len(), 512 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xBB));
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 30);
+                assert_eq!(block.data.len(), 512 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xCC));
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_tiny_then_huge_then_tiny() {
+            // Test extreme size variation: tiny -> 5MB -> tiny
+            run_async(async {
+                let tiny1 = b"x";
+                let huge = vec![0x78u8; 5 * 1024 * 1024]; // 5MB
+                let tiny2 = b"y";
+
+                let blocks: Vec<(i64, &[u8])> = vec![(1, tiny1), (2, &huge), (3, tiny2)];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // Tiny block (fast path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(&block.data[..], b"x");
+
+                // Huge block (slow path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 2);
+                assert_eq!(block.data.len(), 5 * 1024 * 1024);
+
+                // Tiny block again (back to fast path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 3);
+                assert_eq!(&block.data[..], b"y");
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_reader_progressively_larger_blocks() {
+            // Test blocks that progressively get larger
+            run_async(async {
+                let sizes = [
+                    1 * 1024,    // 1KB
+                    10 * 1024,   // 10KB
+                    50 * 1024,   // 50KB
+                    64 * 1024,   // 64KB (boundary)
+                    100 * 1024,  // 100KB
+                    256 * 1024,  // 256KB
+                    512 * 1024,  // 512KB
+                    1024 * 1024, // 1MB
+                ];
+
+                let block_data: Vec<Vec<u8>> = sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &size)| vec![(i + 1) as u8; size])
+                    .collect();
+
+                let blocks: Vec<(i64, &[u8])> = block_data
+                    .iter()
+                    .enumerate()
+                    .map(|(i, data)| ((i + 1) as i64, data.as_slice()))
+                    .collect();
+
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                for (i, &expected_size) in sizes.iter().enumerate() {
+                    let block = reader.next_block().await.unwrap().unwrap();
+                    assert_eq!(
+                        block.record_count,
+                        (i + 1) as i64,
+                        "Block {} record count",
+                        i
+                    );
+                    assert_eq!(block.data.len(), expected_size, "Block {} size", i);
+                    assert_eq!(block.block_index, i, "Block {} index", i);
+                    // Verify data integrity
+                    assert!(
+                        block.data.iter().all(|&b| b == (i + 1) as u8),
+                        "Block {} data integrity",
+                        i
+                    );
+                }
+
+                assert!(reader.next_block().await.unwrap().is_none());
             });
         }
     }

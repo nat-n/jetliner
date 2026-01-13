@@ -12,7 +12,7 @@
 
 A high-performance Polars plugin written in Rust for streaming Avro files into DataFrames with minimal memory overhead and maximal throughput.
 
-Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques with `bytes::Bytes`, and handles all standard Avro codecs (null, snappy, deflate, zstd, bzip2, xz). The Rust core does the heavy lifting while Python bindings via PyO3 make it accessible from your existing Polars workflows.
+Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques, and handles all standard Avro codecs (null, snappy, deflate, zstd, bzip2, xz). The Rust core does the heavy lifting while Python bindings via PyO3 make it accessible from your existing Polars workflows.
 
 ## Features
 
@@ -25,6 +25,12 @@ Jetliner is designed for data pipelines where Avro files live on S3 or local dis
 - **Ridiculously fast reads** — Check the benchmarks!
 
 This library was created to serve performance critical scenarios around processing large avro files from python. It's fast but limited to read use cases. If you also need to write avro files from Polars then you should check [polars-avro](https://github.com/hafaio/polars-avro).
+
+## Benchmarks
+
+Did I mention it's fast?
+
+TODO: insert benchmarks plot
 
 ## Installation
 
@@ -140,10 +146,6 @@ result = (
 | Batch control      | Automatic                               | Full control                        |
 | Best for           | Most queries                            | Custom streaming, progress tracking |
 
-## Benchmarks
-
-TODO...
-
 ## Development
 
 The project uses spec driven development via [kiro](https://kiro.dev/). See `./.kiro` for the specs and related documentation.
@@ -152,10 +154,12 @@ The project uses spec driven development via [kiro](https://kiro.dev/). See `./.
 
 This project uses [poethepoet](https://poethepoet.natn.io/index.html) for task management.
 
-```bash
-# Install poe globally
+```sh
+# Install poe globally with homebrew
 brew tap nat-n/poethepoet
 brew install nat-n/poethepoet/poethepoet
+# Or with uv/pip/pipx
+uv tool install poethepoet
 # run poe without arguments to list available tasks, defined in pyproject.toml
 poe
 ```
@@ -198,6 +202,12 @@ Jetliner support primitive top level schemas (int, long, string, bytes) which ar
 ## Trivia
 
 - The [Avro Canada C102 Jetliner](https://en.wikipedia.org/wiki/Avro_Canada_C102_Jetliner) was the worlds second purpose built jet powered airliner.
+
+## Contributing
+
+If you encounter an issue or have an idea for how to make jetliner more awesome, do come say hi in the issues 👋
+
+If you discover an avro file that other libraries can read but jetliner fails (for reasons other than Known Limitation) then please share it.
 
 ## License
 

@@ -602,14 +602,14 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
 
   - [ ] 18.4 Performance Optimization: Direct Arrow Array Construction for Variable-Length Types (Optimization 4)
     - See Appendix: D1_varlen-builder-optimization.md
-    - [ ] 18.4.1 Implement optimized BinaryBuilder
+    - [x] 18.4.1 Implement optimized BinaryBuilder
       - Replace `Vec<Vec<u8>>` with contiguous data buffer + offsets array
       - Use `polars_arrow::array::BinaryArray` for direct construction
       - Pattern: append bytes to single buffer, track offsets, build array at finish()
       - Reference: ListBuilder implementation in same file (commit 34e9288)
       - _Requirements: 8.1, 5.3_
 
-    - [ ] 18.4.2 Implement optimized StringBuilder
+    - [x] 18.4.2 Implement optimized StringBuilder
       - Replace `Vec<String>` with contiguous data buffer + offsets array
       - Use `polars_arrow::array::Utf8Array` for direct construction
       - Validate UTF-8 during decode or at finish (choose based on performance)
