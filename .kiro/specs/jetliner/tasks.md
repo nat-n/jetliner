@@ -600,6 +600,28 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
       - Still 15% slower than polars-avro (1.308s vs 1.139s = 169ms gap)
       - _Requirement: Optimization 1 verification_
 
+  - [ ] 18.4 Performance Optimization: Direct Arrow Array Construction for Variable-Length Types (Optimization 4)
+    - See Appendix: D1_varlen-builder-optimization.md
+    - [ ] 18.4.1 Implement optimized BinaryBuilder
+      - Replace `Vec<Vec<u8>>` with contiguous data buffer + offsets array
+      - Use `polars_arrow::array::BinaryArray` for direct construction
+      - Pattern: append bytes to single buffer, track offsets, build array at finish()
+      - Reference: ListBuilder implementation in same file (commit 34e9288)
+      - _Requirements: 8.1, 5.3_
+
+    - [ ] 18.4.2 Implement optimized StringBuilder
+      - Replace `Vec<String>` with contiguous data buffer + offsets array
+      - Use `polars_arrow::array::Utf8Array` for direct construction
+      - Validate UTF-8 during decode or at finish (choose based on performance)
+      - _Requirements: 8.1, 5.3_
+
+    - [ ] 18.4.3 Testing and verification
+      - Unit tests: empty values, long values (>64KB), Unicode edge cases
+      - Property tests: verify optimized output == original implementation
+      - Run `poe bench-compare` to verify ~40-50% improvement on variable-length columns
+      - Verify `large_wide` benchmark shows improvement (currently 4.4s)
+      - _Requirements: 10.7, 10.8_
+
 - [x] 19. storage_options support for S3-compatible services
   - [x] 19.1 Add S3Config struct to Rust S3Source
     - Define S3Config with endpoint_url, aws_access_key_id, aws_secret_access_key, region
