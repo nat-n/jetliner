@@ -279,6 +279,16 @@ def compute_dataframe_hash(df) -> str:
     """Compute a hash of DataFrame contents for validation.
 
     Uses first and last 1000 rows to be fast on large DataFrames.
+
+    Normalizes numeric types before hashing to compare data values rather than
+    type representations. Different Avro readers use different type widths:
+    - Polars-native readers (jetliner, polars, polars-avro) use Avro-native types
+      (Int32 for 'int', Float32 for 'float') per the Avro specification
+    - Python-based readers (fastavro, avro) promote to Python types (Int64, Float64)
+      because Python doesn't distinguish int/long or float/double
+
+    Upcasting narrow types to wide types ensures we validate data correctness
+    without risking data loss from downcasting.
     """
     import polars as pl
 
@@ -288,6 +298,14 @@ def compute_dataframe_hash(df) -> str:
     else:
         # For large DataFrames, hash first and last 1000 rows
         sample = pl.concat([df.head(1000), df.tail(1000)])
+
+    # Normalize types: upcast narrow types to wide types for consistent comparison
+    sample = sample.select([
+        pl.col(col).cast(pl.Int64) if dtype == pl.Int32
+        else pl.col(col).cast(pl.Float64) if dtype == pl.Float32
+        else pl.col(col)
+        for col, dtype in sample.schema.items()
+    ])
 
     # Convert to bytes and hash
     # Use write_csv as a stable serialization format

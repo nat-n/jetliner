@@ -50,25 +50,19 @@ LARGE_SIMPLE_SCHEMA = {
         {"name": "int_val", "type": "int"},
         {"name": "float_val", "type": "float"},
         {"name": "double_val", "type": "double"},
+        {"name": "bool_val", "type": "boolean"},
     ],
 }
 
 
 def _generate_wide_schema() -> dict:
-    """Generate schema with 100 columns of mixed types."""
+    """Generate schema with 100 columns covering all Avro primitive types."""
+    # Cycle through all non-null primitive types: long, string, double, int, boolean, float, bytes
+    type_cycle = ["long", "string", "double", "int", "boolean", "float", "bytes"]
     fields = []
     for i in range(100):
-        col_type = i % 5
-        if col_type == 0:
-            fields.append({"name": f"col_{i:03d}", "type": "long"})
-        elif col_type == 1:
-            fields.append({"name": f"col_{i:03d}", "type": "string"})
-        elif col_type == 2:
-            fields.append({"name": f"col_{i:03d}", "type": "double"})
-        elif col_type == 3:
-            fields.append({"name": f"col_{i:03d}", "type": "int"})
-        else:
-            fields.append({"name": f"col_{i:03d}", "type": "boolean"})
+        col_type = type_cycle[i % len(type_cycle)]
+        fields.append({"name": f"col_{i:03d}", "type": col_type})
     return {
         "type": "record",
         "name": "LargeWideRecord",
@@ -153,25 +147,35 @@ def generate_large_simple_records(n: int = LARGE_RECORDS) -> Iterator[dict]:
             "int_val": random.randint(-1000000, 1000000),
             "float_val": random.random() * 1000,
             "double_val": random.random() * 1000000,
+            "bool_val": i % 2 == 0,
         }
 
 
 def generate_large_wide_records(n: int = LARGE_RECORDS) -> Iterator[dict]:
-    """Generate records for large_wide benchmark file (100 columns)."""
+    """Generate records for large_wide benchmark file (100 columns).
+
+    Cycles through all Avro primitive types: long, string, double, int, boolean, float, bytes
+    """
+    # Type cycle matches _generate_wide_schema()
+    type_cycle = ["long", "string", "double", "int", "boolean", "float", "bytes"]
     for i in range(n):
         record = {}
         for j in range(100):
-            col_type = j % 5
-            if col_type == 0:
+            col_type = type_cycle[j % len(type_cycle)]
+            if col_type == "long":
                 record[f"col_{j:03d}"] = i + j
-            elif col_type == 1:
+            elif col_type == "string":
                 record[f"col_{j:03d}"] = f"val_{i}_{j}"
-            elif col_type == 2:
+            elif col_type == "double":
                 record[f"col_{j:03d}"] = random.random() * 1000
-            elif col_type == 3:
+            elif col_type == "int":
                 record[f"col_{j:03d}"] = random.randint(-1000, 1000)
-            else:
+            elif col_type == "boolean":
                 record[f"col_{j:03d}"] = i % 2 == 0
+            elif col_type == "float":
+                record[f"col_{j:03d}"] = random.random() * 100
+            elif col_type == "bytes":
+                record[f"col_{j:03d}"] = f"bytes_{i}_{j}".encode("utf-8")
         yield record
 
 
