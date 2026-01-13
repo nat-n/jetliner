@@ -242,9 +242,101 @@ pub struct DecompressedBlock {
 }
 ```
 
+### ReadBufferConfig
+
+Configuration for read buffering, with source-aware defaults optimized for different I/O characteristics.
+
+**Design Rationale:**
+
+Local disk and S3 have fundamentally different I/O characteristics:
+- **Local disk**: Low latency (~0.1ms), OS page cache handles prefetching, small reads are cheap
+- **S3**: High latency (~50-100ms), each request costs money, larger reads amortize overhead
+
+We use source-aware defaults with user override capability for tuning in production.
+
+```rust
+/// Configuration for BlockReader's internal read buffer
+#[derive(Debug, Clone)]
+pub struct ReadBufferConfig {
+    /// Size of each read chunk from the source
+    /// - Local default: 64KB (OS page cache handles the rest)
+    /// - S3 default: 4MB (amortize HTTP request overhead)
+    pub chunk_size: usize,
+
+    /// Threshold (0.0-1.0) at which to trigger a prefetch
+    /// When buffer falls below this fraction of chunk_size, fetch more data
+    /// - Local default: 0.0 (fetch only when empty - OS handles prefetch)
+    /// - S3 default: 0.5 (fetch when 50% consumed - hide latency)
+    pub prefetch_threshold: f32,
+}
+
+impl ReadBufferConfig {
+    /// Default config for local filesystem
+    pub const LOCAL_DEFAULT: Self = Self {
+        chunk_size: 64 * 1024,      // 64KB
+        prefetch_threshold: 0.0,     // Fetch only when empty
+    };
+
+    /// Default config for S3 (optimized for high-latency, pay-per-request)
+    pub const S3_DEFAULT: Self = Self {
+        chunk_size: 4 * 1024 * 1024, // 4MB (Polars cloud uses this)
+        prefetch_threshold: 0.5,      // Fetch at 50% consumed
+    };
+
+    /// Create config with custom chunk size (threshold defaults to 0.0)
+    pub fn with_chunk_size(chunk_size: usize) -> Self {
+        Self { chunk_size, prefetch_threshold: 0.0 }
+    }
+
+    /// Create config with both custom chunk size and prefetch threshold
+    pub fn new(chunk_size: usize, prefetch_threshold: f32) -> Self {
+        Self { chunk_size, prefetch_threshold: prefetch_threshold.clamp(0.0, 1.0) }
+    }
+}
+```
+
+**Industry Reference Points:**
+- Spark: 64-128MB chunks for S3
+- Polars cloud: 4MB chunks
+- DuckDB: 1-10MB chunks
+- Our default (4MB) balances memory usage with request reduction
+
 ### BlockReader
 
-Reads and parses blocks from a source.
+Reads and parses blocks from a source with internal read buffering to minimize I/O operations.
+
+**Read Buffering Strategy:**
+
+The BlockReader maintains an internal read buffer to avoid redundant I/O operations. When reading from the source, it fetches data in configurable chunks and retains unused bytes for subsequent block parsing. This is critical for S3 performance where each `read_range` call is an HTTP request with ~50-100ms latency and per-request costs.
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        READ BUFFER LIFECYCLE                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Initial State:     read_buffer = []                                       │
+│                                                                            │
+│  After 1st read:    read_buffer = [████████████████████████] (chunk_size)  │
+│                                   ^block1^                                 │
+│                                                                            │
+│  After parse:       read_buffer = [        ████████████████] (retained)    │
+│                                           ^block2^                         │
+│                                                                            │
+│  S3 eager refill:   When buffer < 50% of chunk_size, trigger async fetch   │
+│                     read_buffer = [████████████████████████████████████]   │
+│                                                                            │
+│  Local lazy refill: When buffer empty, fetch next chunk                    │
+│                     read_buffer = [████████████████████████]               │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Behaviors:**
+- Retains unused bytes after parsing each block
+- Only calls `source.read_range()` when buffer is exhausted or below prefetch threshold
+- For blocks larger than the buffer, reads exactly the needed bytes
+- Maintains accurate `current_offset` for error reporting
+- Source-aware defaults: 64KB chunks for local, 4MB for S3
 
 ```rust
 pub struct BlockReader<S: StreamSource> {
@@ -252,16 +344,39 @@ pub struct BlockReader<S: StreamSource> {
     header: AvroHeader,
     current_offset: u64,
     block_index: usize,
+    file_size: u64,
+    /// Internal read buffer - retains unused bytes between block reads
+    read_buffer: Bytes,
+    /// Offset in file where read_buffer starts
+    buffer_file_offset: u64,
+    /// Read buffer configuration
+    buffer_config: ReadBufferConfig,
 }
 
 impl<S: StreamSource> BlockReader<S> {
+    /// Create with default config (64KB chunks, no eager prefetch)
     pub async fn new(source: S) -> Result<Self, ReaderError>;
 
+    /// Create with custom buffer configuration
+    pub async fn with_config(source: S, config: ReadBufferConfig) -> Result<Self, ReaderError>;
+
+    /// Read the next block, using buffered data when possible.
+    ///
+    /// This method:
+    /// 1. Checks if read_buffer contains enough data for the next block
+    /// 2. If buffer below prefetch_threshold, fetches more data from source
+    /// 3. Parses the block from the buffer
+    /// 4. Advances buffer position, retaining unused bytes
+    ///
+    /// # Requirements
+    /// - 3.8: Retain unused bytes from previous I/O operations
+    /// - 3.9: Parse multiple small blocks without additional I/O
+    /// - 3.10: Minimize total I/O operations
     pub async fn next_block(&mut self) -> Result<Option<AvroBlock>, ReaderError>;
 
     pub fn header(&self) -> &AvroHeader;
 
-    pub async fn seek_to_sync(&mut self, sync_marker: &[u8; 16]) -> Result<bool, ReaderError>;
+    pub async fn seek_to_sync(&mut self, position: u64) -> Result<bool, ReaderError>;
 
     /// Skip past corrupted data and find the next valid sync marker.
     ///
@@ -271,14 +386,13 @@ impl<S: StreamSource> BlockReader<S> {
     /// 2. Scans forward looking for the file's sync marker
     /// 3. Positions the reader immediately after the found sync marker
     ///
-    /// This is necessary because when we encounter an invalid sync marker:
-    /// - The block data has already been read
-    /// - The "sync marker" we read doesn't match the expected one
-    /// - We need to find the NEXT occurrence of the correct sync marker
-    ///
     /// Returns true if a sync marker was found and the reader is positioned
     /// to read the next block, false if no more sync markers exist (EOF).
     pub async fn skip_to_next_sync(&mut self) -> Result<bool, ReaderError>;
+
+    /// Reset the reader to the beginning of the blocks.
+    /// Also clears the read buffer.
+    pub fn reset(&mut self);
 }
 ```
 
@@ -393,8 +507,31 @@ pub struct AvroStreamReader<S: StreamSource> {
 pub struct ReaderConfig {
     pub batch_size: usize,
     pub buffer_config: BufferConfig,
+    pub read_buffer_config: ReadBufferConfig,  // BlockReader I/O buffering
     pub error_mode: ErrorMode,
     pub reader_schema: Option<AvroSchema>,  // For schema evolution
+}
+
+impl Default for ReaderConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: 100_000,
+            buffer_config: BufferConfig::default(),
+            read_buffer_config: ReadBufferConfig::LOCAL_DEFAULT,
+            error_mode: ErrorMode::Skip,
+            reader_schema: None,
+        }
+    }
+}
+
+impl ReaderConfig {
+    /// Create config optimized for S3 sources
+    pub fn for_s3() -> Self {
+        Self {
+            read_buffer_config: ReadBufferConfig::S3_DEFAULT,
+            ..Default::default()
+        }
+    }
 }
 
 impl<S: StreamSource> AvroStreamReader<S> {
@@ -828,6 +965,7 @@ def scan(
     *,
     buffer_blocks: int = 4,
     buffer_bytes: int = 64 * 1024 * 1024,
+    read_chunk_size: int | None = None,
     strict: bool = False,
     validate_schema: bool = False,
     storage_options: dict[str, str] | None = None,
@@ -845,6 +983,11 @@ def scan(
         Number of blocks to prefetch (default: 4)
     buffer_bytes : int
         Maximum bytes to buffer (default: 64MB)
+    read_chunk_size : int | None
+        Size of each I/O read operation in bytes. If None, uses source-aware defaults:
+        - Local files: 64KB (OS page cache handles prefetching)
+        - S3: 4MB (amortizes HTTP request overhead and latency)
+        Set explicitly to tune for your workload (e.g., 8MB for high-latency S3).
     strict : bool
         If True, fail on first error. If False, skip bad records (default: False)
     validate_schema : bool
@@ -877,8 +1020,10 @@ def scan(
             batch_size=batch_size,
             buffer_blocks=buffer_blocks,
             buffer_bytes=buffer_bytes,
+            read_chunk_size=read_chunk_size,  # None = source-aware default
             strict=strict,
             projected_columns=with_columns,  # Pass projection to Rust
+            storage_options=storage_options,
         )
 
         rows_yielded = 0
@@ -1222,6 +1367,12 @@ These optimizations are identified but deferred to post-MVP:
 
 **Validates: Requirements 6a.4**
 
+### Property 16: BlockReader I/O Efficiency
+
+*For any* sequence of Avro blocks totaling B bytes, the BlockReader SHALL issue at most `ceil(B / chunk_size)` I/O operations to read all blocks, where `chunk_size` is the configured read chunk size.
+
+**Validates: Requirements 3.10**
+
 ## Memory Management and Backpressure
 
 ### Lessons from Existing Implementations
@@ -1236,9 +1387,9 @@ These optimizations are identified but deferred to post-MVP:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        MEMORY BUFFER LOCATIONS                               │
+│                        MEMORY BUFFER LOCATIONS                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
+│                                                                             │
 │  [1] Network/Disk Buffer     [2] Prefetch Buffer    [3] Arrow Builders      │
 │  ┌─────────────────────┐     ┌─────────────────┐    ┌─────────────────┐     │
 │  │ S3 range response   │     │ Decompressed    │    │ Column data     │     │
@@ -1256,7 +1407,7 @@ These optimizations are identified but deferred to post-MVP:
 │                                                      │ freed when      │    │
 │                                                      │ Python releases │    │
 │                                                      └─────────────────┘    │
-│                                                                              │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 

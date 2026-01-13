@@ -758,7 +758,75 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Verify all date/time values match expected
     - _Requirements: 1.6_
 
-- [ ] 25. Final checkpoint
+- [ ] 25. BlockReader read buffering optimization
+  - [ ] 25.1 Add ReadBufferConfig struct
+    - Create `ReadBufferConfig` struct with `chunk_size` and `prefetch_threshold` fields
+    - Add `LOCAL_DEFAULT` constant (64KB chunk, 0.0 threshold)
+    - Add `S3_DEFAULT` constant (4MB chunk, 0.5 threshold)
+    - Add constructors: `with_chunk_size()`, `new()`
+    - Place in `src/reader/block.rs` or new `src/reader/buffer_config.rs`
+    - _Requirements: 3.11, 3.12, 3.13_
+
+  - [ ] 25.2 Add read buffer to BlockReader struct
+    - Add `read_buffer: Bytes` field to retain unused bytes
+    - Add `buffer_file_offset: u64` to track buffer position
+    - Replace `read_chunk_size: usize` with `buffer_config: ReadBufferConfig`
+    - Update `new()` to use `ReadBufferConfig::LOCAL_DEFAULT`
+    - Add `with_config()` constructor accepting `ReadBufferConfig`
+    - _Requirements: 3.8, 3.9, 3.10_
+
+  - [ ] 25.3 Implement buffered next_block()
+    - Check if read_buffer contains enough data for next block header
+    - If buffer below `prefetch_threshold * chunk_size`, fetch more data
+    - Parse block from buffer
+    - Advance buffer position, retaining unused bytes
+    - Handle large blocks (> chunk size) by reading exact amount needed
+    - _Requirements: 3.8, 3.9, 3.10_
+
+  - [ ] 25.4 Update seek and reset methods
+    - Clear read_buffer on reset()
+    - Clear read_buffer on seek_to_sync()
+    - Ensure buffer state is consistent after error recovery
+    - _Requirements: 3.7_
+
+  - [ ] 25.5 Add ReadBufferConfig to ReaderConfig
+    - Add `read_buffer_config: ReadBufferConfig` field to `ReaderConfig`
+    - Update `ReaderConfig::default()` to use `LOCAL_DEFAULT`
+    - Add `ReaderConfig::for_s3()` constructor using `S3_DEFAULT`
+    - Pass config through `AvroStreamReader` → `PrefetchBuffer` → `BlockReader`
+    - _Requirements: 3.11, 3.12_
+
+  - [ ] 25.6 Expose read_chunk_size in Python API
+    - Add `read_chunk_size: int | None` parameter to `scan()` and `open()`
+    - When `None`, auto-detect source type and use appropriate default
+    - When set, override the default with user-specified value
+    - Update docstrings with guidance on tuning
+    - _Requirements: 3.13_
+
+  - [ ] 25.7 Write unit tests for buffered reading
+    - Test multiple small blocks parsed from single read
+    - Test block spanning buffer boundary
+    - Test large block (> chunk size)
+    - Test mixed small and large blocks
+    - Test reset clears buffer
+    - Test seek clears buffer
+    - Test S3 default (4MB) vs local default (64KB)
+    - _Requirements: 3.8, 3.9, 3.10, 3.11, 3.12_
+
+  - [ ] 25.8 Write property test for I/O efficiency
+    - **Property 16: BlockReader I/O Efficiency**
+    - For N blocks totaling B bytes, verify at most ceil(B / chunk_size) I/O operations
+    - Use mock source that counts read_range calls
+    - **Validates: Requirements 3.10**
+
+  - [ ] 25.9 Benchmark S3 read reduction
+    - Create test with many small blocks (e.g., 1000 blocks of 1KB each)
+    - Compare I/O operation count: before (1000 calls) vs after (~1 call with 4MB buffer)
+    - Verify significant reduction for small-block files
+    - Document expected latency improvement for S3 (fewer HTTP round-trips)
+    - _Requirements: 8.5_
+
+- [ ] 26. Final checkpoint
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

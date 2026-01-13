@@ -61,6 +61,12 @@ This document specifies requirements for Jetliner, a high-performance Rust libra
 5. WHILE streaming, THE Prefetch_Buffer SHALL asynchronously load upcoming blocks up to a configurable buffer limit
 6. WHEN the buffer is full, THE Prefetch_Buffer SHALL pause fetching until space is available
 7. THE Avro_Reader SHALL support seeking to a specific block by sync marker for resumable reads
+8. WHEN reading consecutive blocks, THE Block_Reader SHALL retain unused bytes from previous I/O operations to avoid redundant reads
+9. WHEN multiple small blocks fit within a single read chunk, THE Block_Reader SHALL parse them without additional I/O operations
+10. FOR ALL block sequences, THE Block_Reader SHALL issue at most ceil(total_bytes / read_chunk_size) I/O operations
+11. WHEN reading from S3, THE Block_Reader SHALL use a default read chunk size of 4MB to amortize HTTP request overhead
+12. WHEN reading from local filesystem, THE Block_Reader SHALL use a default read chunk size of 64KB (OS page cache handles prefetching)
+13. THE Python API SHALL expose a `read_chunk_size` parameter to allow users to override the default chunk size for tuning
 
 ### Requirement 4: Data Source Abstraction
 
