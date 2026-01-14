@@ -289,7 +289,7 @@ def ensure_benchmark_files_exist(force: bool = False) -> dict:
     return stats
 
 
-if __name__ == "__main__":
+def main():
     import sys
 
     force = "--force" in sys.argv
@@ -305,3 +305,6 @@ if __name__ == "__main__":
             print(f"  {name}: {info['size_mb']:.1f} MB, {info['num_records']:,} records")
         else:
             print(f"  {name}: already exists")
+
+if __name__ == "__main__":
+    main()

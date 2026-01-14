@@ -674,14 +674,14 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Input: 21.1-nullable-complex-types-investigation.md
     - _Requirements: 5.5_
 
-  - [ ] 21.3 Fix StructBuilder null handling for nullable records
+  - [x] 21.3 Fix StructBuilder null handling for nullable records
     - Ensure StructBuilder correctly handles null values in unions
     - Fix null mask application for Struct types
     - Test with `["null", {"type": "record", ...}]` schema
     - Input: 21.1-nullable-complex-types-investigation.md
     - _Requirements: 5.5_
 
-  - [ ] 21.4 Remove xfail markers from nullable type tests
+  - [x] 21.4 Remove xfail markers from nullable type tests
     - Update `python/tests/types/test_nullable_types.py`
     - Verify all nullable primitive and complex type tests pass
     - _Requirements: 5.5_
