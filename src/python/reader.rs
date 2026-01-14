@@ -391,7 +391,8 @@ impl AvroReaderCore {
     /// # Raises
     /// * `StopIteration` - When all records have been read
     /// * `RuntimeError` - If an error occurs during reading (in strict mode)
-    fn __next__(slf: PyRefMut<'_, Self>) -> PyResult<PyDataFrame> {
+    fn __next__<'py>(slf: PyRefMut<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
         let inner = slf.inner.clone();
         let path = slf.path.clone();
         let errors_arc = slf.errors.clone();
@@ -430,7 +431,7 @@ impl AvroReaderCore {
         }
 
         match result {
-            Ok((Some(df), _)) => Ok(PyDataFrame(df)),
+            Ok((Some(df), _)) => dataframe_to_py_with_enums(py, df),
             Ok((None, _)) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
             Err(e) => Err(map_reader_error_to_py(&path, e)),
         }
@@ -631,6 +632,94 @@ async fn create_source(path: &str, config: Option<S3Config>) -> Result<BoxedSour
         let source = LocalSource::open(path).await.map_err(ReaderError::Source)?;
         Ok(Box::new(source) as BoxedSource)
     }
+}
+
+/// Convert a Polars DataFrame to Python, properly handling Enum columns.
+///
+/// # TEMPORARY WORKAROUND
+///
+/// pyo3-polars uses Arrow FFI for DataFrame serialization, which loses the
+/// distinction between Polars Enum and Categorical types (both become Arrow
+/// Dictionary). This function works around that limitation by:
+///
+/// 1. Identifying Enum columns in the DataFrame and their categories
+/// 2. Exporting the DataFrame via Arrow FFI (Enum becomes Categorical)
+/// 3. Casting Categorical columns back to Enum using Python Polars
+///
+/// This encapsulates the workaround in Rust so Python users always see
+/// the correct Enum types without any additional code.
+///
+/// # Why not a better solution?
+///
+/// We investigated two alternatives that would avoid this workaround:
+///
+/// 1. **Physical UInt export**: Export Enum columns as their physical representation
+///    (UInt8/16/32), then cast UInt→Enum in Python. This would be true zero-copy
+///    (verified: same buffer address). However, `Series::to_physical_repr()` on
+///    Enum columns panics with "not implemented" in polars-core 0.52.0.
+///
+/// 2. **Arrow FFI metadata**: Pass Enum type information through Arrow FFI so
+///    Python Polars reconstructs the correct type. This would require changes to
+///    pyo3-polars itself to preserve FrozenCategories metadata.
+///
+/// # When can this be removed?
+///
+/// Monitor these issues for upstream fixes:
+/// - <https://github.com/pola-rs/polars/issues/20089> (Enum/Categorical in Parquet)
+/// - <https://github.com/pola-rs/pyo3-polars/issues> (Arrow FFI Enum support)
+///
+/// See also: `.kiro/specs/jetliner/devnotes/22.1-enum-builder.md`
+fn dataframe_to_py_with_enums<'py>(
+    py: Python<'py>,
+    df: polars::prelude::DataFrame,
+) -> PyResult<Bound<'py, PyAny>> {
+    use polars::prelude::*;
+
+    // Check for Enum columns and collect their metadata
+    // pyo3-polars exports Enum as Categorical through Arrow FFI, so we need to
+    // cast back to Enum on the Python side
+    let enum_columns: Vec<(String, Vec<String>)> = df
+        .schema()
+        .iter()
+        .filter_map(|(name, dtype)| {
+            if let DataType::Enum(categories, _) = dtype {
+                let cats: Vec<String> = categories
+                    .categories()
+                    .values_iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                Some((name.to_string(), cats))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // If no Enum columns, use the standard path
+    if enum_columns.is_empty() {
+        return PyDataFrame(df).into_pyobject(py);
+    }
+
+    // Export via Arrow FFI (Enum becomes Categorical due to Arrow limitation)
+    let py_df = PyDataFrame(df).into_pyobject(py)?;
+
+    // Cast Categorical columns back to their correct Enum types
+    let polars_mod = py.import("polars")?;
+    let cast_exprs = pyo3::types::PyList::empty(py);
+
+    for (col_name, categories) in &enum_columns {
+        // Create pl.Enum(categories) dtype
+        let py_categories = pyo3::types::PyList::new(py, categories)?;
+        let enum_dtype = polars_mod.getattr("Enum")?.call1((py_categories,))?;
+
+        // Create pl.col(name).cast(enum_dtype) expression
+        let col_expr = polars_mod.call_method1("col", (col_name.as_str(),))?;
+        let cast_expr = col_expr.call_method1("cast", (enum_dtype,))?;
+        cast_exprs.append(cast_expr)?;
+    }
+
+    // Apply the casts: df.with_columns([...])
+    py_df.call_method1("with_columns", (cast_exprs,))
 }
 
 /// Map ReaderError to appropriate Python exception.
@@ -1055,11 +1144,12 @@ fn dtype_to_py<'py>(
             polars_mod.getattr("Struct")?.call1((py_fields,))
         }
 
-        // Enum - convert to Categorical for Python compatibility
-        // pyo3-polars has issues with Enum types, so we use Categorical
-        DataType::Enum(_, _) => {
-            // Use Categorical as a fallback since Enum serialization is problematic
-            polars_mod.getattr("Categorical")
+        // Enum - create Python Enum with categories from FrozenCategories
+        DataType::Enum(frozen_cats, _) => {
+            // Extract categories from FrozenCategories and create Python Enum
+            let categories: Vec<&str> = frozen_cats.categories().values_iter().collect();
+            let py_categories = pyo3::types::PyList::new(py, &categories)?;
+            polars_mod.getattr("Enum")?.call1((py_categories,))
         }
 
         // Categorical
@@ -1274,7 +1364,8 @@ impl AvroReader {
     /// # Raises
     /// * `StopIteration` - When all records have been read
     /// * `RuntimeError` - If an error occurs during reading (in strict mode)
-    fn __next__(slf: PyRefMut<'_, Self>) -> PyResult<PyDataFrame> {
+    fn __next__<'py>(slf: PyRefMut<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
         let inner = slf.inner.clone();
         let path = slf.path.clone();
         let errors_arc = slf.errors.clone();
@@ -1313,7 +1404,7 @@ impl AvroReader {
         }
 
         match result {
-            Ok((Some(df), _)) => Ok(PyDataFrame(df)),
+            Ok((Some(df), _)) => dataframe_to_py_with_enums(py, df),
             Ok((None, _)) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
             Err(e) => Err(map_reader_error_to_py(&path, e)),
         }

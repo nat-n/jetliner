@@ -686,28 +686,31 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Verify all nullable primitive and complex type tests pass
     - _Requirements: 5.5_
 
-- [ ] 22. Implement enum type support
-  - [ ] 22.1 Add EnumBuilder for Avro enum decoding
+- [x] 22. Implement enum type support
+  - [x] 22.1 Add EnumBuilder for Avro enum decoding
     - Create builder that maps enum index to symbol string
-    - Use Arrow Dictionary type (Int32 keys, Utf8 values)
+    - Uses Polars Enum type with FrozenCategories (not Dictionary/Categorical)
     - Store enum symbols from schema for lookup
+    - Note: pyo3-polars converts Enum→Categorical during FFI; Python workaround applied
+    - See devnotes/22.1-enum-builder.md for details
     - _Requirements: 1.5_
 
-  - [ ] 22.2 Implement enum decoding in record_decoder.rs
+  - [x] 22.2 Implement enum decoding in record_decoder.rs
     - Decode varint index from Avro binary
-    - Look up symbol string from schema
-    - Append to DictionaryBuilder
+    - Validate index is within symbol range
+    - Append to indices vector, build Enum Series at finish()
     - _Requirements: 1.5_
 
-  - [ ] 22.3 Add Arrow type mapping for enum
-    - Map Avro enum to Arrow Dictionary(Int32, Utf8)
-    - Ensure Polars reads as Categorical type
+  - [x] 22.3 Add Arrow type mapping for enum
+    - Map Avro enum to Polars Enum type with FrozenCategories
+    - Categories defined from schema symbols (not runtime-inferred)
     - Update `src/convert/arrow.rs`
     - _Requirements: 5.4_
 
-  - [ ] 22.4 Remove xfail markers from enum tests
-    - Update `python/tests/types/test_enum_fixed.py`
-    - Verify enum values and categories are correct
+  - [x] 22.4 Remove xfail markers from enum tests
+    - Updated `python/tests/types/test_enum_fixed.py`
+    - All non-nullable enum tests pass
+    - Nullable enum (union with null) marked xfail - polars-core limitation
     - _Requirements: 1.5_
 
 - [ ] 23. Implement fixed type support
@@ -826,7 +829,16 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Document expected latency improvement for S3 (fewer HTTP round-trips)
     - _Requirements: 8.5_
 
-- [ ] 26. Final checkpoint
+- [ ] 26. *Remove Enum→Categorical FFI workaround
+  - Blocked until upstream supports either:
+    - polars-core `to_physical_repr()` on Enum columns (panics in 0.52.0)
+    - pyo3-polars Arrow FFI Enum metadata preservation
+  - See: `devnotes/22.1-enum-builder.md`
+  - [ ] 26.1 Remove `dataframe_to_py_with_enums()` from `src/python/reader.rs`
+  - [ ] 26.2 Update AvroReaderCore and AvroReader `__next__()` to use direct FFI
+  - [ ] 26.3 Verify all enum tests pass
+
+- [ ] 27. Final checkpoint
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

@@ -59,7 +59,10 @@ pub fn avro_to_arrow(schema: &AvroSchema) -> Result<DataType, SchemaError> {
         // Complex types
         AvroSchema::Record(record) => record_to_arrow(record),
         AvroSchema::Enum(enum_schema) => {
-            // Enum maps to Polars Enum type with frozen categories
+            // Avro enums have fixed, known categories defined in the schema
+            // This maps perfectly to Polars Enum type (not Categorical)
+            // - Enum: fixed categories known upfront (Avro enum case)
+            // - Categorical: categories inferred at runtime
             let categories = FrozenCategories::new(enum_schema.symbols.iter().map(|s| s.as_str()))
                 .map_err(|e| {
                     SchemaError::InvalidSchema(format!("Failed to create enum categories: {}", e))

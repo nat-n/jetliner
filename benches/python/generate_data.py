@@ -56,13 +56,21 @@ LARGE_SIMPLE_SCHEMA = {
 
 
 def _generate_wide_schema() -> dict:
-    """Generate schema with 100 columns covering all Avro primitive types."""
+    """Generate schema with 100 columns covering all Avro primitive types.
+
+    Type distribution:
+    - All 100 columns cycle through primitives (long, string, double, int, boolean, float, bytes)
+
+    Note: Enums removed because polars_avro doesn't support them.
+    """
     # Cycle through all non-null primitive types: long, string, double, int, boolean, float, bytes
     type_cycle = ["long", "string", "double", "int", "boolean", "float", "bytes"]
     fields = []
+
     for i in range(100):
         col_type = type_cycle[i % len(type_cycle)]
         fields.append({"name": f"col_{i:03d}", "type": col_type})
+
     return {
         "type": "record",
         "name": "LargeWideRecord",
@@ -154,10 +162,11 @@ def generate_large_simple_records(n: int = LARGE_RECORDS) -> Iterator[dict]:
 def generate_large_wide_records(n: int = LARGE_RECORDS) -> Iterator[dict]:
     """Generate records for large_wide benchmark file (100 columns).
 
-    Cycles through all Avro primitive types: long, string, double, int, boolean, float, bytes
+    Type distribution:
+    - All 100 columns cycle through primitives (long, string, double, int, boolean, float, bytes)
     """
-    # Type cycle matches _generate_wide_schema()
     type_cycle = ["long", "string", "double", "int", "boolean", "float", "bytes"]
+
     for i in range(n):
         record = {}
         for j in range(100):
@@ -176,6 +185,7 @@ def generate_large_wide_records(n: int = LARGE_RECORDS) -> Iterator[dict]:
                 record[f"col_{j:03d}"] = random.random() * 100
             elif col_type == "bytes":
                 record[f"col_{j:03d}"] = f"bytes_{i}_{j}".encode("utf-8")
+
         yield record
 
 

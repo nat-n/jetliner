@@ -42,7 +42,7 @@ Example usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator
+from typing import Iterator
 
 import polars as pl
 from polars.io.plugins import register_io_source
@@ -62,9 +62,6 @@ from .jetliner import (
     DecodeError,
     SourceError,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 def scan(
@@ -181,17 +178,6 @@ def scan(
     - Fine-grained control over batch processing
     - Progress tracking during iteration
     - Custom memory management
-
-    Requirements
-    -----------
-    - 4.8: Accept optional `storage_options` parameter
-    - 4.11: `storage_options` takes precedence over environment variables
-    - 6a.1: Return LazyFrame via register_io_source
-    - 6a.2: Projection pushdown (only allocate memory for selected columns)
-    - 6a.3: Predicate pushdown (apply filter to each batch)
-    - 6a.4: Early stopping (stop reading after row limit)
-    - 6a.5: Expose Avro schema as Polars schema for query planning
-    - 6a.6: Respect batch_size hint from query engine
     """
     # Parse schema to get Polars schema (calls into Rust)
     # This reads only the header to extract the schema

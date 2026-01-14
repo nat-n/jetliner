@@ -190,6 +190,14 @@ Avro supports recursive types (e.g., linked lists, trees) where a record can con
 
 Example: A binary tree node with `left` and `right` children will have those fields serialized as JSON strings that can be parsed if needed after reading.
 
+### Nullable Enums
+
+Avro enums wrapped in a union with null (e.g., `["null", {"type": "enum", ...}]`) are not yet supported. This triggers a "not implemented" panic in polars-core. Non-nullable enums work correctly and are mapped to Polars `Enum` type with proper categories.
+
+### Fixed Type
+
+Avro `fixed` type (fixed-size binary) causes a pyo3-polars panic during schema conversion. This is a known upstream limitation.
+
 ### Complex Top-Level Schemas
 
 Avro is usually used as a table format, with a Record as the top level type. However it may also be used with any other type at the top level.

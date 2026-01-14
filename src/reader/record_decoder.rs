@@ -1474,17 +1474,47 @@ impl EnumBuilder {
         // First create the DataType with the categories
         let categories = FrozenCategories::new(self.symbols.iter().map(|s| s.as_str()))
             .map_err(|e| DecodeError::InvalidData(format!("Failed to create categories: {}", e)))?;
-        let dtype = DataType::from_frozen_categories(categories);
+        let dtype = DataType::from_frozen_categories(categories.clone());
 
-        // Create the physical indices chunked array
-        let physical = UInt32Chunked::from_vec(self.name.clone().into(), indices);
+        // Get the physical type from the FrozenCategories to match the dtype
+        let physical_type = categories.physical();
 
-        // Create categorical from physical indices and dtype using Categorical32Type
-        let ca = unsafe {
-            CategoricalChunked::<Categorical32Type>::from_cats_and_dtype_unchecked(physical, dtype)
-        };
-
-        Ok(ca.into_series())
+        // Create the Series based on the physical type
+        // The physical type is determined by the number of categories:
+        // - U8 for <= 255 categories
+        // - U16 for <= 65535 categories
+        // - U32 for more categories
+        match physical_type {
+            CategoricalPhysical::U8 => {
+                let indices_u8: Vec<u8> = indices.into_iter().map(|i| i as u8).collect();
+                let physical = UInt8Chunked::from_vec(self.name.clone().into(), indices_u8);
+                let ca = unsafe {
+                    CategoricalChunked::<Categorical8Type>::from_cats_and_dtype_unchecked(
+                        physical, dtype,
+                    )
+                };
+                Ok(ca.into_series())
+            }
+            CategoricalPhysical::U16 => {
+                let indices_u16: Vec<u16> = indices.into_iter().map(|i| i as u16).collect();
+                let physical = UInt16Chunked::from_vec(self.name.clone().into(), indices_u16);
+                let ca = unsafe {
+                    CategoricalChunked::<Categorical16Type>::from_cats_and_dtype_unchecked(
+                        physical, dtype,
+                    )
+                };
+                Ok(ca.into_series())
+            }
+            CategoricalPhysical::U32 => {
+                let physical = UInt32Chunked::from_vec(self.name.clone().into(), indices);
+                let ca = unsafe {
+                    CategoricalChunked::<Categorical32Type>::from_cats_and_dtype_unchecked(
+                        physical, dtype,
+                    )
+                };
+                Ok(ca.into_series())
+            }
+        }
     }
 
     fn reserve(&mut self, additional: usize) {
@@ -1820,4 +1850,257 @@ fn bytes_to_i128(bytes: &[u8]) -> Result<i128, DecodeError> {
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper to extract string values from an Enum series
+    fn enum_to_strings(series: &Series) -> Vec<String> {
+        // Cast Enum to String to get the values
+        let string_series = series.cast(&DataType::String).unwrap();
+        string_series
+            .str()
+            .unwrap()
+            .into_iter()
+            .map(|v| v.unwrap().to_string())
+            .collect()
+    }
+
+    // Helper function to zigzag encode an i32
+    fn zigzag_encode(n: i32) -> Vec<u8> {
+        let zigzag = ((n << 1) ^ (n >> 31)) as u32;
+        let mut result = Vec::new();
+        let mut value = zigzag;
+        loop {
+            if value & !0x7F == 0 {
+                result.push(value as u8);
+                break;
+            }
+            result.push((value & 0x7F | 0x80) as u8);
+            value >>= 7;
+        }
+        result
+    }
+
+    // ========================================================================
+    // EnumBuilder Tests
+    // ========================================================================
+
+    #[test]
+    fn test_enum_builder_basic() {
+        // Test basic enum decoding with 4 symbols
+        let symbols = vec![
+            "PENDING".to_string(),
+            "ACTIVE".to_string(),
+            "COMPLETED".to_string(),
+            "CANCELLED".to_string(),
+        ];
+        let mut builder = EnumBuilder::new("status", symbols.clone());
+
+        // Decode index 0 (PENDING) - zigzag(0) = 0
+        let mut data: &[u8] = &[0x00];
+        builder.decode(&mut data).unwrap();
+
+        // Decode index 1 (ACTIVE) - zigzag(1) = 2
+        let mut data: &[u8] = &[0x02];
+        builder.decode(&mut data).unwrap();
+
+        // Decode index 2 (COMPLETED) - zigzag(2) = 4
+        let mut data: &[u8] = &[0x04];
+        builder.decode(&mut data).unwrap();
+
+        // Decode index 3 (CANCELLED) - zigzag(3) = 6
+        let mut data: &[u8] = &[0x06];
+        builder.decode(&mut data).unwrap();
+
+        let series = builder.finish().unwrap();
+
+        // Verify the series has correct length
+        assert_eq!(series.len(), 4);
+
+        // Verify it's an Enum type (not Categorical)
+        assert!(matches!(series.dtype(), DataType::Enum(_, _)));
+
+        // Verify the categories are correct
+        if let DataType::Enum(categories, _) = series.dtype() {
+            let cats: Vec<&str> = categories.categories().values_iter().collect();
+            assert_eq!(cats, vec!["PENDING", "ACTIVE", "COMPLETED", "CANCELLED"]);
+        }
+
+        // Verify the values
+        let values = enum_to_strings(&series);
+        assert_eq!(values, vec!["PENDING", "ACTIVE", "COMPLETED", "CANCELLED"]);
+    }
+
+    #[test]
+    fn test_enum_builder_repeated_values() {
+        // Test that the same enum value can appear multiple times
+        let symbols = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let mut builder = EnumBuilder::new("letter", symbols);
+
+        // Decode: A, B, A, C, A, B, B
+        for &idx in &[0u8, 2, 0, 4, 0, 2, 2] {
+            let mut data: &[u8] = &[idx];
+            builder.decode(&mut data).unwrap();
+        }
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 7);
+
+        let values = enum_to_strings(&series);
+        assert_eq!(values, vec!["A", "B", "A", "C", "A", "B", "B"]);
+    }
+
+    #[test]
+    fn test_enum_builder_single_symbol() {
+        // Edge case: enum with only one symbol
+        let symbols = vec!["ONLY".to_string()];
+        let mut builder = EnumBuilder::new("single", symbols);
+
+        // Decode index 0 multiple times
+        for _ in 0..3 {
+            let mut data: &[u8] = &[0x00];
+            builder.decode(&mut data).unwrap();
+        }
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 3);
+
+        let values = enum_to_strings(&series);
+        assert_eq!(values, vec!["ONLY", "ONLY", "ONLY"]);
+    }
+
+    #[test]
+    fn test_enum_builder_many_symbols_u8() {
+        // Test with 255 symbols (max for U8 physical type)
+        let symbols: Vec<String> = (0..255).map(|i| format!("SYM_{}", i)).collect();
+        let mut builder = EnumBuilder::new("many", symbols.clone());
+
+        // Decode a few values
+        for idx in [0, 100, 200, 254] {
+            let encoded = zigzag_encode(idx);
+            let mut data: &[u8] = &encoded;
+            builder.decode(&mut data).unwrap();
+        }
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 4);
+
+        // Should still be Enum type
+        assert!(matches!(series.dtype(), DataType::Enum(_, _)));
+
+        let values = enum_to_strings(&series);
+        assert_eq!(values, vec!["SYM_0", "SYM_100", "SYM_200", "SYM_254"]);
+    }
+
+    #[test]
+    fn test_enum_builder_many_symbols_u16() {
+        // Test with 300 symbols (requires U16 physical type)
+        let symbols: Vec<String> = (0..300).map(|i| format!("SYM_{}", i)).collect();
+        let mut builder = EnumBuilder::new("many_u16", symbols.clone());
+
+        // Decode values including one beyond U8 range
+        for idx in [0, 255, 256, 299] {
+            let encoded = zigzag_encode(idx);
+            let mut data: &[u8] = &encoded;
+            builder.decode(&mut data).unwrap();
+        }
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 4);
+
+        // Should still be Enum type
+        assert!(matches!(series.dtype(), DataType::Enum(_, _)));
+
+        let values = enum_to_strings(&series);
+        assert_eq!(values, vec!["SYM_0", "SYM_255", "SYM_256", "SYM_299"]);
+    }
+
+    #[test]
+    fn test_enum_builder_empty() {
+        // Edge case: no values decoded
+        let symbols = vec!["A".to_string(), "B".to_string()];
+        let mut builder = EnumBuilder::new("empty", symbols);
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 0);
+        assert!(matches!(series.dtype(), DataType::Enum(_, _)));
+    }
+
+    #[test]
+    fn test_enum_builder_reserve() {
+        // Test that reserve doesn't break anything
+        let symbols = vec!["X".to_string(), "Y".to_string()];
+        let mut builder = EnumBuilder::new("reserved", symbols);
+
+        builder.reserve(1000);
+
+        // Should still work normally
+        let mut data: &[u8] = &[0x00];
+        builder.decode(&mut data).unwrap();
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 1);
+    }
+
+    #[test]
+    fn test_enum_builder_out_of_range_index() {
+        // Test that out-of-range index is caught during decode
+        let symbols = vec!["A".to_string(), "B".to_string()];
+        let mut builder = EnumBuilder::new("bounded", symbols);
+
+        // Try to decode index 2 (out of range for 2 symbols)
+        // zigzag(2) = 4
+        let mut data: &[u8] = &[0x04];
+        let result = builder.decode(&mut data);
+
+        assert!(result.is_err());
+        if let Err(DecodeError::InvalidData(msg)) = result {
+            assert!(msg.contains("out of range"));
+        }
+    }
+
+    #[test]
+    fn test_enum_builder_negative_index() {
+        // Test that negative index is caught during decode
+        let symbols = vec!["A".to_string(), "B".to_string()];
+        let mut builder = EnumBuilder::new("bounded", symbols);
+
+        // Try to decode index -1
+        // zigzag(-1) = 1
+        let mut data: &[u8] = &[0x01];
+        let result = builder.decode(&mut data);
+
+        assert!(result.is_err());
+        if let Err(DecodeError::InvalidData(msg)) = result {
+            assert!(msg.contains("out of range"));
+        }
+    }
+
+    #[test]
+    fn test_enum_builder_unicode_symbols() {
+        // Test enum with unicode symbols
+        let symbols = vec![
+            "日本語".to_string(),
+            "中文".to_string(),
+            "한국어".to_string(),
+            "🎉".to_string(),
+        ];
+        let mut builder = EnumBuilder::new("unicode", symbols);
+
+        // Decode all values
+        for idx in 0..4 {
+            let encoded = zigzag_encode(idx);
+            let mut data: &[u8] = &encoded;
+            builder.decode(&mut data).unwrap();
+        }
+
+        let series = builder.finish().unwrap();
+        assert_eq!(series.len(), 4);
+
+        let values = enum_to_strings(&series);
+        assert_eq!(values, vec!["日本語", "中文", "한국어", "🎉"]);
+    }
 }
