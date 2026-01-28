@@ -122,14 +122,11 @@ class TestComplexRecursiveStructures:
         assert "value" in df.columns
         assert "left" not in df.columns
 
-    @pytest.mark.xfail(
-        reason="Deeply nested n-ary trees not yet fully supported - same issue as test_nary_tree_structure"
-    )
     def test_deeply_nested_recursive(self, get_test_data_path):
         """Test that deeply nested recursive structures are handled correctly.
 
-        Known Limitation: Same as test_nary_tree_structure - arrays of recursive types
-        not yet fully supported.
+        N-ary trees with array children are now supported - children field
+        is a List[Utf8] where each element is a JSON-serialized child node.
         """
         path = get_test_data_path("fastavro/graph-recursive.avro")
 
@@ -138,11 +135,23 @@ class TestComplexRecursiveStructures:
         # Should successfully read deeply nested structure
         assert df.height > 0
 
-        # Verify the deep nesting is present in the JSON
+        # Verify columns exist
+        assert "id" in df.columns
+        assert "value" in df.columns
+        assert "children" in df.columns
 
-        for i in range(df.height):
-            children_val = df["children"][i]
-            if children_val and children_val != "[]":
-                # Should be able to parse as JSON
-                # Exact format depends on implementation
-                pass  # Just verify no errors
+        # Children should be List[Utf8] - each child is JSON serialized
+        assert df["children"].dtype == pl.List(pl.Utf8)
+
+        # Verify we can parse the JSON children
+        import json
+
+        for row in df.iter_rows(named=True):
+            children_list = row["children"]
+            if children_list:
+                for child_json in children_list:
+                    if child_json:
+                        parsed = json.loads(child_json)
+                        assert "id" in parsed
+                        assert "value" in parsed
+                        assert "children" in parsed

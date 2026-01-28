@@ -38,7 +38,7 @@ use crate::error::{
     CodecError as RustCodecError, ReadError, ReadErrorKind, ReaderError,
     SchemaError as RustSchemaError, SourceError as RustSourceError,
 };
-use crate::reader::{AvroHeader, AvroStreamReader, BufferConfig, ReaderConfig};
+use crate::reader::{AvroHeader, AvroStreamReader, BufferConfig, ReadBufferConfig, ReaderConfig};
 use crate::schema::AvroSchema;
 use crate::source::{BoxedSource, LocalSource, S3Config, S3Source};
 
@@ -282,6 +282,9 @@ impl AvroReaderCore {
     /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
     /// * `projected_columns` - Optional list of column names to read (default: all columns)
     /// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
+    /// * `read_chunk_size` - Optional read buffer chunk size in bytes. When None, auto-detects:
+    ///   64KB for local files, 4MB for S3. Larger values reduce I/O operations but use more memory.
+    ///   For S3, larger chunks (1-8MB) reduce HTTP round-trips significantly.
     ///
     /// # Returns
     /// A new AvroReaderCore instance ready for iteration.
@@ -294,6 +297,7 @@ impl AvroReaderCore {
     /// # Requirements
     /// - 4.8: Accept optional `storage_options` parameter
     /// - 4.11: `storage_options` takes precedence over environment variables
+    /// - 3.13: Expose read_chunk_size for tuning
     #[new]
     #[pyo3(signature = (
         path,
@@ -302,7 +306,8 @@ impl AvroReaderCore {
         buffer_bytes = 67_108_864,
         strict = false,
         projected_columns = None,
-        storage_options = None
+        storage_options = None,
+        read_chunk_size = None
     ))]
     fn new(
         path: String,
@@ -312,6 +317,7 @@ impl AvroReaderCore {
         strict: bool,
         projected_columns: Option<Vec<String>>,
         storage_options: Option<std::collections::HashMap<String, String>>,
+        read_chunk_size: Option<usize>,
     ) -> PyResult<Self> {
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -337,10 +343,19 @@ impl AvroReaderCore {
                 ErrorMode::Skip
             };
 
+            // Determine read buffer config based on source type and user override
+            let is_s3 = path.starts_with("s3://");
+            let read_buffer_config = match read_chunk_size {
+                Some(chunk_size) => ReadBufferConfig::with_chunk_size(chunk_size),
+                None if is_s3 => ReadBufferConfig::S3_DEFAULT,
+                None => ReadBufferConfig::LOCAL_DEFAULT,
+            };
+
             let mut config = ReaderConfig::new()
                 .with_batch_size(batch_size)
                 .with_buffer_config(buffer_config)
-                .with_error_mode(error_mode);
+                .with_error_mode(error_mode)
+                .with_read_buffer_config(read_buffer_config);
 
             // Add projection if specified
             if let Some(columns) = projected_columns {
@@ -1236,6 +1251,9 @@ impl AvroReader {
     /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
     /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
     /// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
+    /// * `read_chunk_size` - Optional read buffer chunk size in bytes. When None, auto-detects:
+    ///   64KB for local files, 4MB for S3. Larger values reduce I/O operations but use more memory.
+    ///   For S3, larger chunks (1-8MB) reduce HTTP round-trips significantly.
     ///
     /// # Returns
     /// A new AvroReader instance ready for iteration.
@@ -1269,11 +1287,18 @@ impl AvroReader {
     ///         "aws_secret_access_key": "minioadmin",
     ///     }
     /// )
+    ///
+    /// # Custom read chunk size for S3 optimization
+    /// reader = jetliner.AvroReader(
+    ///     "s3://bucket/key.avro",
+    ///     read_chunk_size=8 * 1024 * 1024  # 8MB chunks
+    /// )
     /// ```
     ///
     /// # Requirements
     /// - 4.8: Accept optional `storage_options` parameter
     /// - 4.11: `storage_options` takes precedence over environment variables
+    /// - 3.13: Expose read_chunk_size for tuning
     #[new]
     #[pyo3(signature = (
         path,
@@ -1281,7 +1306,8 @@ impl AvroReader {
         buffer_blocks = 4,
         buffer_bytes = 67_108_864,
         strict = false,
-        storage_options = None
+        storage_options = None,
+        read_chunk_size = None
     ))]
     fn new(
         path: String,
@@ -1290,6 +1316,7 @@ impl AvroReader {
         buffer_bytes: usize,
         strict: bool,
         storage_options: Option<std::collections::HashMap<String, String>>,
+        read_chunk_size: Option<usize>,
     ) -> PyResult<Self> {
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -1315,10 +1342,19 @@ impl AvroReader {
                 ErrorMode::Skip
             };
 
+            // Determine read buffer config based on source type and user override
+            let is_s3 = path.starts_with("s3://");
+            let read_buffer_config = match read_chunk_size {
+                Some(chunk_size) => ReadBufferConfig::with_chunk_size(chunk_size),
+                None if is_s3 => ReadBufferConfig::S3_DEFAULT,
+                None => ReadBufferConfig::LOCAL_DEFAULT,
+            };
+
             let config = ReaderConfig::new()
                 .with_batch_size(batch_size)
                 .with_buffer_config(buffer_config)
-                .with_error_mode(error_mode);
+                .with_error_mode(error_mode)
+                .with_read_buffer_config(read_buffer_config);
 
             // Open the reader
             let reader = AvroStreamReader::open(source, config).await?;
@@ -1664,6 +1700,14 @@ impl AvroReader {
 ///     for df in reader:
 ///         process(df)
 ///
+/// # Custom read chunk size for S3 optimization
+/// with jetliner.open(
+///     "s3://bucket/data.avro",
+///     read_chunk_size=8 * 1024 * 1024  # 8MB chunks for fewer HTTP requests
+/// ) as reader:
+///     for df in reader:
+///         process(df)
+///
 /// # Access schema
 /// with jetliner.open("data.avro") as reader:
 ///     print(reader.schema)  # JSON string
@@ -1685,6 +1729,7 @@ impl AvroReader {
 /// - 4.3: Local filesystem path support
 /// - 4.8: Accept optional `storage_options` parameter
 /// - 4.11: `storage_options` takes precedence over environment variables
+/// - 3.13: Expose read_chunk_size for tuning
 #[pyfunction]
 #[pyo3(signature = (
     path,
@@ -1692,7 +1737,8 @@ impl AvroReader {
     buffer_blocks = 4,
     buffer_bytes = 67_108_864,
     strict = false,
-    storage_options = None
+    storage_options = None,
+    read_chunk_size = None
 ))]
 pub fn open(
     path: String,
@@ -1701,6 +1747,7 @@ pub fn open(
     buffer_bytes: usize,
     strict: bool,
     storage_options: Option<std::collections::HashMap<String, String>>,
+    read_chunk_size: Option<usize>,
 ) -> PyResult<AvroReader> {
     AvroReader::new(
         path,
@@ -1709,6 +1756,7 @@ pub fn open(
         buffer_bytes,
         strict,
         storage_options,
+        read_chunk_size,
     )
 }
 

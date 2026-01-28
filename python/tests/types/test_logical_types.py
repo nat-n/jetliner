@@ -18,7 +18,7 @@ from expected due to implementation gaps.
 """
 
 import tempfile
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -83,13 +83,15 @@ LOGICAL_TYPES_SCHEMA = {
 
 def create_logical_types_record(record_id: int) -> dict:
     """Create a record with logical type values."""
-    base_date = date(2020, 1, 1)
+    # Use explicit dates to avoid leap year issues with timedelta(days=365)
+    dates = [date(2020, 1, 1), date(2021, 1, 1), date(2022, 1, 1)]
     base_time = time(9, 30, 0)
-    base_datetime = datetime(2020, 1, 1, 12, 0, 0)
+    # Use UTC-aware datetimes to avoid timezone conversion issues
+    base_datetime = datetime(2020, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     return {
         "id": record_id,
-        "birth_date": base_date + timedelta(days=record_id * 365),
+        "birth_date": dates[record_id] if record_id < len(dates) else dates[0],
         "start_time_ms": base_time,
         "start_time_us": base_time,
         "created_at_ms": base_datetime + timedelta(days=record_id),
@@ -119,7 +121,6 @@ class TestLogicalTypes:
         df = jetliner.scan(logical_types_avro_file).collect()
         assert df.height == 3
 
-    @pytest.mark.xfail(reason="Date values off by one day - needs investigation")
     def test_date_type(self, logical_types_avro_file):
         """Test date logical type is read correctly."""
         df = jetliner.scan(logical_types_avro_file).collect()
@@ -132,7 +133,6 @@ class TestLogicalTypes:
         assert df["birth_date"][1] == date(2021, 1, 1)
         assert df["birth_date"][2] == date(2022, 1, 1)
 
-    @pytest.mark.xfail(reason="Time-millis interpretation incorrect - needs investigation")
     def test_time_millis_type(self, logical_types_avro_file):
         """Test time-millis logical type is read correctly."""
         df = jetliner.scan(logical_types_avro_file).collect()
@@ -143,7 +143,6 @@ class TestLogicalTypes:
         # Check value (9:30:00)
         assert df["start_time_ms"][0] == time(9, 30, 0)
 
-    @pytest.mark.xfail(reason="Time-micros interpretation incorrect - needs investigation")
     def test_time_micros_type(self, logical_types_avro_file):
         """Test time-micros logical type is read correctly."""
         df = jetliner.scan(logical_types_avro_file).collect()
@@ -154,7 +153,6 @@ class TestLogicalTypes:
         # Check value (9:30:00)
         assert df["start_time_us"][0] == time(9, 30, 0)
 
-    @pytest.mark.xfail(reason="Timestamp-millis timezone handling differs - needs investigation")
     def test_timestamp_millis_type(self, logical_types_avro_file):
         """Test timestamp-millis logical type is read correctly."""
         df = jetliner.scan(logical_types_avro_file).collect()
@@ -162,10 +160,9 @@ class TestLogicalTypes:
         # Check dtype is Datetime
         assert df["created_at_ms"].dtype == pl.Datetime("ms", "UTC")
 
-        # Check values
-        expected = datetime(2020, 1, 1, 12, 0, 0)
-        # Compare as timestamps to avoid timezone issues
-        assert df["created_at_ms"][0].replace(tzinfo=None) == expected
+        # Check values - we use UTC-aware datetimes in the fixture
+        expected = datetime(2020, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert df["created_at_ms"][0] == expected
 
     def test_timestamp_micros_type(self, logical_types_avro_file):
         """Test timestamp-micros logical type is read correctly."""
@@ -241,13 +238,15 @@ TEMPORAL_TYPES_SCHEMA = {
 
 def create_temporal_record(record_id: int) -> dict:
     """Create a record with temporal logical type values."""
-    base_date = date(2020, 1, 1)
+    # Use explicit dates to avoid leap year issues with timedelta(days=365)
+    dates = [date(2020, 1, 1), date(2021, 1, 1), date(2022, 1, 1)]
     base_time = time(9, 30, 0)
-    base_datetime = datetime(2020, 1, 1, 12, 0, 0)
+    # Use UTC-aware datetimes to avoid timezone conversion issues
+    base_datetime = datetime(2020, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     return {
         "id": record_id,
-        "birth_date": base_date + timedelta(days=record_id * 365),
+        "birth_date": dates[record_id] if record_id < len(dates) else dates[0],
         "start_time_ms": base_time,
         "start_time_us": base_time,
         "created_at_ms": base_datetime + timedelta(days=record_id),

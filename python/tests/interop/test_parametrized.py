@@ -55,10 +55,7 @@ def test_apache_avro_file_readable(filename, get_test_data_path):
         ("string-toplevel.avro", None),  # ✅ Works!
         # Complex recursive structures
         ("tree-recursive.avro", None),  # ✅ Binary trees work!
-        (
-            "graph-recursive.avro",
-            "N-ary trees with array children - list builder error",
-        ),
+        ("graph-recursive.avro", None),  # ✅ N-ary trees work (children as List[JSON])
     ],
 )
 def test_fastavro_file_readable(filename, xfail_reason, get_test_data_path):

@@ -17,6 +17,134 @@ use crate::source::StreamSource;
 
 use super::AvroHeader;
 
+// =============================================================================
+// ReadBufferConfig - Configuration for BlockReader's internal read buffer
+// =============================================================================
+
+/// Configuration for BlockReader's internal read buffer.
+///
+/// Controls how data is fetched from the source to minimize I/O operations.
+/// Different sources have different optimal configurations:
+///
+/// - **Local filesystem**: Low latency (~0.1ms), OS page cache handles prefetching,
+///   small reads are cheap. Use smaller chunks with no eager prefetch.
+///
+/// - **S3**: High latency (~50-100ms), each request costs money, larger reads
+///   amortize overhead. Use larger chunks with eager prefetch to hide latency.
+///
+/// # Requirements
+/// - 3.8: Retain unused bytes from previous I/O operations
+/// - 3.9: Parse multiple small blocks without additional I/O
+/// - 3.10: Minimize total I/O operations
+/// - 3.11: Use 4MB default chunk size for S3
+/// - 3.12: Use 64KB default chunk size for local filesystem
+/// - 3.13: Expose read_chunk_size parameter for user tuning
+///
+/// # Example
+/// ```ignore
+/// use jetliner::reader::ReadBufferConfig;
+///
+/// // Use defaults for local files
+/// let config = ReadBufferConfig::LOCAL_DEFAULT;
+///
+/// // Use defaults for S3
+/// let config = ReadBufferConfig::S3_DEFAULT;
+///
+/// // Custom configuration
+/// let config = ReadBufferConfig::new(1024 * 1024, 0.25); // 1MB chunks, 25% threshold
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReadBufferConfig {
+    /// Size of each read chunk from the source in bytes.
+    ///
+    /// - Local default: 64KB (OS page cache handles the rest)
+    /// - S3 default: 4MB (amortize HTTP request overhead)
+    pub chunk_size: usize,
+
+    /// Threshold (0.0-1.0) at which to trigger a prefetch.
+    ///
+    /// When buffer falls below this fraction of chunk_size, fetch more data.
+    /// - Local default: 0.0 (fetch only when empty - OS handles prefetch)
+    /// - S3 default: 0.5 (fetch when 50% consumed - hide latency)
+    pub prefetch_threshold: f32,
+}
+
+impl ReadBufferConfig {
+    /// Default config for local filesystem.
+    ///
+    /// Uses 64KB chunks with no eager prefetch since the OS page cache
+    /// handles prefetching efficiently.
+    pub const LOCAL_DEFAULT: Self = Self {
+        chunk_size: 64 * 1024,   // 64KB
+        prefetch_threshold: 0.0, // Fetch only when empty
+    };
+
+    /// Default config for S3 (optimized for high-latency, pay-per-request).
+    ///
+    /// Uses 4MB chunks with 50% prefetch threshold to amortize HTTP request
+    /// overhead and hide latency by fetching ahead.
+    ///
+    /// Industry reference points:
+    /// - Spark: 64-128MB chunks for S3
+    /// - Polars cloud: 4MB chunks
+    /// - DuckDB: 1-10MB chunks
+    pub const S3_DEFAULT: Self = Self {
+        chunk_size: 4 * 1024 * 1024, // 4MB
+        prefetch_threshold: 0.5,     // Fetch at 50% consumed
+    };
+
+    /// Create config with custom chunk size (threshold defaults to 0.0).
+    ///
+    /// # Arguments
+    /// * `chunk_size` - Size of each read chunk in bytes
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = ReadBufferConfig::with_chunk_size(1024 * 1024); // 1MB chunks
+    /// ```
+    pub fn with_chunk_size(chunk_size: usize) -> Self {
+        Self {
+            chunk_size,
+            prefetch_threshold: 0.0,
+        }
+    }
+
+    /// Create config with both custom chunk size and prefetch threshold.
+    ///
+    /// # Arguments
+    /// * `chunk_size` - Size of each read chunk in bytes
+    /// * `prefetch_threshold` - Threshold (0.0-1.0) at which to trigger prefetch
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = ReadBufferConfig::new(2 * 1024 * 1024, 0.25); // 2MB, 25% threshold
+    /// ```
+    pub fn new(chunk_size: usize, prefetch_threshold: f32) -> Self {
+        Self {
+            chunk_size,
+            prefetch_threshold: prefetch_threshold.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Get the prefetch trigger point in bytes.
+    ///
+    /// When the buffer has fewer bytes than this, a prefetch should be triggered.
+    #[inline]
+    pub fn prefetch_trigger_bytes(&self) -> usize {
+        (self.chunk_size as f32 * self.prefetch_threshold) as usize
+    }
+}
+
+impl Default for ReadBufferConfig {
+    fn default() -> Self {
+        Self::LOCAL_DEFAULT
+    }
+}
+
+// =============================================================================
+// AvroBlock and DecompressedBlock
+// =============================================================================
+
 /// A single data block from an Avro file.
 ///
 /// Each block contains a batch of records that have been serialized
@@ -198,26 +326,61 @@ fn decode_varint_signed(cursor: &mut &[u8], offset: &mut u64) -> Result<i64, Dec
 /// Size of the sync marker in bytes
 const SYNC_MARKER_SIZE: usize = 16;
 
-/// Default read buffer size for fetching data from source
-const DEFAULT_READ_BUFFER_SIZE: usize = 64 * 1024; // 64KB
-
 /// Reads and parses Avro blocks from a StreamSource.
 ///
 /// `BlockReader` orchestrates header parsing and block iteration,
 /// tracking the current file offset and block index. It supports
 /// seeking to sync markers for resumable reads.
 ///
+/// # Read Buffering
+///
+/// The BlockReader maintains an internal read buffer to minimize I/O operations.
+/// When reading from the source, it fetches data in configurable chunks and
+/// retains unused bytes for subsequent block parsing. This is critical for S3
+/// performance where each `read_range` call is an HTTP request with ~50-100ms
+/// latency and per-request costs.
+///
+/// ```text
+/// ┌────────────────────────────────────────────────────────────────────────────┐
+/// │                        READ BUFFER LIFECYCLE                               │
+/// ├────────────────────────────────────────────────────────────────────────────┤
+/// │                                                                            │
+/// │  Initial State:     read_buffer = []                                       │
+/// │                                                                            │
+/// │  After 1st read:    read_buffer = [████████████████████████] (chunk_size)  │
+/// │                                   ^block1^                                 │
+/// │                                                                            │
+/// │  After parse:       read_buffer = [        ████████████████] (retained)    │
+/// │                                           ^block2^                         │
+/// │                                                                            │
+/// │  S3 eager refill:   When buffer < 50% of chunk_size, trigger async fetch   │
+/// │                     read_buffer = [████████████████████████████████████]   │
+/// │                                                                            │
+/// │  Local lazy refill: When buffer empty, fetch next chunk                    │
+/// │                     read_buffer = [████████████████████████]               │
+/// │                                                                            │
+/// └────────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
 /// # Requirements
 /// - 3.1: Read and process one block at a time
 /// - 3.7: Support seeking to a specific block by sync marker
+/// - 3.8: Retain unused bytes from previous I/O operations
+/// - 3.9: Parse multiple small blocks without additional I/O
+/// - 3.10: Minimize total I/O operations
 ///
 /// # Example
 /// ```ignore
-/// use avro_stream::reader::BlockReader;
-/// use avro_stream::source::LocalSource;
+/// use jetliner::reader::{BlockReader, ReadBufferConfig};
+/// use jetliner::source::LocalSource;
 ///
+/// // Use default config (64KB chunks for local files)
 /// let source = LocalSource::open("data.avro").await?;
 /// let mut reader = BlockReader::new(source).await?;
+///
+/// // Use S3-optimized config (4MB chunks)
+/// let source = S3Source::from_uri("s3://bucket/key").await?;
+/// let mut reader = BlockReader::with_config(source, ReadBufferConfig::S3_DEFAULT).await?;
 ///
 /// while let Some(block) = reader.next_block().await? {
 ///     println!("Block {} has {} records", block.block_index, block.record_count);
@@ -228,19 +391,25 @@ pub struct BlockReader<S: StreamSource> {
     source: S,
     /// Parsed file header
     header: AvroHeader,
-    /// Current read offset in the file
+    /// Current read offset in the file (where next read would start if buffer is empty)
     current_offset: u64,
     /// Current block index (0-indexed)
     block_index: usize,
     /// Total file size (cached)
     file_size: u64,
+    /// Internal read buffer - retains unused bytes between block reads
+    read_buffer: Bytes,
+    /// Offset in file where read_buffer starts
+    buffer_file_offset: u64,
+    /// Read buffer configuration
+    buffer_config: ReadBufferConfig,
 }
 
 impl<S: StreamSource> BlockReader<S> {
-    /// Create a new BlockReader from a StreamSource.
+    /// Create a new BlockReader from a StreamSource with default configuration.
     ///
-    /// This will read and parse the Avro file header, validating
-    /// the magic bytes and extracting the schema and codec.
+    /// Uses `ReadBufferConfig::LOCAL_DEFAULT` (64KB chunks, no eager prefetch).
+    /// For S3 sources, consider using `with_config()` with `ReadBufferConfig::S3_DEFAULT`.
     ///
     /// # Arguments
     /// * `source` - The data source to read from
@@ -255,27 +424,74 @@ impl<S: StreamSource> BlockReader<S> {
     /// - `ReaderError::Schema` if schema is invalid
     /// - `ReaderError::Codec` if codec is unknown
     pub async fn new(source: S) -> Result<Self, ReaderError> {
+        Self::with_config(source, ReadBufferConfig::LOCAL_DEFAULT).await
+    }
+
+    /// Create a new BlockReader from a StreamSource with custom buffer configuration.
+    ///
+    /// # Arguments
+    /// * `source` - The data source to read from
+    /// * `config` - Buffer configuration (chunk size and prefetch threshold)
+    ///
+    /// # Returns
+    /// A new BlockReader positioned at the first block.
+    ///
+    /// # Errors
+    /// - `ReaderError::Source` if reading from the source fails
+    /// - `ReaderError::InvalidMagic` if magic bytes don't match
+    /// - `ReaderError::Parse` if header parsing fails
+    /// - `ReaderError::Schema` if schema is invalid
+    /// - `ReaderError::Codec` if codec is unknown
+    ///
+    /// # Example
+    /// ```ignore
+    /// // For S3 sources, use S3_DEFAULT for better performance
+    /// let reader = BlockReader::with_config(s3_source, ReadBufferConfig::S3_DEFAULT).await?;
+    ///
+    /// // For local files with custom chunk size
+    /// let config = ReadBufferConfig::with_chunk_size(128 * 1024); // 128KB
+    /// let reader = BlockReader::with_config(local_source, config).await?;
+    /// ```
+    pub async fn with_config(source: S, config: ReadBufferConfig) -> Result<Self, ReaderError> {
         // Get file size
         let file_size = source.size().await?;
 
         // Read enough bytes for the header (we'll read more if needed)
         // Most headers are small, but we need to handle large schemas
-        let initial_read_size = std::cmp::min(file_size as usize, DEFAULT_READ_BUFFER_SIZE);
+        let initial_read_size = std::cmp::min(file_size as usize, config.chunk_size);
         let header_bytes = source.read_range(0, initial_read_size).await?;
 
         // Parse the header
         let header = AvroHeader::parse(&header_bytes)?;
+        let header_size = header.header_size;
+
+        // Calculate how much of the initial read is left after the header
+        let header_size_usize = header_size as usize;
+        let remaining_buffer = if header_size_usize < header_bytes.len() {
+            header_bytes.slice(header_size_usize..)
+        } else {
+            Bytes::new()
+        };
 
         Ok(Self {
             source,
-            current_offset: header.header_size,
+            current_offset: header_size,
             block_index: 0,
             file_size,
             header,
+            read_buffer: remaining_buffer,
+            buffer_file_offset: header_size,
+            buffer_config: config,
         })
     }
 
-    /// Read the next block from the file.
+    /// Read the next block from the file using the internal read buffer.
+    ///
+    /// This method uses buffered reading to minimize I/O operations:
+    /// 1. Checks if read_buffer contains enough data for the next block
+    /// 2. If buffer is below prefetch_threshold, fetches more data from source
+    /// 3. Parses the block from the buffer
+    /// 4. Advances buffer position, retaining unused bytes
     ///
     /// Returns `None` when all blocks have been read (EOF).
     ///
@@ -289,52 +505,199 @@ impl<S: StreamSource> BlockReader<S> {
     ///
     /// # Requirements
     /// - 3.1: Read and process one block at a time
+    /// - 3.8: Retain unused bytes from previous I/O operations
+    /// - 3.9: Parse multiple small blocks without additional I/O
+    /// - 3.10: Minimize total I/O operations
     pub async fn next_block(&mut self) -> Result<Option<AvroBlock>, ReaderError> {
         // Check if we've reached the end of the file
         if self.current_offset >= self.file_size {
             return Ok(None);
         }
 
-        // Calculate how much to read
-        let remaining = self.file_size - self.current_offset;
-        let read_size = std::cmp::min(remaining as usize, DEFAULT_READ_BUFFER_SIZE);
+        // Ensure we have data in the buffer
+        self.ensure_buffer_filled().await?;
 
-        // Read data from source
-        let data = self
-            .source
-            .read_range(self.current_offset, read_size)
-            .await?;
-
-        if data.is_empty() {
+        // If buffer is still empty after trying to fill, we're at EOF
+        if self.read_buffer.is_empty() {
             return Ok(None);
         }
 
-        // Try to parse the block
+        // Try to parse the block from the buffer
         match AvroBlock::parse(
-            &data,
+            &self.read_buffer,
             &self.header.sync_marker,
             self.current_offset,
             self.block_index,
         ) {
             Ok((block, consumed)) => {
-                self.current_offset += consumed as u64;
+                // Advance buffer position, retaining unused bytes
+                self.advance_buffer(consumed);
                 self.block_index += 1;
                 Ok(Some(block))
             }
-            Err(ReaderError::Parse { message, offset })
+            Err(ReaderError::Parse { message, .. })
                 if message.starts_with("Not enough bytes for block data") =>
             {
-                // Block is larger than our initial read - need to read more
-                // Parse the required size from the block header we already have
-                self.read_large_block(&data, remaining as usize).await
+                // Block is larger than current buffer - need to read more
+                // This handles blocks larger than chunk_size
+                self.read_large_block_buffered().await
             }
             Err(e) => Err(e),
         }
     }
 
+    /// Ensure the read buffer has data, fetching from source if needed.
+    ///
+    /// This method implements the prefetch threshold logic:
+    /// - If buffer is below prefetch_threshold * chunk_size, fetch more data
+    /// - For local files (threshold=0.0), only fetch when buffer is empty
+    /// - For S3 (threshold=0.5), fetch when buffer is 50% consumed
+    async fn ensure_buffer_filled(&mut self) -> Result<(), ReaderError> {
+        let trigger_bytes = self.buffer_config.prefetch_trigger_bytes();
+
+        // Check if we need to fetch more data
+        if self.read_buffer.len() > trigger_bytes {
+            return Ok(());
+        }
+
+        // Calculate how much more data is available in the file
+        let buffer_end_offset = self.buffer_file_offset + self.read_buffer.len() as u64;
+        if buffer_end_offset >= self.file_size {
+            // No more data to fetch
+            return Ok(());
+        }
+
+        // Calculate how much to read
+        let remaining_in_file = self.file_size - buffer_end_offset;
+        let read_size = std::cmp::min(remaining_in_file as usize, self.buffer_config.chunk_size);
+
+        // Fetch more data from source
+        let new_data = self.source.read_range(buffer_end_offset, read_size).await?;
+
+        if new_data.is_empty() {
+            return Ok(());
+        }
+
+        // Append new data to existing buffer
+        if self.read_buffer.is_empty() {
+            self.read_buffer = new_data;
+        } else {
+            // Combine existing buffer with new data
+            let mut combined = Vec::with_capacity(self.read_buffer.len() + new_data.len());
+            combined.extend_from_slice(&self.read_buffer);
+            combined.extend_from_slice(&new_data);
+            self.read_buffer = Bytes::from(combined);
+        }
+
+        Ok(())
+    }
+
+    /// Advance the buffer by consuming `bytes` from the front.
+    ///
+    /// Updates current_offset and buffer_file_offset to reflect the new position.
+    fn advance_buffer(&mut self, bytes: usize) {
+        self.current_offset += bytes as u64;
+        if bytes >= self.read_buffer.len() {
+            self.read_buffer = Bytes::new();
+            self.buffer_file_offset = self.current_offset;
+        } else {
+            self.read_buffer = self.read_buffer.slice(bytes..);
+            self.buffer_file_offset += bytes as u64;
+        }
+    }
+
+    /// Handle reading a block that's larger than the current buffer.
+    ///
+    /// This is the slow path - only called when a block exceeds the buffer size.
+    /// It reads exactly the bytes needed for the block.
+    async fn read_large_block_buffered(&mut self) -> Result<Option<AvroBlock>, ReaderError> {
+        // Parse just the header to get the required size
+        let mut cursor = &self.read_buffer[..];
+        let mut offset = 0u64;
+
+        let _record_count =
+            decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
+                offset: self.current_offset,
+                message: format!("Failed to decode block record count: {}", e),
+            })?;
+
+        let compressed_size =
+            decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
+                offset: self.current_offset + offset,
+                message: format!("Failed to decode block compressed size: {}", e),
+            })?;
+
+        if compressed_size < 0 {
+            return Err(ReaderError::Parse {
+                offset: self.current_offset + offset,
+                message: format!("Invalid negative compressed size: {}", compressed_size),
+            });
+        }
+
+        // Calculate total bytes needed: header varints + compressed data + sync marker
+        let header_size = offset as usize;
+        let total_needed = header_size + compressed_size as usize + SYNC_MARKER_SIZE;
+
+        let remaining_in_file = (self.file_size - self.current_offset) as usize;
+        if total_needed > remaining_in_file {
+            return Err(ReaderError::Parse {
+                offset: self.current_offset,
+                message: format!(
+                    "Block size {} exceeds remaining file size {}",
+                    total_needed, remaining_in_file
+                ),
+            });
+        }
+
+        // Calculate how much more we need to read
+        let already_have = self.read_buffer.len();
+        if total_needed <= already_have {
+            // We actually have enough data - this shouldn't happen but handle it
+            let (block, consumed) = AvroBlock::parse(
+                &self.read_buffer,
+                &self.header.sync_marker,
+                self.current_offset,
+                self.block_index,
+            )?;
+            self.advance_buffer(consumed);
+            self.block_index += 1;
+            return Ok(Some(block));
+        }
+
+        // Need to read more data
+        let need_more = total_needed - already_have;
+        let read_offset = self.buffer_file_offset + already_have as u64;
+        let additional_data = self.source.read_range(read_offset, need_more).await?;
+
+        // Combine existing buffer with additional data
+        let mut combined = Vec::with_capacity(total_needed);
+        combined.extend_from_slice(&self.read_buffer);
+        combined.extend_from_slice(&additional_data);
+
+        // Parse the complete block
+        let (block, consumed) = AvroBlock::parse(
+            &combined,
+            &self.header.sync_marker,
+            self.current_offset,
+            self.block_index,
+        )?;
+
+        // Update state - we consumed the entire combined buffer for this block
+        self.current_offset += consumed as u64;
+        self.block_index += 1;
+
+        // Clear the buffer and set offset to after the block
+        self.read_buffer = Bytes::new();
+        self.buffer_file_offset = self.current_offset;
+
+        Ok(Some(block))
+    }
+
     /// Handle reading a block that's larger than the default buffer size.
     ///
     /// This is the slow path - only called when a block exceeds 64KB.
+    /// DEPRECATED: Use read_large_block_buffered instead.
+    #[allow(dead_code)]
     async fn read_large_block(
         &mut self,
         initial_data: &[u8],
@@ -457,6 +820,9 @@ impl<S: StreamSource> BlockReader<S> {
             return Ok(false);
         }
 
+        // Clear the read buffer since we're seeking to a new position
+        self.read_buffer = Bytes::new();
+
         let sync_marker = self.header.sync_marker;
         let mut scan_offset = position;
 
@@ -464,7 +830,7 @@ impl<S: StreamSource> BlockReader<S> {
         while scan_offset + SYNC_MARKER_SIZE as u64 <= self.file_size {
             // Read a chunk of data to scan
             let remaining = self.file_size - scan_offset;
-            let read_size = std::cmp::min(remaining as usize, DEFAULT_READ_BUFFER_SIZE);
+            let read_size = std::cmp::min(remaining as usize, self.buffer_config.chunk_size);
             let data = self.source.read_range(scan_offset, read_size).await?;
 
             if data.is_empty() {
@@ -479,6 +845,7 @@ impl<S: StreamSource> BlockReader<S> {
 
                 if new_offset <= self.file_size {
                     self.current_offset = new_offset;
+                    self.buffer_file_offset = new_offset;
                     // Reset block index since we don't know which block we're at
                     self.block_index = 0;
                     return Ok(true);
@@ -501,10 +868,12 @@ impl<S: StreamSource> BlockReader<S> {
     /// Reset the reader to the beginning of the blocks.
     ///
     /// This positions the reader right after the header, ready to
-    /// read the first block again.
+    /// read the first block again. Also clears the read buffer.
     pub fn reset(&mut self) {
         self.current_offset = self.header.header_size;
         self.block_index = 0;
+        self.read_buffer = Bytes::new();
+        self.buffer_file_offset = self.header.header_size;
     }
 
     /// Advance the reader past a known invalid sync marker.
@@ -521,7 +890,10 @@ impl<S: StreamSource> BlockReader<S> {
     pub fn advance_past_invalid_sync(&mut self, invalid_sync_offset: u64) {
         // Position after the invalid sync marker (16 bytes)
         self.current_offset = invalid_sync_offset + SYNC_MARKER_SIZE as u64;
+        self.buffer_file_offset = self.current_offset;
         self.block_index += 1;
+        // Clear the read buffer since we're jumping to a new position
+        self.read_buffer = Bytes::new();
     }
 
     /// Skip past corrupted data and find the next valid sync marker, starting from a given position.
@@ -555,6 +927,9 @@ impl<S: StreamSource> BlockReader<S> {
             return Ok((false, 0));
         }
 
+        // Clear the read buffer since we're scanning for sync markers
+        self.read_buffer = Bytes::new();
+
         let sync_marker = self.header.sync_marker;
         let mut scan_offset = start_from;
 
@@ -562,7 +937,7 @@ impl<S: StreamSource> BlockReader<S> {
         while scan_offset + SYNC_MARKER_SIZE as u64 <= self.file_size {
             // Read a chunk of data to scan
             let remaining = self.file_size - scan_offset;
-            let read_size = std::cmp::min(remaining as usize, DEFAULT_READ_BUFFER_SIZE);
+            let read_size = std::cmp::min(remaining as usize, self.buffer_config.chunk_size);
             let data = self.source.read_range(scan_offset, read_size).await?;
 
             if data.is_empty() {
@@ -580,6 +955,7 @@ impl<S: StreamSource> BlockReader<S> {
                 if new_offset <= self.file_size {
                     let bytes_skipped = marker_offset - start_from;
                     self.current_offset = new_offset;
+                    self.buffer_file_offset = new_offset;
                     // Increment block index since we're moving to the next block
                     self.block_index += 1;
                     return Ok((true, bytes_skipped));
@@ -634,6 +1010,9 @@ impl<S: StreamSource> BlockReader<S> {
             return Ok((false, 0));
         }
 
+        // Clear the read buffer since we're scanning for sync markers
+        self.read_buffer = Bytes::new();
+
         let sync_marker = self.header.sync_marker;
         // Start scanning from current_offset + 1 to skip past any partial/wrong sync marker
         let mut scan_offset = start_offset.saturating_add(1);
@@ -642,7 +1021,7 @@ impl<S: StreamSource> BlockReader<S> {
         while scan_offset + SYNC_MARKER_SIZE as u64 <= self.file_size {
             // Read a chunk of data to scan
             let remaining = self.file_size - scan_offset;
-            let read_size = std::cmp::min(remaining as usize, DEFAULT_READ_BUFFER_SIZE);
+            let read_size = std::cmp::min(remaining as usize, self.buffer_config.chunk_size);
             let data = self.source.read_range(scan_offset, read_size).await?;
 
             if data.is_empty() {
@@ -660,6 +1039,7 @@ impl<S: StreamSource> BlockReader<S> {
                 if new_offset <= self.file_size {
                     let bytes_skipped = marker_offset - start_offset;
                     self.current_offset = new_offset;
+                    self.buffer_file_offset = new_offset;
                     // Increment block index since we're moving to the next block
                     // (we don't reset to 0 because we want to track position for error reporting)
                     self.block_index += 1;
@@ -1731,6 +2111,250 @@ mod tests {
                         i
                     );
                 }
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        // ====================================================================
+        // ReadBufferConfig Tests
+        // ====================================================================
+        // These tests verify the ReadBufferConfig struct and its integration
+        // with BlockReader for I/O optimization.
+
+        #[test]
+        fn test_read_buffer_config_local_default() {
+            let config = ReadBufferConfig::LOCAL_DEFAULT;
+            assert_eq!(config.chunk_size, 64 * 1024); // 64KB
+            assert_eq!(config.prefetch_threshold, 0.0);
+            assert_eq!(config.prefetch_trigger_bytes(), 0);
+        }
+
+        #[test]
+        fn test_read_buffer_config_s3_default() {
+            let config = ReadBufferConfig::S3_DEFAULT;
+            assert_eq!(config.chunk_size, 4 * 1024 * 1024); // 4MB
+            assert_eq!(config.prefetch_threshold, 0.5);
+            assert_eq!(config.prefetch_trigger_bytes(), 2 * 1024 * 1024); // 2MB
+        }
+
+        #[test]
+        fn test_read_buffer_config_with_chunk_size() {
+            let config = ReadBufferConfig::with_chunk_size(128 * 1024);
+            assert_eq!(config.chunk_size, 128 * 1024);
+            assert_eq!(config.prefetch_threshold, 0.0);
+        }
+
+        #[test]
+        fn test_read_buffer_config_new() {
+            let config = ReadBufferConfig::new(256 * 1024, 0.25);
+            assert_eq!(config.chunk_size, 256 * 1024);
+            assert_eq!(config.prefetch_threshold, 0.25);
+            assert_eq!(config.prefetch_trigger_bytes(), 64 * 1024); // 25% of 256KB
+        }
+
+        #[test]
+        fn test_block_reader_with_custom_config() {
+            run_async(async {
+                let block_data = b"test data";
+                let (file_data, _) = create_test_avro_file(r#""string""#, None, &[(5, block_data)]);
+                let source = MockSource::new(file_data);
+
+                // Use a custom config with 128KB chunk size
+                let config = ReadBufferConfig::with_chunk_size(128 * 1024);
+                let mut reader = BlockReader::with_config(source, config).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 5);
+                assert_eq!(&block.data[..], block_data);
+            });
+        }
+
+        #[test]
+        fn test_block_reader_with_s3_config() {
+            run_async(async {
+                let block_data = b"s3 test data";
+                let (file_data, _) = create_test_avro_file(r#""string""#, None, &[(3, block_data)]);
+                let source = MockSource::new(file_data);
+
+                // Use S3 default config (4MB chunks)
+                let mut reader = BlockReader::with_config(source, ReadBufferConfig::S3_DEFAULT)
+                    .await
+                    .unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 3);
+                assert_eq!(&block.data[..], block_data);
+            });
+        }
+
+        #[test]
+        fn test_block_reader_reset_clears_buffer() {
+            // Verify that reset() clears the internal buffer
+            run_async(async {
+                let block1_data = b"first block data";
+                let block2_data = b"second block data";
+                let (file_data, _) = create_test_avro_file(
+                    r#""string""#,
+                    None,
+                    &[(5, block1_data), (10, block2_data)],
+                );
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // Read first block
+                let block1 = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block1.record_count, 5);
+
+                // Reset should clear buffer and allow re-reading from start
+                reader.reset();
+                assert_eq!(reader.block_index(), 0);
+                assert!(!reader.is_finished());
+
+                // Should read first block again (not second)
+                let block1_again = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block1_again.record_count, 5);
+                assert_eq!(&block1_again.data[..], block1_data);
+            });
+        }
+
+        #[test]
+        fn test_block_reader_seek_clears_buffer() {
+            // Verify that seek_to_sync() clears the internal buffer
+            run_async(async {
+                let block1_data = b"first";
+                let block2_data = b"second";
+                let block3_data = b"third";
+                let (file_data, _) = create_test_avro_file(
+                    r#""string""#,
+                    None,
+                    &[(1, block1_data), (2, block2_data), (3, block3_data)],
+                );
+                let source = MockSource::new(file_data.clone());
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+                let header_size = reader.header().header_size;
+
+                // Read first block to populate buffer
+                let block1 = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block1.record_count, 1);
+
+                // Seek should clear buffer
+                let found = reader.seek_to_sync(header_size).await.unwrap();
+                assert!(found);
+
+                // After seek, we should read from the new position
+                let block = reader.next_block().await.unwrap().unwrap();
+                // Should be block 2 since we seeked past block 1's sync marker
+                assert_eq!(block.record_count, 2);
+            });
+        }
+
+        #[test]
+        fn test_multiple_small_blocks_single_read() {
+            // Test that multiple small blocks can be parsed from a single buffer fill
+            // This verifies the buffering optimization works correctly
+            run_async(async {
+                // Create 20 small blocks, each ~50 bytes
+                // Total ~1KB, well within a single 64KB read
+                let blocks: Vec<(i64, Vec<u8>)> = (0..20)
+                    .map(|i| (i as i64 + 1, format!("block_{:02}_data", i).into_bytes()))
+                    .collect();
+                let block_refs: Vec<(i64, &[u8])> =
+                    blocks.iter().map(|(c, d)| (*c, d.as_slice())).collect();
+
+                let (file_data, _) = create_test_avro_file(r#""string""#, None, &block_refs);
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // All 20 blocks should be readable
+                for (i, (expected_count, expected_data)) in blocks.iter().enumerate() {
+                    let block = reader.next_block().await.unwrap().unwrap();
+                    assert_eq!(block.record_count, *expected_count, "Block {} count", i);
+                    assert_eq!(
+                        &block.data[..],
+                        expected_data.as_slice(),
+                        "Block {} data",
+                        i
+                    );
+                }
+
+                assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        #[test]
+        fn test_block_spanning_buffer_boundary() {
+            // Test a block that starts in one buffer fill and ends in another
+            // Use a small chunk size to force this scenario
+            run_async(async {
+                // Create a block that's larger than our small chunk size
+                let block_data = vec![0xABu8; 2000]; // 2KB block
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                // Use a 1KB chunk size - block will span multiple reads
+                let config = ReadBufferConfig::with_chunk_size(1024);
+                let mut reader = BlockReader::with_config(source, config).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 2000);
+                assert!(block.data.iter().all(|&b| b == 0xAB));
+            });
+        }
+
+        #[test]
+        fn test_large_block_exceeds_chunk_size() {
+            // Test a block much larger than the chunk size
+            run_async(async {
+                let block_data = vec![0xCDu8; 100 * 1024]; // 100KB
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &[(1, &block_data)]);
+                let source = MockSource::new(file_data);
+
+                // Use 32KB chunk size - block is 3x larger
+                let config = ReadBufferConfig::with_chunk_size(32 * 1024);
+                let mut reader = BlockReader::with_config(source, config).await.unwrap();
+
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(block.data.len(), 100 * 1024);
+                assert!(block.data.iter().all(|&b| b == 0xCD));
+            });
+        }
+
+        #[test]
+        fn test_mixed_blocks_with_small_chunk_size() {
+            // Test mixed small and large blocks with a small chunk size
+            run_async(async {
+                let small1 = b"tiny";
+                let large = vec![0xEFu8; 50 * 1024]; // 50KB
+                let small2 = b"also tiny";
+
+                let blocks: Vec<(i64, &[u8])> = vec![(1, small1), (2, &large), (3, small2)];
+                let (file_data, _) = create_test_avro_file(r#""bytes""#, None, &blocks);
+                let source = MockSource::new(file_data);
+
+                // Use 16KB chunk size
+                let config = ReadBufferConfig::with_chunk_size(16 * 1024);
+                let mut reader = BlockReader::with_config(source, config).await.unwrap();
+
+                // Small block (fits in buffer)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 1);
+                assert_eq!(&block.data[..], small1);
+
+                // Large block (exceeds buffer, uses slow path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 2);
+                assert_eq!(block.data.len(), 50 * 1024);
+
+                // Small block again (back to fast path)
+                let block = reader.next_block().await.unwrap().unwrap();
+                assert_eq!(block.record_count, 3);
+                assert_eq!(&block.data[..], small2);
 
                 assert!(reader.next_block().await.unwrap().is_none());
             });

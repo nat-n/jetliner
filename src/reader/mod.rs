@@ -11,7 +11,7 @@ pub mod record_decoder;
 pub mod stream;
 pub mod varint;
 
-pub use block::{AvroBlock, BlockReader, DecompressedBlock};
+pub use block::{AvroBlock, BlockReader, DecompressedBlock, ReadBufferConfig};
 pub use buffer::{BufferConfig, PrefetchBuffer};
 pub use decode::{
     // Complex type decoders

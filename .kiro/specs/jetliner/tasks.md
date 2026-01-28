@@ -736,33 +736,33 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Verify fixed values have correct size and content
     - _Requirements: 1.5_
 
-- [ ] 24. Fix logical type value interpretation
-  - [ ] 24.1 Fix date logical type (off by one day)
+- [x] 24. Fix logical type value interpretation
+  - [x] 24.1 Fix date logical type (off by one day)
     - Investigate date calculation in `src/reader/decode.rs`
     - Ensure days-since-epoch is correctly converted
     - May be timezone or epoch definition issue
     - _Requirements: 1.6_
 
-  - [ ] 24.2 Fix time-millis/time-micros interpretation
+  - [x] 24.2 Fix time-millis/time-micros interpretation
     - Investigate time value decoding
     - Ensure milliseconds/microseconds since midnight is correct
     - Check Arrow Time32/Time64 unit handling
     - Write thorough tests
     - _Requirements: 1.6_
 
-  - [ ] 24.3 Fix timestamp-millis timezone handling
+  - [x] 24.3 Fix timestamp-millis timezone handling
     - Investigate 1-hour offset issue
     - Ensure UTC timezone is correctly applied
     - Check Arrow Timestamp timezone handling
     - _Requirements: 1.6_
 
-  - [ ] 24.4 Remove xfail markers from logical type tests
+  - [x] 24.4 Remove xfail markers from logical type tests
     - Update `python/tests/types/test_logical_types.py`
     - Verify all date/time values match expected
     - _Requirements: 1.6_
 
-- [ ] 25. BlockReader read buffering optimization
-  - [ ] 25.1 Add ReadBufferConfig struct
+- [x] 25. BlockReader read buffering optimization
+  - [x] 25.1 Add ReadBufferConfig struct
     - Create `ReadBufferConfig` struct with `chunk_size` and `prefetch_threshold` fields
     - Add `LOCAL_DEFAULT` constant (64KB chunk, 0.0 threshold)
     - Add `S3_DEFAULT` constant (4MB chunk, 0.5 threshold)
@@ -770,7 +770,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Place in `src/reader/block.rs` or new `src/reader/buffer_config.rs`
     - _Requirements: 3.11, 3.12, 3.13_
 
-  - [ ] 25.2 Add read buffer to BlockReader struct
+  - [x] 25.2 Add read buffer to BlockReader struct
     - Add `read_buffer: Bytes` field to retain unused bytes
     - Add `buffer_file_offset: u64` to track buffer position
     - Replace `read_chunk_size: usize` with `buffer_config: ReadBufferConfig`
@@ -778,7 +778,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Add `with_config()` constructor accepting `ReadBufferConfig`
     - _Requirements: 3.8, 3.9, 3.10_
 
-  - [ ] 25.3 Implement buffered next_block()
+  - [x] 25.3 Implement buffered next_block()
     - Check if read_buffer contains enough data for next block header
     - If buffer below `prefetch_threshold * chunk_size`, fetch more data
     - Parse block from buffer
@@ -786,27 +786,27 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Handle large blocks (> chunk size) by reading exact amount needed
     - _Requirements: 3.8, 3.9, 3.10_
 
-  - [ ] 25.4 Update seek and reset methods
+  - [x] 25.4 Update seek and reset methods
     - Clear read_buffer on reset()
     - Clear read_buffer on seek_to_sync()
     - Ensure buffer state is consistent after error recovery
     - _Requirements: 3.7_
 
-  - [ ] 25.5 Add ReadBufferConfig to ReaderConfig
+  - [x] 25.5 Add ReadBufferConfig to ReaderConfig
     - Add `read_buffer_config: ReadBufferConfig` field to `ReaderConfig`
     - Update `ReaderConfig::default()` to use `LOCAL_DEFAULT`
     - Add `ReaderConfig::for_s3()` constructor using `S3_DEFAULT`
     - Pass config through `AvroStreamReader` → `PrefetchBuffer` → `BlockReader`
     - _Requirements: 3.11, 3.12_
 
-  - [ ] 25.6 Expose read_chunk_size in Python API
+  - [x] 25.6 Expose read_chunk_size in Python API
     - Add `read_chunk_size: int | None` parameter to `scan()` and `open()`
     - When `None`, auto-detect source type and use appropriate default
     - When set, override the default with user-specified value
     - Update docstrings with guidance on tuning
     - _Requirements: 3.13_
 
-  - [ ] 25.7 Write unit tests for buffered reading
+  - [x] 25.7 Write unit tests for buffered reading
     - Test multiple small blocks parsed from single read
     - Test block spanning buffer boundary
     - Test large block (> chunk size)
@@ -816,13 +816,13 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Test S3 default (4MB) vs local default (64KB)
     - _Requirements: 3.8, 3.9, 3.10, 3.11, 3.12_
 
-  - [ ] 25.8 Write property test for I/O efficiency
+  - [x] 25.8 Write property test for I/O efficiency
     - **Property 16: BlockReader I/O Efficiency**
     - For N blocks totaling B bytes, verify at most ceil(B / chunk_size) I/O operations
     - Use mock source that counts read_range calls
     - **Validates: Requirements 3.10**
 
-  - [ ] 25.9 Benchmark S3 read reduction
+  - [x] 25.9 Benchmark S3 read reduction
     - Create test with many small blocks (e.g., 1000 blocks of 1KB each)
     - Compare I/O operation count: before (1000 calls) vs after (~1 call with 4MB buffer)
     - Verify significant reduction for small-block files
@@ -838,7 +838,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
   - [ ] 26.2 Update AvroReaderCore and AvroReader `__next__()` to use direct FFI
   - [ ] 26.3 Verify all enum tests pass
 
-- [ ] 27. Final checkpoint
+- [x] 27. Final checkpoint
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

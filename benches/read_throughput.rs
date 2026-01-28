@@ -35,8 +35,8 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use jetliner::reader::BufferConfig;
-use jetliner::{AvroStreamReader, ErrorMode, LocalSource, ReaderConfig, StreamSource};
+use jetliner::reader::{BufferConfig, ReadBufferConfig};
+use jetliner::{AvroStreamReader, LocalSource, ReaderConfig, StreamSource};
 
 /// Get the path to a test data file
 fn test_data_path(filename: &str) -> PathBuf {
@@ -119,13 +119,7 @@ async fn count_records(path: &PathBuf, batch_size: usize) -> (usize, u64) {
     let source = LocalSource::open(path).await.unwrap();
     let file_size = source.size().await.unwrap();
 
-    let config = ReaderConfig {
-        batch_size,
-        buffer_config: BufferConfig::default(),
-        error_mode: ErrorMode::Strict,
-        reader_schema: None,
-        projected_columns: None,
-    };
+    let config = ReaderConfig::default().with_batch_size(batch_size);
 
     let mut reader = AvroStreamReader::open(source, config).await.unwrap();
     let mut total_records = 0;
@@ -141,13 +135,7 @@ async fn count_records(path: &PathBuf, batch_size: usize) -> (usize, u64) {
 async fn read_all_records(path: &PathBuf, batch_size: usize) -> usize {
     let source = LocalSource::open(path).await.unwrap();
 
-    let config = ReaderConfig {
-        batch_size,
-        buffer_config: BufferConfig::default(),
-        error_mode: ErrorMode::Strict,
-        reader_schema: None,
-        projected_columns: None,
-    };
+    let config = ReaderConfig::default().with_batch_size(batch_size);
 
     let mut reader = AvroStreamReader::open(source, config).await.unwrap();
     let mut total_records = 0;
@@ -300,13 +288,9 @@ fn bench_projection(c: &mut Criterion) {
             run_async(async {
                 let source = LocalSource::open(&path).await.unwrap();
 
-                let config = ReaderConfig {
-                    batch_size: 100_000,
-                    buffer_config: BufferConfig::default(),
-                    error_mode: ErrorMode::Strict,
-                    reader_schema: None,
-                    projected_columns: Some(vec!["station".to_string()]),
-                };
+                let config = ReaderConfig::default()
+                    .with_batch_size(100_000)
+                    .with_projection(vec!["station".to_string()]);
 
                 let mut reader = AvroStreamReader::open(source, config).await.unwrap();
                 let mut total_records = 0;
@@ -327,13 +311,9 @@ fn bench_projection(c: &mut Criterion) {
             run_async(async {
                 let source = LocalSource::open(&path).await.unwrap();
 
-                let config = ReaderConfig {
-                    batch_size: 100_000,
-                    buffer_config: BufferConfig::default(),
-                    error_mode: ErrorMode::Strict,
-                    reader_schema: None,
-                    projected_columns: Some(vec!["station".to_string(), "temp".to_string()]),
-                };
+                let config = ReaderConfig::default()
+                    .with_batch_size(100_000)
+                    .with_projection(vec!["station".to_string(), "temp".to_string()]);
 
                 let mut reader = AvroStreamReader::open(source, config).await.unwrap();
                 let mut total_records = 0;
@@ -383,13 +363,77 @@ fn bench_buffer_config(c: &mut Criterion) {
                 run_async(async {
                     let source = LocalSource::open(&path).await.unwrap();
 
-                    let config = ReaderConfig {
-                        batch_size: 100_000,
-                        buffer_config,
-                        error_mode: ErrorMode::Strict,
-                        reader_schema: None,
-                        projected_columns: None,
-                    };
+                    let config = ReaderConfig::default()
+                        .with_batch_size(100_000)
+                        .with_buffer_config(buffer_config);
+
+                    let mut reader = AvroStreamReader::open(source, config).await.unwrap();
+                    let mut total_records = 0;
+
+                    while let Some(df) = reader.next_batch().await.unwrap() {
+                        total_records += df.height();
+                        black_box(&df);
+                    }
+
+                    total_records
+                })
+            });
+        });
+    }
+
+    group.finish();
+}
+
+/// Benchmark read buffer chunk size impact (simulates S3 read reduction)
+///
+/// This benchmark demonstrates the I/O efficiency improvement from read buffering.
+/// With S3, each read_range call is an HTTP request, so reducing the number of
+/// reads significantly improves latency.
+///
+/// For a file with many small blocks (e.g., 1000 blocks of 1KB each = 1MB total):
+/// - Without buffering: ~1000 HTTP requests (one per block)
+/// - With 4MB buffer: ~1 HTTP request (all blocks fit in one read)
+///
+/// Expected S3 latency improvement:
+/// - S3 GET request latency: ~50-100ms per request
+/// - 1000 requests: 50-100 seconds of latency overhead
+/// - 1 request: 50-100ms of latency overhead
+/// - Improvement: ~1000x reduction in latency overhead
+fn bench_read_buffer_chunk_size(c: &mut Criterion) {
+    let mut group = c.benchmark_group("read_buffer_chunk_size");
+
+    let path = test_data_path("large/weather-large.avro");
+
+    if !path.exists() {
+        eprintln!(
+            "Skipping read buffer chunk size benchmark - large file not found: {:?}",
+            path
+        );
+        return;
+    }
+
+    let (_, file_size) = run_async(count_records(&path, 100_000));
+    group.throughput(Throughput::Bytes(file_size));
+
+    // Test different read buffer chunk sizes
+    // Smaller chunks = more I/O operations (bad for S3)
+    // Larger chunks = fewer I/O operations (good for S3)
+    let chunk_sizes: [(&str, usize); 4] = [
+        ("16KB_local", 16 * 1024),           // Very small - many reads
+        ("64KB_local_default", 64 * 1024),   // Local default
+        ("1MB", 1024 * 1024),                // Medium
+        ("4MB_s3_default", 4 * 1024 * 1024), // S3 default - few reads
+    ];
+
+    for (name, chunk_size) in chunk_sizes {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                run_async(async {
+                    let source = LocalSource::open(&path).await.unwrap();
+
+                    let config = ReaderConfig::default()
+                        .with_batch_size(100_000)
+                        .with_read_buffer_config(ReadBufferConfig::with_chunk_size(chunk_size));
 
                     let mut reader = AvroStreamReader::open(source, config).await.unwrap();
                     let mut total_records = 0;
@@ -411,7 +455,7 @@ fn bench_buffer_config(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = configure_criterion();
-    targets = bench_codecs, bench_batch_sizes, bench_large_file, bench_projection, bench_buffer_config
+    targets = bench_codecs, bench_batch_sizes, bench_large_file, bench_projection, bench_buffer_config, bench_read_buffer_chunk_size
 }
 
 criterion_main!(benches);

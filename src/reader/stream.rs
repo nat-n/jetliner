@@ -14,7 +14,7 @@ use polars::prelude::*;
 
 use crate::convert::{BuilderConfig, DataFrameBuilder, ErrorMode};
 use crate::error::{ReadError, ReaderError, SchemaError};
-use crate::reader::{BlockReader, BufferConfig, PrefetchBuffer};
+use crate::reader::{BlockReader, BufferConfig, PrefetchBuffer, ReadBufferConfig};
 use crate::schema::AvroSchema;
 use crate::source::StreamSource;
 
@@ -27,6 +27,8 @@ pub struct ReaderConfig {
     pub batch_size: usize,
     /// Prefetch buffer configuration.
     pub buffer_config: BufferConfig,
+    /// Read buffer configuration for BlockReader I/O.
+    pub read_buffer_config: ReadBufferConfig,
     /// Error handling mode (strict or skip).
     pub error_mode: ErrorMode,
     /// Optional reader schema for schema evolution (default: None).
@@ -40,6 +42,7 @@ impl Default for ReaderConfig {
         Self {
             batch_size: 100_000,
             buffer_config: BufferConfig::default(),
+            read_buffer_config: ReadBufferConfig::LOCAL_DEFAULT,
             error_mode: ErrorMode::Strict,
             reader_schema: None,
             projected_columns: None,
@@ -53,6 +56,17 @@ impl ReaderConfig {
         Self::default()
     }
 
+    /// Create a ReaderConfig optimized for S3 sources.
+    ///
+    /// Uses 4MB read chunks with 50% prefetch threshold to minimize
+    /// HTTP request overhead and hide S3 latency.
+    pub fn for_s3() -> Self {
+        Self {
+            read_buffer_config: ReadBufferConfig::S3_DEFAULT,
+            ..Default::default()
+        }
+    }
+
     /// Set the batch size (rows per DataFrame).
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
@@ -62,6 +76,12 @@ impl ReaderConfig {
     /// Set the buffer configuration.
     pub fn with_buffer_config(mut self, config: BufferConfig) -> Self {
         self.buffer_config = config;
+        self
+    }
+
+    /// Set the read buffer configuration for BlockReader I/O.
+    pub fn with_read_buffer_config(mut self, config: ReadBufferConfig) -> Self {
+        self.read_buffer_config = config;
         self
     }
 
@@ -182,8 +202,8 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
     /// - 3.2: Don't load entire file into memory
     /// - 1.4, 1.5: Support all Avro primitive and complex types at top level
     pub async fn open(source: S, config: ReaderConfig) -> Result<Self, ReaderError> {
-        // Create block reader (parses header)
-        let block_reader = BlockReader::new(source).await?;
+        // Create block reader with read buffer config (parses header)
+        let block_reader = BlockReader::with_config(source, config.read_buffer_config).await?;
 
         // Get the schema from the header
         let schema = block_reader.header().schema.clone();

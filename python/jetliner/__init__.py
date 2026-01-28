@@ -71,6 +71,7 @@ def scan(
     buffer_bytes: int = 64 * 1024 * 1024,
     strict: bool = False,
     storage_options: dict[str, str] | None = None,
+    read_chunk_size: int | None = None,
 ) -> pl.LazyFrame:
     """
     Scan an Avro file, returning a LazyFrame with query optimization support.
@@ -98,6 +99,15 @@ def scan(
         - aws_access_key_id: AWS access key (overrides environment)
         - aws_secret_access_key: AWS secret key (overrides environment)
         - region: AWS region (overrides environment)
+    read_chunk_size : int | None, default None
+        Read buffer chunk size in bytes. When None, auto-detects based on source:
+        - Local files: 64KB (optimal for filesystem I/O)
+        - S3: 4MB (reduces HTTP round-trips)
+
+        Tuning guidance:
+        - For S3 with many small blocks, increase to 4-8MB to reduce HTTP requests
+        - For local files with large blocks, the default 64KB is usually optimal
+        - Larger values use more memory but reduce I/O operations
 
     Returns
     -------
@@ -159,6 +169,16 @@ def scan(
     ...     .collect()
     ... )
 
+    Custom read chunk size for S3 optimization:
+
+    >>> result = (
+    ...     jetliner.scan(
+    ...         "s3://bucket/file.avro",
+    ...         read_chunk_size=8 * 1024 * 1024  # 8MB chunks
+    ...     )
+    ...     .collect()
+    ... )
+
     Full query optimization example:
 
     >>> result = (
@@ -212,6 +232,7 @@ def scan(
             strict=strict,
             projected_columns=with_columns,  # Pass projection to Rust
             storage_options=storage_options,  # Pass storage_options to Rust
+            read_chunk_size=read_chunk_size,  # Pass read_chunk_size to Rust
         )
 
         rows_yielded = 0

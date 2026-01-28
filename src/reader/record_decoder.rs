@@ -1629,17 +1629,27 @@ impl TimeBuilder {
     }
 
     fn decode(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
-        let value = match self.unit {
+        // Decode the raw value based on the Avro type
+        let raw_value = match self.unit {
             TimeUnit::Milliseconds => decode_int(data)? as i64,
             TimeUnit::Microseconds | TimeUnit::Nanoseconds => decode_long(data)?,
         };
-        self.values.push(value);
+
+        // Convert to nanoseconds (Polars Time internal representation)
+        let nanos = match self.unit {
+            TimeUnit::Milliseconds => raw_value * 1_000_000, // ms -> ns
+            TimeUnit::Microseconds => raw_value * 1_000,     // us -> ns
+            TimeUnit::Nanoseconds => raw_value,              // already ns
+        };
+
+        self.values.push(nanos);
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Series, DecodeError> {
         let values = std::mem::take(&mut self.values);
         let ca = Int64Chunked::new(self.name.clone().into(), &values);
+        // into_time() expects nanoseconds, which we've already converted to
         Ok(ca.into_time().into_series())
     }
 
