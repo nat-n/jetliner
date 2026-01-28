@@ -686,6 +686,16 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Verify all nullable primitive and complex type tests pass
     - _Requirements: 5.5_
 
+  - [x] 21.5 Fix NullableBuilder for enum types (nullable enum)
+    - Currently causes polars-core panic: "not implemented" when applying null mask to Categorical
+    - Test with `["null", {"type": "enum", "name": "Status", "symbols": ["A", "B"]}]` schema
+    - Options to investigate:
+      1. Check if Polars Enum type (vs Categorical) handles nulls differently
+      2. Convert nullable enum to String type (loses categorical efficiency)
+      3. Use different null representation in EnumBuilder
+    - Remove xfail from `python/tests/types/test_enum_fixed.py::test_enum_nullable`
+    - _Requirements: 5.5, 1.5_
+
 - [x] 22. Implement enum type support
   - [x] 22.1 Add EnumBuilder for Avro enum decoding
     - Create builder that maps enum index to symbol string

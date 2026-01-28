@@ -1141,6 +1141,12 @@ impl NullableBuilder {
             return b.finish_with_validity(&validity);
         }
 
+        // For EnumBuilder, use the specialized finish_with_validity method
+        // because Polars Enum/Categorical types don't support zip_with
+        if let FieldBuilder::Enum(b) = &mut *self.inner {
+            return b.finish_with_validity(&validity);
+        }
+
         let inner_series = self.inner.finish()?;
 
         // Create a boolean chunked array for validity mask (true = valid, false = null)
@@ -1513,6 +1519,72 @@ impl EnumBuilder {
             }
             CategoricalPhysical::U32 => {
                 let physical = UInt32Chunked::from_vec(self.name.clone().into(), indices);
+                let ca = unsafe {
+                    CategoricalChunked::<Categorical32Type>::from_cats_and_dtype_unchecked(
+                        physical, dtype,
+                    )
+                };
+                Ok(ca.into_series())
+            }
+        }
+    }
+
+    /// Finish building and return the Series with a validity mask applied.
+    ///
+    /// This is used by NullableBuilder to apply null values to enum types.
+    /// Unlike other types, Polars Enum/Categorical types don't support zip_with,
+    /// so we need to construct the nullable array directly using Option<T> indices.
+    fn finish_with_validity(&mut self, validity: &[bool]) -> Result<Series, DecodeError> {
+        let indices = std::mem::take(&mut self.indices);
+
+        // Create categorical from indices and symbols
+        let categories = FrozenCategories::new(self.symbols.iter().map(|s| s.as_str()))
+            .map_err(|e| DecodeError::InvalidData(format!("Failed to create categories: {}", e)))?;
+        let dtype = DataType::from_frozen_categories(categories.clone());
+
+        let physical_type = categories.physical();
+
+        // Create the Series with nulls based on the physical type
+        // We use from_iter with Option<T> to properly handle nulls
+        match physical_type {
+            CategoricalPhysical::U8 => {
+                let opt_indices: Vec<Option<u8>> = indices
+                    .into_iter()
+                    .zip(validity.iter())
+                    .map(|(idx, &is_valid)| if is_valid { Some(idx as u8) } else { None })
+                    .collect();
+                let physical: UInt8Chunked = opt_indices.into_iter().collect();
+                let physical = physical.with_name(self.name.clone().into());
+                let ca = unsafe {
+                    CategoricalChunked::<Categorical8Type>::from_cats_and_dtype_unchecked(
+                        physical, dtype,
+                    )
+                };
+                Ok(ca.into_series())
+            }
+            CategoricalPhysical::U16 => {
+                let opt_indices: Vec<Option<u16>> = indices
+                    .into_iter()
+                    .zip(validity.iter())
+                    .map(|(idx, &is_valid)| if is_valid { Some(idx as u16) } else { None })
+                    .collect();
+                let physical: UInt16Chunked = opt_indices.into_iter().collect();
+                let physical = physical.with_name(self.name.clone().into());
+                let ca = unsafe {
+                    CategoricalChunked::<Categorical16Type>::from_cats_and_dtype_unchecked(
+                        physical, dtype,
+                    )
+                };
+                Ok(ca.into_series())
+            }
+            CategoricalPhysical::U32 => {
+                let opt_indices: Vec<Option<u32>> = indices
+                    .into_iter()
+                    .zip(validity.iter())
+                    .map(|(idx, &is_valid)| if is_valid { Some(idx) } else { None })
+                    .collect();
+                let physical: UInt32Chunked = opt_indices.into_iter().collect();
+                let physical = physical.with_name(self.name.clone().into());
                 let ca = unsafe {
                     CategoricalChunked::<Categorical32Type>::from_cats_and_dtype_unchecked(
                         physical, dtype,

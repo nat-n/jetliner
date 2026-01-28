@@ -476,9 +476,6 @@ class TestEnumEdgeCases:
         finally:
             Path(temp_path).unlink(missing_ok=True)
 
-    @pytest.mark.xfail(
-        reason="Nullable enum (union with null) causes polars-core panic - not yet implemented"
-    )
     def test_enum_nullable(self):
         """Test nullable enum (union with null)."""
         schema = {
@@ -527,6 +524,286 @@ class TestEnumEdgeCases:
 
             # Check null count
             assert df["status"].null_count() == 2
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_enum_nullable_all_nulls(self):
+        """Test nullable enum where all values are null."""
+        schema = {
+            "type": "record",
+            "name": "AllNullEnum",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "status",
+                    "type": [
+                        "null",
+                        {
+                            "type": "enum",
+                            "name": "Status",
+                            "symbols": ["A", "B", "C"],
+                        },
+                    ],
+                },
+            ],
+        }
+        records = [{"id": i, "status": None} for i in range(5)]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 5
+            assert df["status"].dtype == pl.Enum(["A", "B", "C"])
+            assert df["status"].null_count() == 5
+            assert all(v is None for v in df["status"])
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_enum_nullable_no_nulls(self):
+        """Test nullable enum where no values are actually null."""
+        schema = {
+            "type": "record",
+            "name": "NoNullEnum",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "status",
+                    "type": [
+                        "null",
+                        {
+                            "type": "enum",
+                            "name": "Status",
+                            "symbols": ["X", "Y", "Z"],
+                        },
+                    ],
+                },
+            ],
+        }
+        symbols = ["X", "Y", "Z"]
+        records = [{"id": i, "status": symbols[i % 3]} for i in range(6)]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 6
+            assert df["status"].dtype == pl.Enum(["X", "Y", "Z"])
+            assert df["status"].null_count() == 0
+            for i in range(6):
+                assert df["status"][i] == symbols[i % 3]
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_enum_nullable_many_symbols(self):
+        """Test nullable enum with many symbols (>255, requires U16 physical type)."""
+        symbols = [f"SYM_{i}" for i in range(300)]
+        schema = {
+            "type": "record",
+            "name": "ManySymbolNullableEnum",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "value",
+                    "type": [
+                        "null",
+                        {
+                            "type": "enum",
+                            "name": "BigEnum",
+                            "symbols": symbols,
+                        },
+                    ],
+                },
+            ],
+        }
+        records = [
+            {"id": 0, "value": "SYM_0"},
+            {"id": 1, "value": None},
+            {"id": 2, "value": "SYM_255"},
+            {"id": 3, "value": "SYM_256"},  # Beyond U8 range
+            {"id": 4, "value": None},
+            {"id": 5, "value": "SYM_299"},
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 6
+            assert df["value"].dtype == pl.Enum(symbols)
+            assert df["value"].null_count() == 2
+            assert df["value"][0] == "SYM_0"
+            assert df["value"][1] is None
+            assert df["value"][2] == "SYM_255"
+            assert df["value"][3] == "SYM_256"
+            assert df["value"][4] is None
+            assert df["value"][5] == "SYM_299"
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_enum_nullable_multiple_batches(self):
+        """Test nullable enum across multiple batches."""
+        schema = {
+            "type": "record",
+            "name": "BatchNullableEnum",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "status",
+                    "type": [
+                        "null",
+                        {
+                            "type": "enum",
+                            "name": "Status",
+                            "symbols": ["A", "B", "C"],
+                        },
+                    ],
+                },
+            ],
+        }
+        # Create records with nulls at various positions
+        symbols = ["A", "B", "C"]
+        records = []
+        for i in range(5000):
+            if i % 7 == 0:  # ~14% nulls
+                records.append({"id": i, "status": None})
+            else:
+                records.append({"id": i, "status": symbols[i % 3]})
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            # Use small batch size to force multiple batches
+            with jetliner.open(temp_path, batch_size=500) as reader:
+                dfs = list(reader)
+
+            assert len(dfs) >= 2  # Should have multiple batches
+
+            # Each batch should have correct dtype
+            for df in dfs:
+                assert df["status"].dtype == pl.Enum(["A", "B", "C"])
+
+            # Concatenated result should be correct
+            df = pl.concat(dfs)
+            assert df.height == 5000
+
+            # Verify null count matches expected
+            expected_nulls = sum(1 for i in range(5000) if i % 7 == 0)
+            assert df["status"].null_count() == expected_nulls
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_enum_nullable_projection(self):
+        """Test projection pushdown with nullable enum."""
+        schema = {
+            "type": "record",
+            "name": "ProjectNullableEnum",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "status",
+                    "type": [
+                        "null",
+                        {
+                            "type": "enum",
+                            "name": "Status",
+                            "symbols": ["ON", "OFF"],
+                        },
+                    ],
+                },
+                {"name": "value", "type": "double"},
+            ],
+        }
+        records = [
+            {"id": 0, "status": "ON", "value": 1.0},
+            {"id": 1, "status": None, "value": 2.0},
+            {"id": 2, "status": "OFF", "value": 3.0},
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            # Project only the nullable enum column
+            df = jetliner.scan(temp_path).select(["status"]).collect()
+            assert df.height == 3
+            assert df.width == 1
+            assert df["status"].dtype == pl.Enum(["ON", "OFF"])
+            assert df["status"][0] == "ON"
+            assert df["status"][1] is None
+            assert df["status"][2] == "OFF"
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_enum_nullable_filter(self):
+        """Test filtering on nullable enum values."""
+        schema = {
+            "type": "record",
+            "name": "FilterNullableEnum",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "status",
+                    "type": [
+                        "null",
+                        {
+                            "type": "enum",
+                            "name": "Status",
+                            "symbols": ["ACTIVE", "INACTIVE", "PENDING"],
+                        },
+                    ],
+                },
+            ],
+        }
+        records = [
+            {"id": 0, "status": "ACTIVE"},
+            {"id": 1, "status": None},
+            {"id": 2, "status": "INACTIVE"},
+            {"id": 3, "status": "ACTIVE"},
+            {"id": 4, "status": None},
+            {"id": 5, "status": "PENDING"},
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            # Filter for specific value
+            df = (
+                jetliner.scan(temp_path)
+                .filter(pl.col("status") == "ACTIVE")
+                .collect()
+            )
+            assert df.height == 2
+            assert all(v == "ACTIVE" for v in df["status"])
+
+            # Filter for null values
+            df = (
+                jetliner.scan(temp_path)
+                .filter(pl.col("status").is_null())
+                .collect()
+            )
+            assert df.height == 2
+            assert df["status"].null_count() == 2
+
+            # Filter for non-null values
+            df = (
+                jetliner.scan(temp_path)
+                .filter(pl.col("status").is_not_null())
+                .collect()
+            )
+            assert df.height == 4
+            assert df["status"].null_count() == 0
         finally:
             Path(temp_path).unlink(missing_ok=True)
 
