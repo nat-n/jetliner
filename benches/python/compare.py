@@ -19,6 +19,11 @@ JSON output:
 Use --output to save a complete structured JSON report with metadata, configuration, and all results.
 Includes raw timing data for detailed analysis and plotting.
 
+S3 mode:
+Use --s3 to benchmark S3 reads using a local MinIO container. This compares jetliner's
+local file reads against S3 reads to verify the S3 code path has equivalent throughput.
+Only jetliner is benchmarked in S3 mode (other libraries don't support S3 directly).
+
 Usage:
     # Quick comparison (fewer iterations)
     python benches/python/compare.py --quick
@@ -40,22 +45,29 @@ Usage:
 
     # Abort on first error
     python benches/python/compare.py --fail-fast
+
+    # S3 benchmark mode (requires Docker)
+    python benches/python/compare.py --s3
 """
 
 import argparse
+import atexit
 import gc
 import hashlib
 import json
 import os
 import platform
+import signal
 import statistics
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import boto3
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -63,6 +75,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import box
 
 console = Console()
+
+# Global reference for cleanup on interrupt
+_minio_container = None
 
 # Ensure benchmark data exists
 sys.path.insert(0, str(Path(__file__).parent))
@@ -174,6 +189,132 @@ READERS = {
     "fastavro_pandas": read_fastavro_pandas,
     "avro": read_avro,
 }
+
+
+# =============================================================================
+# S3 Reader Functions (for --s3 mode)
+# =============================================================================
+
+
+def read_jetliner_open_s3(s3_uri: str, storage_options: dict, columns: list[str] | None = None):
+    """Read from S3 with jetliner.open() - iterator API."""
+    import jetliner
+    import polars as pl
+
+    last_df = None
+    with jetliner.open(s3_uri, storage_options=storage_options) as reader:
+        for df in reader:
+            if columns:
+                df = df.select(columns)
+            last_df = df
+
+    return last_df if last_df is not None else pl.DataFrame()
+
+
+def read_jetliner_scan_s3(s3_uri: str, storage_options: dict, columns: list[str] | None = None):
+    """Read from S3 with jetliner.scan() - lazy API."""
+    import jetliner
+
+    lf = jetliner.scan(s3_uri, storage_options=storage_options)
+    if columns:
+        lf = lf.select(columns)
+    return lf.collect()
+
+
+# =============================================================================
+# MinIO Container Management
+# =============================================================================
+
+
+def _cleanup_minio():
+    """Cleanup MinIO container on exit."""
+    global _minio_container
+    if _minio_container is not None:
+        console.print("\n[dim]Stopping MinIO container...[/]")
+        try:
+            _minio_container.stop()
+        except Exception:
+            pass
+        _minio_container = None
+
+
+def _signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    console.print("\n[yellow]Interrupted - cleaning up...[/]")
+    _cleanup_minio()
+    sys.exit(1)
+
+
+@dataclass
+class MinIOContext:
+    """Context for MinIO S3 operations."""
+    endpoint_url: str
+    access_key: str
+    secret_key: str
+    bucket: str
+    client: any
+
+    def get_storage_options(self) -> dict:
+        """Get storage options dict for jetliner."""
+        return {
+            "endpoint_url": self.endpoint_url,
+            "aws_access_key_id": self.access_key,
+            "aws_secret_access_key": self.secret_key,
+        }
+
+    def upload_file(self, local_path: Path, key: str) -> str:
+        """Upload a local file to MinIO and return s3:// URI."""
+        self.client.upload_file(str(local_path), self.bucket, key)
+        return f"s3://{self.bucket}/{key}"
+
+
+def start_minio_container() -> MinIOContext:
+    """Start MinIO container and return context for S3 operations."""
+    global _minio_container
+
+    try:
+        from testcontainers.minio import MinioContainer
+    except ImportError:
+        console.print("[red]Error:[/] testcontainers[minio] not installed")
+        console.print("Install with: uv add --dev testcontainers[minio]")
+        sys.exit(1)
+
+    console.print("[dim]Starting MinIO container...[/]")
+
+    try:
+        container = MinioContainer("minio/minio:latest")
+        container.start()
+        _minio_container = container
+    except Exception as e:
+        console.print(f"[red]Error:[/] Failed to start MinIO container: {e}")
+        console.print("Make sure Docker is running.")
+        sys.exit(1)
+
+    endpoint_url = (
+        f"http://{container.get_container_host_ip()}:"
+        f"{container.get_exposed_port(9000)}"
+    )
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=container.access_key,
+        aws_secret_access_key=container.secret_key,
+    )
+
+    # Create benchmark bucket
+    bucket_name = f"jetliner-bench-{uuid.uuid4().hex[:8]}"
+    client.create_bucket(Bucket=bucket_name)
+
+    console.print(f"[green]✓[/] MinIO running at {endpoint_url}")
+
+    return MinIOContext(
+        endpoint_url=endpoint_url,
+        access_key=container.access_key,
+        secret_key=container.secret_key,
+        bucket=bucket_name,
+        client=client,
+    )
 
 
 # =============================================================================
@@ -482,6 +623,235 @@ def run_scenario(
 
 
 # =============================================================================
+# S3 Benchmark Runner
+# =============================================================================
+
+
+def benchmark_s3_reader(
+    reader_func: Callable,
+    s3_uri: str,
+    storage_options: dict,
+    columns: list[str] | None,
+    warmup_runs: int = 2,
+    timed_runs: int = 5,
+) -> dict:
+    """Benchmark an S3 reader function with warmup and multiple timed runs."""
+    # Warmup runs
+    for _ in range(warmup_runs):
+        reader_func(s3_uri, storage_options, columns)
+        gc.collect()
+
+    # Timed runs
+    times = []
+    for _ in range(timed_runs):
+        gc.collect()
+        start = time.perf_counter()
+        reader_func(s3_uri, storage_options, columns)
+        elapsed = time.perf_counter() - start
+        times.append(elapsed)
+
+    # Calculate statistics
+    mean = statistics.mean(times)
+    stdev = statistics.stdev(times) if len(times) > 1 else 0
+    median = statistics.median(times)
+    min_time = min(times)
+    max_time = max(times)
+
+    return {
+        "mean_sec": mean,
+        "stdev_sec": stdev,
+        "median_sec": median,
+        "min_sec": min_time,
+        "max_sec": max_time,
+        "runs": timed_runs,
+        "times": times,
+    }
+
+
+def run_s3_benchmarks(
+    minio_ctx: MinIOContext,
+    scenarios: list[Scenario],
+    warmup_runs: int = 2,
+    timed_runs: int = 5,
+    fail_fast: bool = False,
+) -> dict:
+    """Run S3 benchmarks comparing local vs S3 reads for jetliner.
+
+    Uploads benchmark files to MinIO and compares:
+    - jetliner_open (local) vs jetliner_open_s3
+    - jetliner_scan (local) vs jetliner_scan_s3
+    """
+    all_results = {}
+    storage_options = minio_ctx.get_storage_options()
+
+    # Upload benchmark files to MinIO
+    console.print("\n[dim]Uploading benchmark files to MinIO...[/]")
+    s3_uris = {}
+    for scenario in scenarios:
+        file_path = BENCH_FILES[scenario.file_key]
+        if scenario.file_key not in s3_uris:
+            key = f"bench/{file_path.name}"
+            s3_uri = minio_ctx.upload_file(file_path, key)
+            s3_uris[scenario.file_key] = s3_uri
+            console.print(f"  [dim]Uploaded {file_path.name}[/]")
+
+    # Define S3 readers to benchmark
+    s3_readers = {
+        "jetliner_open_local": lambda path, cols: read_jetliner_open(path, cols),
+        "jetliner_open_s3": lambda s3_uri, cols: read_jetliner_open_s3(s3_uri, storage_options, cols),
+        "jetliner_scan_local": lambda path, cols: read_jetliner_scan(path, cols),
+        "jetliner_scan_s3": lambda s3_uri, cols: read_jetliner_scan_s3(s3_uri, storage_options, cols),
+    }
+
+    for i, scenario in enumerate(scenarios, 1):
+        console.print()
+        header = f"[bold cyan]S3 Scenario {i}/{len(scenarios)}:[/] [bold]{scenario.name}[/] - {scenario.description}"
+        file_info = f"[dim]File: {BENCH_FILES[scenario.file_key].name}[/]"
+        console.print(Panel(f"{header}\n{file_info}", border_style="magenta"))
+
+        file_path = BENCH_FILES[scenario.file_key]
+        s3_uri = s3_uris[scenario.file_key]
+        results = {}
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("", total=4)
+
+            # Benchmark local readers
+            for reader_name in ["jetliner_open_local", "jetliner_scan_local"]:
+                progress.update(task, description=f"Benchmarking {reader_name}...")
+                try:
+                    result = benchmark_reader(
+                        s3_readers[reader_name],
+                        file_path,
+                        scenario.columns,
+                        warmup_runs=warmup_runs,
+                        timed_runs=timed_runs,
+                    )
+                    results[reader_name] = result
+                    console.print(
+                        f"  [cyan]{reader_name:<22}[/] "
+                        f"[green]{result['mean_sec']:.3f}s[/] ± {result['stdev_sec']:.3f}s"
+                    )
+                except Exception as e:
+                    if fail_fast:
+                        raise
+                    results[reader_name] = {"error": str(e)}
+                    console.print(f"  [cyan]{reader_name:<22}[/] [red]ERROR: {e}[/]")
+                progress.advance(task)
+
+            # Benchmark S3 readers
+            for reader_name in ["jetliner_open_s3", "jetliner_scan_s3"]:
+                progress.update(task, description=f"Benchmarking {reader_name}...")
+                try:
+                    result = benchmark_s3_reader(
+                        read_jetliner_open_s3 if "open" in reader_name else read_jetliner_scan_s3,
+                        s3_uri,
+                        storage_options,
+                        scenario.columns,
+                        warmup_runs=warmup_runs,
+                        timed_runs=timed_runs,
+                    )
+                    results[reader_name] = result
+                    console.print(
+                        f"  [cyan]{reader_name:<22}[/] "
+                        f"[green]{result['mean_sec']:.3f}s[/] ± {result['stdev_sec']:.3f}s"
+                    )
+                except Exception as e:
+                    if fail_fast:
+                        raise
+                    results[reader_name] = {"error": str(e)}
+                    console.print(f"  [cyan]{reader_name:<22}[/] [red]ERROR: {e}[/]")
+                progress.advance(task)
+
+        all_results[scenario.name] = results
+
+    return all_results
+
+
+def print_s3_comparison_table(all_results: dict):
+    """Print S3 vs local comparison table."""
+    console.print()
+
+    # Main performance table
+    table = Table(
+        title="S3 vs Local Performance (mean ± stdev)",
+        box=box.ROUNDED,
+        show_header=True,
+    )
+    table.add_column("Scenario", style="cyan", no_wrap=True)
+    table.add_column("open (local)", justify="right")
+    table.add_column("open (S3)", justify="right")
+    table.add_column("scan (local)", justify="right")
+    table.add_column("scan (S3)", justify="right")
+
+    for scenario_name, results in all_results.items():
+        row = [scenario_name]
+        for reader in ["jetliner_open_local", "jetliner_open_s3", "jetliner_scan_local", "jetliner_scan_s3"]:
+            if reader in results and "error" not in results[reader]:
+                r = results[reader]
+                row.append(f"[green]{r['mean_sec']:.3f}s[/] ± {r['stdev_sec']:.3f}s")
+            else:
+                row.append("[red]ERROR[/]" if reader in results else "-")
+        table.add_row(*row)
+
+    console.print(table)
+
+    # S3 overhead table
+    console.print()
+    overhead_table = Table(
+        title="S3 Overhead (S3 time / local time)",
+        caption="[dim]~1.0 = equivalent throughput | >1.0 = S3 slower[/dim]",
+        box=box.ROUNDED,
+        show_header=True,
+    )
+    overhead_table.add_column("Scenario", style="cyan", no_wrap=True)
+    overhead_table.add_column("open() overhead", justify="right")
+    overhead_table.add_column("scan() overhead", justify="right")
+
+    for scenario_name, results in all_results.items():
+        row = [scenario_name]
+
+        # open() overhead
+        if ("jetliner_open_local" in results and "error" not in results["jetliner_open_local"] and
+            "jetliner_open_s3" in results and "error" not in results["jetliner_open_s3"]):
+            local_time = results["jetliner_open_local"]["mean_sec"]
+            s3_time = results["jetliner_open_s3"]["mean_sec"]
+            overhead = s3_time / local_time
+            if overhead < 1.1:
+                row.append(f"[bold green]{overhead:.2f}x[/]")
+            elif overhead < 1.5:
+                row.append(f"[yellow]{overhead:.2f}x[/]")
+            else:
+                row.append(f"[red]{overhead:.2f}x[/]")
+        else:
+            row.append("-")
+
+        # scan() overhead
+        if ("jetliner_scan_local" in results and "error" not in results["jetliner_scan_local"] and
+            "jetliner_scan_s3" in results and "error" not in results["jetliner_scan_s3"]):
+            local_time = results["jetliner_scan_local"]["mean_sec"]
+            s3_time = results["jetliner_scan_s3"]["mean_sec"]
+            overhead = s3_time / local_time
+            if overhead < 1.1:
+                row.append(f"[bold green]{overhead:.2f}x[/]")
+            elif overhead < 1.5:
+                row.append(f"[yellow]{overhead:.2f}x[/]")
+            else:
+                row.append(f"[red]{overhead:.2f}x[/]")
+        else:
+            row.append("-")
+
+        overhead_table.add_row(*row)
+
+    console.print(overhead_table)
+
+
+# =============================================================================
 # Output Formatting
 # =============================================================================
 
@@ -667,7 +1037,19 @@ def main():
         default=os.environ.get("BENCH_PREVIOUS"),
         help="Path to previous benchmark JSON report for comparison",
     )
+    parser.add_argument(
+        "--s3",
+        action="store_true",
+        default=os.environ.get("BENCH_S3", "").lower() in ("t", "true", "1"),
+        help="S3 benchmark mode: compare local vs S3 reads using MinIO (requires Docker)",
+    )
     args = parser.parse_args()
+
+    # Register cleanup handlers for S3 mode
+    if args.s3:
+        atexit.register(_cleanup_minio)
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
 
     # Determine run configuration
     if args.quick:
@@ -690,7 +1072,69 @@ def main():
     else:
         scenarios = [SCENARIOS[args.scenario]]
 
-    # Select readers
+    # S3 mode: compare local vs S3 reads
+    if args.s3:
+        console.print(
+            Panel(
+                "[bold magenta]S3 Benchmark Mode[/]\n"
+                "Comparing jetliner local reads vs S3 reads using MinIO container.\n"
+                "[dim]Other libraries don't support S3 directly.[/]",
+                border_style="magenta",
+            )
+        )
+
+        minio_ctx = start_minio_container()
+
+        try:
+            all_results = run_s3_benchmarks(
+                minio_ctx,
+                scenarios,
+                warmup_runs=warmup_runs,
+                timed_runs=timed_runs,
+                fail_fast=args.fail_fast,
+            )
+            print_s3_comparison_table(all_results)
+
+            # Save JSON output for S3 mode
+            if args.output:
+                json_report = {
+                    "metadata": {
+                        "timestamp": datetime.now().isoformat(),
+                        "python_version": platform.python_version(),
+                        "platform": platform.platform(),
+                        "processor": platform.processor(),
+                        "machine": platform.machine(),
+                        "mode": "s3",
+                    },
+                    "configuration": {
+                        "warmup_runs": warmup_runs,
+                        "timed_runs": timed_runs,
+                        "fail_fast": args.fail_fast,
+                    },
+                    "scenarios": {},
+                    "results": all_results,
+                }
+
+                for scenario_name in all_results.keys():
+                    scenario = SCENARIOS[scenario_name]
+                    file_path = BENCH_FILES[scenario.file_key]
+                    json_report["scenarios"][scenario_name] = {
+                        "description": scenario.description,
+                        "file_name": file_path.name,
+                        "file_size_bytes": file_path.stat().st_size if file_path.exists() else None,
+                        "columns": scenario.columns,
+                    }
+
+                with open(args.output, "w") as f:
+                    json.dump(json_report, f, indent=2)
+                console.print(f"\n[green]✓[/] Results saved to: [cyan]{args.output}[/]")
+
+        finally:
+            _cleanup_minio()
+
+        return
+
+    # Standard mode: compare all readers
     readers = {k: v for k, v in READERS.items() if k in args.readers}
     reader_names = list(readers.keys())
 
