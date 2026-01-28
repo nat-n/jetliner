@@ -83,9 +83,17 @@ pub fn avro_to_arrow(schema: &AvroSchema) -> Result<DataType, SchemaError> {
             Ok(DataType::List(Box::new(DataType::Struct(struct_fields))))
         }
         AvroSchema::Union(variants) => union_to_arrow(variants),
-        AvroSchema::Fixed(fixed) => {
-            // Fixed maps to Array(UInt8, size) in Polars
-            Ok(DataType::Array(Box::new(DataType::UInt8), fixed.size))
+        AvroSchema::Fixed(_fixed) => {
+            // Fixed maps to Binary in Polars.
+            //
+            // Ideally we'd use FixedSizeBinary(size) to preserve the size constraint
+            // in the type, but Polars doesn't expose this as a user-facing DataType.
+            // Array(UInt8, size) was attempted but causes pyo3-polars panics during
+            // schema conversion. See devnotes/23-fixed-type-binary-mapping.md.
+            //
+            // TODO: If Polars adds DataType::FixedSizeBinary, switch to it for better
+            // type-level size guarantees.
+            Ok(DataType::Binary)
         }
 
         // Named type reference - this occurs for recursive types
@@ -409,7 +417,8 @@ mod tests {
     fn test_fixed_type() {
         let fixed_schema = FixedSchema::new("Hash", 16);
         let result = avro_to_arrow(&AvroSchema::Fixed(fixed_schema)).unwrap();
-        assert_eq!(result, DataType::Array(Box::new(DataType::UInt8), 16));
+        // Fixed maps to Binary (not Array) for better pyo3-polars compatibility
+        assert_eq!(result, DataType::Binary);
     }
 
     #[test]

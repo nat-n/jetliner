@@ -713,25 +713,25 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Nullable enum (union with null) marked xfail - polars-core limitation
     - _Requirements: 1.5_
 
-- [ ] 23. Implement fixed type support
-  - [ ] 23.1 Add FixedBuilder for Avro fixed decoding
+- [x] 23. Implement fixed type support
+  - [x] 23.1 Add FixedBuilder for Avro fixed decoding
     - Create builder for fixed-size binary data
     - Use Arrow FixedSizeBinary or Binary type
     - Store size from schema for validation
     - _Requirements: 1.5_
 
-  - [ ] 23.2 Implement fixed decoding in record_decoder.rs
+  - [x] 23.2 Implement fixed decoding in record_decoder.rs
     - Read exactly N bytes from Avro binary (N from schema)
     - Append to BinaryBuilder
     - _Requirements: 1.5_
 
-  - [ ] 23.3 Add Arrow type mapping for fixed
+  - [x] 23.3 Add Arrow type mapping for fixed
     - Map Avro fixed to Arrow FixedSizeBinary(N) or Binary
     - Ensure Polars reads as Binary type
     - Update `src/convert/arrow.rs`
     - _Requirements: 5.4_
 
-  - [ ] 23.4 Remove xfail markers from fixed tests
+  - [x] 23.4 Remove xfail markers from fixed tests
     - Update `python/tests/types/test_enum_fixed.py`
     - Verify fixed values have correct size and content
     - _Requirements: 1.5_

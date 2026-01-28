@@ -9,8 +9,7 @@ Requirements tested:
 - 1.4: Primitive type support
 - 1.5: Complex type support
 
-Note: Enum types work correctly. Fixed types cause pyo3-polars panic during
-schema conversion - tests are marked xfail until resolved.
+Both enum and fixed types are fully supported.
 """
 
 import tempfile
@@ -535,13 +534,11 @@ class TestEnumEdgeCases:
 class TestFixedType:
     """Test reading Avro files with fixed types."""
 
-    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_read_fixed_file(self, fixed_avro_file):
         """Test that fixed file can be read without errors."""
         df = jetliner.scan(fixed_avro_file).collect()
         assert df.height == 3
 
-    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_fixed_dtype(self, fixed_avro_file):
         """Test fixed is read as Binary type."""
         df = jetliner.scan(fixed_avro_file).collect()
@@ -550,7 +547,6 @@ class TestFixedType:
         assert df["uuid_bytes"].dtype == pl.Binary
         assert df["hash"].dtype == pl.Binary
 
-    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_fixed_size_preserved(self, fixed_avro_file):
         """Test fixed-size values have correct length."""
         df = jetliner.scan(fixed_avro_file).collect()
@@ -561,7 +557,6 @@ class TestFixedType:
         # Hash should be 32 bytes
         assert len(df["hash"][0]) == 32
 
-    @pytest.mark.xfail(reason="Fixed type causes pyo3-polars panic on schema conversion")
     def test_fixed_values(self, fixed_avro_file):
         """Test fixed values are read correctly."""
         df = jetliner.scan(fixed_avro_file).collect()
@@ -575,3 +570,278 @@ class TestFixedType:
         # Check hash pattern
         expected_hash = bytes([(0 + i) % 256 for i in range(32)])
         assert df["hash"][0] == expected_hash
+
+
+class TestFixedEdgeCases:
+    """Test edge cases for fixed type handling."""
+
+    def test_fixed_small_size(self):
+        """Test fixed with small size (1 byte)."""
+        schema = {
+            "type": "record",
+            "name": "SmallFixed",
+            "fields": [
+                {"name": "byte", "type": {"type": "fixed", "name": "single", "size": 1}},
+            ],
+        }
+        records = [{"byte": bytes([i])} for i in range(5)]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 5
+            assert df["byte"].dtype == pl.Binary
+            for i in range(5):
+                assert df["byte"][i] == bytes([i])
+                assert len(df["byte"][i]) == 1
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_large_size(self):
+        """Test fixed with large size (1024 bytes)."""
+        schema = {
+            "type": "record",
+            "name": "LargeFixed",
+            "fields": [
+                {"name": "data", "type": {"type": "fixed", "name": "large", "size": 1024}},
+            ],
+        }
+        # Create records with pattern data
+        records = [{"data": bytes([i % 256] * 1024)} for i in range(3)]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 3
+            assert df["data"].dtype == pl.Binary
+            for i in range(3):
+                assert len(df["data"][i]) == 1024
+                assert df["data"][i] == bytes([i % 256] * 1024)
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_multiple_columns(self):
+        """Test multiple fixed columns with different sizes."""
+        schema = {
+            "type": "record",
+            "name": "MultiFixed",
+            "fields": [
+                {"name": "small", "type": {"type": "fixed", "name": "f4", "size": 4}},
+                {"name": "medium", "type": {"type": "fixed", "name": "f16", "size": 16}},
+                {"name": "large", "type": {"type": "fixed", "name": "f64", "size": 64}},
+            ],
+        }
+        records = [
+            {
+                "small": bytes([i] * 4),
+                "medium": bytes([i] * 16),
+                "large": bytes([i] * 64),
+            }
+            for i in range(5)
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 5
+            assert df["small"].dtype == pl.Binary
+            assert df["medium"].dtype == pl.Binary
+            assert df["large"].dtype == pl.Binary
+
+            for i in range(5):
+                assert len(df["small"][i]) == 4
+                assert len(df["medium"][i]) == 16
+                assert len(df["large"][i]) == 64
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_with_projection(self):
+        """Test that fixed columns work with projection pushdown."""
+        schema = {
+            "type": "record",
+            "name": "ProjectFixed",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {"name": "hash", "type": {"type": "fixed", "name": "h16", "size": 16}},
+                {"name": "value", "type": "double"},
+            ],
+        }
+        records = [
+            {"id": i, "hash": bytes([i] * 16), "value": float(i)}
+            for i in range(10)
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            # Project only the fixed column
+            df = jetliner.scan(temp_path).select(["hash"]).collect()
+            assert df.height == 10
+            assert df.width == 1
+            assert df["hash"].dtype == pl.Binary
+
+            # Project fixed with other columns
+            df = jetliner.scan(temp_path).select(["id", "hash"]).collect()
+            assert df.height == 10
+            assert df.width == 2
+            assert df["hash"].dtype == pl.Binary
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_open_api(self):
+        """Test fixed type via open() API (not just scan())."""
+        schema = {
+            "type": "record",
+            "name": "OpenFixed",
+            "fields": [
+                {"name": "data", "type": {"type": "fixed", "name": "f8", "size": 8}},
+            ],
+        }
+        records = [{"data": bytes([i] * 8)} for i in range(5)]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            with jetliner.open(temp_path) as reader:
+                dfs = list(reader)
+            df = pl.concat(dfs)
+
+            assert df.height == 5
+            assert df["data"].dtype == pl.Binary
+            for i in range(5):
+                assert df["data"][i] == bytes([i] * 8)
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_in_nested_record(self):
+        """Test fixed type inside a nested record."""
+        schema = {
+            "type": "record",
+            "name": "OuterRecord",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "inner",
+                    "type": {
+                        "type": "record",
+                        "name": "InnerRecord",
+                        "fields": [
+                            {"name": "hash", "type": {"type": "fixed", "name": "h8", "size": 8}},
+                        ],
+                    },
+                },
+            ],
+        }
+        records = [
+            {"id": i, "inner": {"hash": bytes([i] * 8)}}
+            for i in range(3)
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 3
+
+            # Access nested fixed field
+            for i in range(3):
+                inner = df["inner"][i]
+                assert inner["hash"] == bytes([i] * 8)
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_nullable(self):
+        """Test nullable fixed (union with null)."""
+        schema = {
+            "type": "record",
+            "name": "NullableFixed",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {
+                    "name": "hash",
+                    "type": [
+                        "null",
+                        {"type": "fixed", "name": "h8", "size": 8},
+                    ],
+                },
+            ],
+        }
+        records = [
+            {"id": 0, "hash": bytes([0] * 8)},
+            {"id": 1, "hash": None},
+            {"id": 2, "hash": bytes([2] * 8)},
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            df = jetliner.scan(temp_path).collect()
+            assert df.height == 3
+            assert df["hash"].dtype == pl.Binary
+
+            assert df["hash"][0] == bytes([0] * 8)
+            assert df["hash"][1] is None
+            assert df["hash"][2] == bytes([2] * 8)
+            assert df["hash"].null_count() == 1
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_fixed_large_file_multiple_batches(self):
+        """Test fixed handling across multiple batches."""
+        schema = {
+            "type": "record",
+            "name": "BatchFixed",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {"name": "hash", "type": {"type": "fixed", "name": "h16", "size": 16}},
+            ],
+        }
+        num_records = 10000
+        records = [
+            {"id": i, "hash": bytes([(i + j) % 256 for j in range(16)])}
+            for i in range(num_records)
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as f:
+            fastavro.writer(f, schema, records)
+            temp_path = f.name
+
+        try:
+            # Use small batch size to force multiple batches
+            with jetliner.open(temp_path, batch_size=1000) as reader:
+                dfs = list(reader)
+
+            # Should have multiple batches
+            assert len(dfs) >= 2
+
+            # Each batch should have Binary type
+            for df in dfs:
+                assert df["hash"].dtype == pl.Binary
+
+            # Concatenated result should be correct
+            df = pl.concat(dfs)
+            assert df.height == num_records
+
+            # Verify some values
+            for i in [0, 100, 5000, 9999]:
+                expected = bytes([(i + j) % 256 for j in range(16)])
+                assert df["hash"][i] == expected
+        finally:
+            Path(temp_path).unlink(missing_ok=True)

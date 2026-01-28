@@ -1097,7 +1097,10 @@ impl NullableBuilder {
                 }
             }
             FieldBuilder::Enum(b) => b.indices.push(0),
-            FieldBuilder::Fixed(b) => b.values.push(vec![0u8; b.size]),
+            FieldBuilder::Fixed(b) => {
+                // Append empty fixed-size binary value (all zeros)
+                b.builder.push_value(&vec![0u8; b.size]);
+            }
             FieldBuilder::Date(b) => b.values.push(0),
             FieldBuilder::Time(b) => b.values.push(0),
             FieldBuilder::Datetime(b) => b.values.push(0),
@@ -1196,7 +1199,10 @@ fn append_default_to_builder(
             }
         }
         FieldBuilder::Enum(b) => b.indices.push(0),
-        FieldBuilder::Fixed(b) => b.values.push(vec![0u8; b.size]),
+        FieldBuilder::Fixed(b) => {
+            // Append empty fixed-size binary value (all zeros)
+            b.builder.push_value(&vec![0u8; b.size]);
+        }
         FieldBuilder::Date(b) => b.values.push(0),
         FieldBuilder::Time(b) => b.values.push(0),
         FieldBuilder::Datetime(b) => b.values.push(0),
@@ -1523,10 +1529,24 @@ impl EnumBuilder {
 }
 
 /// Builder for fixed-size binary values.
+///
+/// Uses `MutableBinaryViewArray` for efficient Arrow array construction,
+/// similar to `BinaryBuilder`. Fixed-size binary is stored as regular Binary
+/// type in Polars, with size validation happening at decode time.
+///
+/// Note: Ideally we'd use FixedSizeBinary to preserve size in the type, but
+/// Polars doesn't expose this as a user-facing type. See arrow.rs and
+/// devnotes/23-fixed-type-binary-mapping.md for details.
+///
+/// # Performance
+/// - Uses polars' native `MutableBinaryViewArray` which is optimized for binary data
+/// - Direct construction of `BinaryViewArray` at finish()
+/// - Uses `decode_fixed` to read exactly N bytes from the Avro binary
 struct FixedBuilder {
     name: String,
     size: usize,
-    values: Vec<Vec<u8>>,
+    /// Mutable binary view array builder
+    builder: MutableBinaryViewArray<[u8]>,
 }
 
 impl FixedBuilder {
@@ -1534,38 +1554,30 @@ impl FixedBuilder {
         Self {
             name: name.to_string(),
             size,
-            values: Vec::new(),
+            builder: MutableBinaryViewArray::new(),
         }
     }
 
     fn decode(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
         let value = decode_fixed(data, self.size)?;
-        self.values.push(value);
+        self.builder.push_value(&value);
         Ok(())
     }
 
     fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+        // Take the builder and replace with a new one
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
 
-        // Convert to Array type (fixed-size list of u8)
-        // First create a flat series of all bytes
-        let inner_values: Vec<u8> = values.iter().flatten().copied().collect();
-        let inner_ca = UInt8Chunked::from_vec("".into(), inner_values);
-        let inner_series = inner_ca.into_series();
+        // Freeze the mutable array into an immutable BinaryViewArray
+        let arr = builder.freeze();
 
-        // Create fixed-size array by reshaping
-        let array_chunked = inner_series
-            .reshape_array(&[
-                ReshapeDimension::Infer,
-                ReshapeDimension::new_dimension(self.size as u64),
-            ])
-            .map_err(|e| DecodeError::InvalidData(format!("Failed to reshape to array: {}", e)))?;
-
-        Ok(array_chunked.with_name(self.name.clone().into()))
+        // Wrap in BinaryChunked and convert to Series
+        let chunked = BinaryChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
     }
 
     fn reserve(&mut self, additional: usize) {
-        self.values.reserve(additional);
+        self.builder.reserve(additional);
     }
 }
 
