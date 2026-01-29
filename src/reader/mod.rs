@@ -18,6 +18,8 @@ pub use decode::{
     decode_array,
     // Complex type decoders with resolution context
     decode_array_with_context,
+    // Logical type decoders
+    decode_big_decimal,
     // Primitive type decoders
     decode_boolean,
     decode_bytes,

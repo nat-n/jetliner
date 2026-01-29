@@ -221,6 +221,30 @@ fn logical_to_arrow(logical: &crate::schema::LogicalType) -> Result<DataType, Sc
             // This is a simplification; full duration support would need custom handling
             Ok(DataType::Duration(TimeUnit::Microseconds))
         }
+        LogicalTypeName::TimestampNanos => {
+            // Timestamp with nanosecond precision, UTC timezone (Avro 1.12.0+)
+            Ok(DataType::Datetime(
+                TimeUnit::Nanoseconds,
+                Some(TimeZone::UTC),
+            ))
+        }
+        LogicalTypeName::LocalTimestampNanos => {
+            // Local timestamp (no timezone) with nanosecond precision (Avro 1.12.0+)
+            Ok(DataType::Datetime(TimeUnit::Nanoseconds, None))
+        }
+        LogicalTypeName::BigDecimal => {
+            // Big-decimal maps to String to preserve exact decimal representation.
+            // Unlike regular decimal where scale is fixed in the schema,
+            // big-decimal has variable scale per value, which doesn't fit
+            // Polars Decimal type (requires fixed scale at type level).
+            Ok(DataType::String)
+        }
+        LogicalTypeName::Unknown(_) => {
+            // Unknown logical types are treated as their base type per Avro spec.
+            // The logical type name is preserved in the schema for inspection,
+            // but data is decoded using the underlying type.
+            avro_to_arrow(&logical.base)
+        }
     }
 }
 
@@ -504,6 +528,89 @@ mod tests {
         let logical = LogicalType::new(AvroSchema::Long, LogicalTypeName::LocalTimestampMicros);
         let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
         assert_eq!(result, DataType::Datetime(TimeUnit::Microseconds, None));
+    }
+
+    #[test]
+    fn test_logical_timestamp_nanos() {
+        // Avro 1.12.0+ timestamp-nanos: nanosecond precision with UTC timezone
+        let logical = LogicalType::new(AvroSchema::Long, LogicalTypeName::TimestampNanos);
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(
+            result,
+            DataType::Datetime(TimeUnit::Nanoseconds, Some(TimeZone::UTC))
+        );
+    }
+
+    #[test]
+    fn test_logical_local_timestamp_nanos() {
+        // Avro 1.12.0+ local-timestamp-nanos: nanosecond precision without timezone
+        let logical = LogicalType::new(AvroSchema::Long, LogicalTypeName::LocalTimestampNanos);
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::Datetime(TimeUnit::Nanoseconds, None));
+    }
+
+    #[test]
+    fn test_logical_big_decimal() {
+        // Avro 1.12.0+ big-decimal: variable scale decimal stored as bytes
+        // Maps to String to preserve exact representation (variable scale per value)
+        let logical = LogicalType::new(AvroSchema::Bytes, LogicalTypeName::BigDecimal);
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::String);
+    }
+
+    #[test]
+    fn test_logical_unknown_string_base() {
+        // Unknown logical types should map to their base type
+        let logical = LogicalType::new(
+            AvroSchema::String,
+            LogicalTypeName::Unknown("custom-type".to_string()),
+        );
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::String);
+    }
+
+    #[test]
+    fn test_logical_unknown_int_base() {
+        // Unknown logical types should map to their base type
+        let logical = LogicalType::new(
+            AvroSchema::Int,
+            LogicalTypeName::Unknown("my-custom-int".to_string()),
+        );
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::Int32);
+    }
+
+    #[test]
+    fn test_logical_unknown_bytes_base() {
+        // Unknown logical types should map to their base type
+        let logical = LogicalType::new(
+            AvroSchema::Bytes,
+            LogicalTypeName::Unknown("encrypted-data".to_string()),
+        );
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::Binary);
+    }
+
+    #[test]
+    fn test_logical_unknown_long_base() {
+        // Unknown logical types should map to their base type
+        let logical = LogicalType::new(
+            AvroSchema::Long,
+            LogicalTypeName::Unknown("custom-timestamp".to_string()),
+        );
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::Int64);
+    }
+
+    #[test]
+    fn test_logical_unknown_fixed_base() {
+        // Unknown logical types on fixed should map to Binary
+        let logical = LogicalType::new(
+            AvroSchema::Fixed(FixedSchema::new("CustomHash", 32)),
+            LogicalTypeName::Unknown("hash-sha256".to_string()),
+        );
+        let result = avro_to_arrow(&AvroSchema::Logical(logical)).unwrap();
+        assert_eq!(result, DataType::Binary);
     }
 
     #[test]

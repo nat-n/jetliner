@@ -424,8 +424,12 @@ enum FieldBuilder {
     Duration(DurationBuilder),
     /// Decimal
     Decimal(DecimalBuilder),
+    /// UUID (string or fixed[16])
+    Uuid(UuidBuilder),
     /// Recursive type (serialized to JSON string)
     Recursive(RecursiveBuilder),
+    /// Big-decimal (Avro 1.12.0+, stored as string)
+    BigDecimal(BigDecimalBuilder),
 }
 
 impl FieldBuilder {
@@ -565,6 +569,12 @@ impl FieldBuilder {
                     LogicalTypeName::LocalTimestampMicros => Ok(FieldBuilder::Datetime(
                         DatetimeBuilder::new(name, TimeUnit::Microseconds, None),
                     )),
+                    LogicalTypeName::TimestampNanos => Ok(FieldBuilder::Datetime(
+                        DatetimeBuilder::new(name, TimeUnit::Nanoseconds, Some(TimeZone::UTC)),
+                    )),
+                    LogicalTypeName::LocalTimestampNanos => Ok(FieldBuilder::Datetime(
+                        DatetimeBuilder::new(name, TimeUnit::Nanoseconds, None),
+                    )),
                     LogicalTypeName::Duration => {
                         Ok(FieldBuilder::Duration(DurationBuilder::new(name)))
                     }
@@ -577,8 +587,17 @@ impl FieldBuilder {
                         )?))
                     }
                     LogicalTypeName::Uuid => {
-                        // UUID is stored as string
-                        Ok(FieldBuilder::String(StringBuilder::new(name)))
+                        // UUID can be stored as string or fixed[16]
+                        Ok(FieldBuilder::Uuid(UuidBuilder::new(name, &logical.base)?))
+                    }
+                    LogicalTypeName::BigDecimal => {
+                        // Big-decimal (Avro 1.12.0+) stored as string
+                        Ok(FieldBuilder::BigDecimal(BigDecimalBuilder::new(name)))
+                    }
+                    LogicalTypeName::Unknown(_) => {
+                        // Unknown logical types are treated as their base type per Avro spec.
+                        // Create a builder for the underlying type.
+                        Self::create_builder(name, &logical.base, root_schema)
                     }
                 }
             }
@@ -607,7 +626,9 @@ impl FieldBuilder {
             FieldBuilder::Datetime(b) => b.decode(data),
             FieldBuilder::Duration(b) => b.decode(data),
             FieldBuilder::Decimal(b) => b.decode(data),
+            FieldBuilder::Uuid(b) => b.decode(data),
             FieldBuilder::Recursive(b) => b.decode(data, schema),
+            FieldBuilder::BigDecimal(b) => b.decode(data),
         }
     }
 
@@ -633,7 +654,9 @@ impl FieldBuilder {
             FieldBuilder::Datetime(b) => b.finish(),
             FieldBuilder::Duration(b) => b.finish(),
             FieldBuilder::Decimal(b) => b.finish(),
+            FieldBuilder::Uuid(b) => b.finish(),
             FieldBuilder::Recursive(b) => b.finish(),
+            FieldBuilder::BigDecimal(b) => b.finish(),
         }
     }
 
@@ -667,7 +690,9 @@ impl FieldBuilder {
             FieldBuilder::Datetime(b) => b.reserve(additional),
             FieldBuilder::Duration(b) => b.reserve(additional),
             FieldBuilder::Decimal(b) => b.reserve(additional),
+            FieldBuilder::Uuid(b) => b.reserve(additional),
             FieldBuilder::Recursive(b) => b.reserve(additional),
+            FieldBuilder::BigDecimal(b) => b.reserve(additional),
         }
     }
 }
@@ -1099,13 +1124,17 @@ impl NullableBuilder {
             FieldBuilder::Enum(b) => b.indices.push(0),
             FieldBuilder::Fixed(b) => {
                 // Append empty fixed-size binary value (all zeros)
-                b.builder.push_value(&vec![0u8; b.size]);
+                b.builder.push_value(vec![0u8; b.size]);
             }
             FieldBuilder::Date(b) => b.values.push(0),
             FieldBuilder::Time(b) => b.values.push(0),
             FieldBuilder::Datetime(b) => b.values.push(0),
             FieldBuilder::Duration(b) => b.values.push(0),
             FieldBuilder::Decimal(b) => b.values.push(0),
+            FieldBuilder::Uuid(b) => {
+                // Append empty UUID string value
+                b.builder.push_value("");
+            }
             FieldBuilder::Null(b) => b.count += 1,
             FieldBuilder::Nullable(b) => {
                 // Nested nullable - append null
@@ -1121,6 +1150,10 @@ impl NullableBuilder {
             FieldBuilder::Recursive(b) => {
                 // For recursive types, append "null" as the default JSON value
                 b.values.push("null".to_string());
+            }
+            FieldBuilder::BigDecimal(b) => {
+                // For big-decimal, append "0" as the default value
+                b.builder.push_value("0");
             }
         }
         Ok(())
@@ -1207,13 +1240,17 @@ fn append_default_to_builder(
         FieldBuilder::Enum(b) => b.indices.push(0),
         FieldBuilder::Fixed(b) => {
             // Append empty fixed-size binary value (all zeros)
-            b.builder.push_value(&vec![0u8; b.size]);
+            b.builder.push_value(vec![0u8; b.size]);
         }
         FieldBuilder::Date(b) => b.values.push(0),
         FieldBuilder::Time(b) => b.values.push(0),
         FieldBuilder::Datetime(b) => b.values.push(0),
         FieldBuilder::Duration(b) => b.values.push(0),
         FieldBuilder::Decimal(b) => b.values.push(0),
+        FieldBuilder::Uuid(b) => {
+            // Append empty UUID string value
+            b.builder.push_value("");
+        }
         FieldBuilder::Nullable(b) => {
             b.validity.push(false);
             if let AvroSchema::Union(variants) = schema {
@@ -1226,6 +1263,10 @@ fn append_default_to_builder(
         FieldBuilder::Recursive(b) => {
             // For recursive types, append "null" as the default JSON value
             b.values.push("null".to_string());
+        }
+        FieldBuilder::BigDecimal(b) => {
+            // For big-decimal, append "0" as the default value
+            b.builder.push_value("0");
         }
     }
     Ok(())
@@ -1786,13 +1827,15 @@ impl DurationBuilder {
         let bytes = decode_fixed(data, 12)?;
 
         // Parse as three little-endian u32 values
-        let _months = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let months = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let days = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let milliseconds = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
 
         // Convert to microseconds (Polars duration unit)
-        // Note: We lose month precision here as Polars Duration doesn't support months
-        let total_micros = (days as i64 * 24 * 60 * 60 * 1_000_000) + (milliseconds as i64 * 1_000);
+        // Months are approximated as 30 days per Avro spec recommendation
+        let months_as_days = months as i64 * 30;
+        let total_micros = ((months_as_days + days as i64) * 24 * 60 * 60 * 1_000_000)
+            + (milliseconds as i64 * 1_000);
         self.values.push(total_micros);
         Ok(())
     }
@@ -1806,6 +1849,87 @@ impl DurationBuilder {
     fn reserve(&mut self, additional: usize) {
         self.values.reserve(additional);
     }
+}
+
+/// Builder for UUID values.
+///
+/// UUID can be stored as either:
+/// - String: length-prefixed UTF-8 string in standard UUID format
+/// - Fixed[16]: 16 raw bytes representing the UUID
+///
+/// Both are converted to String type in the output DataFrame.
+struct UuidBuilder {
+    name: String,
+    /// Whether the UUID is stored as fixed[16] bytes (true) or string (false)
+    is_fixed: bool,
+    builder: MutableBinaryViewArray<str>,
+}
+
+impl UuidBuilder {
+    fn new(name: &str, base: &AvroSchema) -> Result<Self, SchemaError> {
+        let is_fixed = match base {
+            AvroSchema::String => false,
+            AvroSchema::Fixed(f) if f.size == 16 => true,
+            AvroSchema::Fixed(f) => {
+                return Err(SchemaError::InvalidSchema(format!(
+                    "UUID fixed type must be 16 bytes, got {}",
+                    f.size
+                )))
+            }
+            _ => {
+                return Err(SchemaError::InvalidSchema(format!(
+                    "UUID logical type requires string or fixed[16] base type, got {:?}",
+                    base
+                )))
+            }
+        };
+
+        Ok(Self {
+            name: name.to_string(),
+            is_fixed,
+            builder: MutableBinaryViewArray::new(),
+        })
+    }
+
+    fn decode(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
+        if self.is_fixed {
+            // Decode 16 fixed bytes and format as UUID string
+            let bytes = decode_fixed(data, 16)?;
+            let uuid_str = format_uuid_bytes(&bytes);
+            self.builder.push_value(&uuid_str);
+        } else {
+            // Decode as string directly
+            let s = decode_string_ref(data)?;
+            self.builder.push_value(s);
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Series, DecodeError> {
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
+        let arr = builder.freeze();
+        let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
+    }
+
+    fn reserve(&mut self, _additional: usize) {
+        // MutableBinaryViewArray doesn't have a simple reserve method
+    }
+}
+
+/// Format 16 UUID bytes as a standard UUID string (8-4-4-4-12 format).
+///
+/// The bytes are interpreted as big-endian (standard UUID byte order).
+#[inline]
+fn format_uuid_bytes(bytes: &[u8]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    )
 }
 
 /// Builder for decimal values.
@@ -1919,6 +2043,111 @@ impl RecursiveBuilder {
 
     fn reserve(&mut self, additional: usize) {
         self.values.reserve(additional);
+    }
+}
+
+/// Builder for big-decimal values (Avro 1.12.0+).
+///
+/// Big-decimal stores the scale as a varint prefix in each value, allowing
+/// variable-scale decimals. The values are stored as strings to preserve
+/// exact representation since Polars Decimal requires fixed scale at type level.
+struct BigDecimalBuilder {
+    name: String,
+    builder: MutableBinaryViewArray<str>,
+}
+
+impl BigDecimalBuilder {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            builder: MutableBinaryViewArray::new(),
+        }
+    }
+
+    fn decode(&mut self, data: &mut &[u8]) -> Result<(), DecodeError> {
+        let bytes = decode_bytes(data)?;
+
+        let decimal_str = if bytes.is_empty() {
+            "0".to_string()
+        } else {
+            // Read scale from the first bytes (varint, zigzag encoded)
+            let mut cursor = &bytes[..];
+            let scale = super::varint::decode_zigzag(&mut cursor)?;
+
+            // Remaining bytes are the unscaled value (big-endian two's complement)
+            let unscaled_bytes = cursor;
+
+            // Convert to decimal string
+            big_decimal_bytes_to_string(unscaled_bytes, scale)
+        };
+
+        self.builder.push_value(&decimal_str);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<Series, DecodeError> {
+        let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
+        let arr = builder.freeze();
+        let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
+        Ok(chunked.into_series())
+    }
+
+    fn reserve(&mut self, _additional: usize) {
+        // MutableBinaryViewArray doesn't have a simple reserve method
+    }
+}
+
+/// Convert big-decimal unscaled bytes to a string representation.
+///
+/// The unscaled value is a big-endian two's complement integer.
+/// The scale indicates how many digits are after the decimal point.
+fn big_decimal_bytes_to_string(bytes: &[u8], scale: i64) -> String {
+    if bytes.is_empty() {
+        return "0".to_string();
+    }
+
+    // Convert big-endian two's complement to arbitrary precision integer
+    let is_negative = bytes[0] & 0x80 != 0;
+
+    // Build the value using i128 (limits precision to ~38 digits)
+    let mut value: i128 = if is_negative { -1 } else { 0 };
+    for &byte in bytes {
+        value = (value << 8) | (byte as i128);
+    }
+
+    // Handle scale
+    if scale <= 0 {
+        // Negative or zero scale means multiply by 10^(-scale)
+        // e.g., scale=-2 means value * 100
+        let abs_scale = (-scale) as u32;
+        if abs_scale > 0 {
+            // Append zeros
+            let zeros = "0".repeat(abs_scale as usize);
+            return format!("{}{}", value, zeros);
+        }
+        return value.to_string();
+    }
+
+    // Positive scale: insert decimal point
+    let scale = scale as u32;
+    let abs_value = value.abs();
+    let value_str = abs_value.to_string();
+    let sign = if value < 0 { "-" } else { "" };
+
+    if value_str.len() <= scale as usize {
+        // Need leading zeros after decimal point
+        // e.g., value=5, scale=3 -> "0.005"
+        let leading_zeros = scale as usize - value_str.len();
+        format!("{}0.{}{}", sign, "0".repeat(leading_zeros), value_str)
+    } else {
+        // Insert decimal point at the right position
+        let decimal_pos = value_str.len() - scale as usize;
+        format!(
+            "{}{}.{}",
+            sign,
+            &value_str[..decimal_pos],
+            &value_str[decimal_pos..]
+        )
     }
 }
 

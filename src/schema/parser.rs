@@ -232,6 +232,11 @@ impl SchemaParser {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        // Validate namespace if present
+        if let Some(ref ns) = namespace {
+            self.validate_namespace(ns, "Record")?;
+        }
+
         // Update current namespace for nested types
         let prev_namespace = self.current_namespace.clone();
         if namespace.is_some() {
@@ -390,6 +395,11 @@ impl SchemaParser {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        // Validate namespace if present
+        if let Some(ref ns) = namespace {
+            self.validate_namespace(ns, "Enum")?;
+        }
+
         let fullname = match &namespace {
             Some(ns) => format!("{}.{}", ns, name),
             None => match &self.current_namespace {
@@ -509,6 +519,11 @@ impl SchemaParser {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        // Validate namespace if present
+        if let Some(ref ns) = namespace {
+            self.validate_namespace(ns, "Fixed")?;
+        }
+
         let fullname = match &namespace {
             Some(ns) => format!("{}.{}", ns, name),
             None => match &self.current_namespace {
@@ -615,13 +630,24 @@ impl SchemaParser {
             "time-micros" => LogicalTypeName::TimeMicros,
             "timestamp-millis" => LogicalTypeName::TimestampMillis,
             "timestamp-micros" => LogicalTypeName::TimestampMicros,
+            "timestamp-nanos" => LogicalTypeName::TimestampNanos,
             "duration" => LogicalTypeName::Duration,
             "local-timestamp-millis" => LogicalTypeName::LocalTimestampMillis,
             "local-timestamp-micros" => LogicalTypeName::LocalTimestampMicros,
-            _other => {
-                // Unknown logical type - return base type per Avro spec
-                // (unknown logical types should be ignored)
-                return Ok(base_schema);
+            "local-timestamp-nanos" => LogicalTypeName::LocalTimestampNanos,
+            "big-decimal" => {
+                // big-decimal only supports bytes base type (not fixed)
+                if !matches!(base_schema, AvroSchema::Bytes) {
+                    return Err(SchemaError::InvalidSchema(
+                        "big-decimal logical type requires bytes base type".to_string(),
+                    ));
+                }
+                LogicalTypeName::BigDecimal
+            }
+            other => {
+                // Unknown logical type - preserve the name for schema inspection
+                // but treat data as the base type per Avro spec
+                LogicalTypeName::Unknown(other.to_string())
             }
         };
 
@@ -693,6 +719,26 @@ impl SchemaParser {
         }
 
         self.validate_simple_name(name, context)
+    }
+
+    /// Validate that a namespace follows Avro naming rules.
+    ///
+    /// Per Avro spec: A namespace is a dot-separated sequence of names.
+    /// The empty string may also be used as a namespace to indicate the null namespace.
+    /// The null namespace may not be used in a dot-separated sequence of names.
+    /// Grammar: <empty> | <name>[(<dot><name>)*]
+    fn validate_namespace(&self, namespace: &str, context: &str) -> Result<(), SchemaError> {
+        // Empty string is valid (null namespace)
+        if namespace.is_empty() {
+            return Ok(());
+        }
+
+        // Validate each component of the namespace
+        for part in namespace.split('.') {
+            self.validate_simple_name(part, &format!("{} namespace component", context))?;
+        }
+
+        Ok(())
     }
 
     /// Validate a simple name (no dots).
@@ -802,5 +848,908 @@ impl SchemaParser {
             AvroSchema::Union(_) => "union".to_string(),
             AvroSchema::Logical(lt) => format!("logical:{}", self.get_type_key(&lt.base)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Primitive Type Parsing ====================
+
+    #[test]
+    fn parse_null() {
+        let schema = parse_schema(r#""null""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Null));
+    }
+
+    #[test]
+    fn parse_boolean() {
+        let schema = parse_schema(r#""boolean""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Boolean));
+    }
+
+    #[test]
+    fn parse_int() {
+        let schema = parse_schema(r#""int""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Int));
+    }
+
+    #[test]
+    fn parse_long() {
+        let schema = parse_schema(r#""long""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Long));
+    }
+
+    #[test]
+    fn parse_float() {
+        let schema = parse_schema(r#""float""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Float));
+    }
+
+    #[test]
+    fn parse_double() {
+        let schema = parse_schema(r#""double""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Double));
+    }
+
+    #[test]
+    fn parse_bytes() {
+        let schema = parse_schema(r#""bytes""#).unwrap();
+        assert!(matches!(schema, AvroSchema::Bytes));
+    }
+
+    #[test]
+    fn parse_string() {
+        let schema = parse_schema(r#""string""#).unwrap();
+        assert!(matches!(schema, AvroSchema::String));
+    }
+
+    #[test]
+    fn parse_primitive_as_object() {
+        let schema = parse_schema(r#"{"type": "int"}"#).unwrap();
+        assert!(matches!(schema, AvroSchema::Int));
+    }
+
+    // ==================== Name Validation ====================
+
+    #[test]
+    fn valid_simple_name() {
+        let schema = parse_schema(r#"{"type": "record", "name": "User", "fields": []}"#).unwrap();
+        assert!(matches!(schema, AvroSchema::Record(_)));
+    }
+
+    #[test]
+    fn valid_name_with_underscore() {
+        let schema =
+            parse_schema(r#"{"type": "record", "name": "_User_123", "fields": []}"#).unwrap();
+        assert!(matches!(schema, AvroSchema::Record(_)));
+    }
+
+    #[test]
+    fn valid_fullname_with_dots() {
+        let schema =
+            parse_schema(r#"{"type": "record", "name": "com.example.User", "fields": []}"#)
+                .unwrap();
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.fullname(), "com.example.User");
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn strict_rejects_name_starting_with_digit() {
+        let result =
+            parse_schema_with_options(r#"{"type": "record", "name": "1User", "fields": []}"#, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_rejects_name_with_invalid_char() {
+        let result = parse_schema_with_options(
+            r#"{"type": "record", "name": "User-Name", "fields": []}"#,
+            true,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_rejects_empty_name() {
+        let result =
+            parse_schema_with_options(r#"{"type": "record", "name": "", "fields": []}"#, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn permissive_allows_invalid_name() {
+        // Permissive mode warns but doesn't fail
+        let result = parse_schema(r#"{"type": "record", "name": "1User", "fields": []}"#);
+        assert!(result.is_ok());
+    }
+
+    // ==================== Namespace Handling ====================
+
+    #[test]
+    fn namespace_from_explicit_field() {
+        let schema = parse_schema(
+            r#"{"type": "record", "name": "User", "namespace": "com.example", "fields": []}"#,
+        )
+        .unwrap();
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.namespace, Some("com.example".to_string()));
+            assert_eq!(r.fullname(), "com.example.User");
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn namespace_inherited_by_nested_type() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "Outer",
+            "namespace": "com.example",
+            "fields": [{
+                "name": "inner",
+                "type": {
+                    "type": "record",
+                    "name": "Inner",
+                    "fields": []
+                }
+            }]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            if let AvroSchema::Record(inner) = &r.fields[0].schema {
+                assert_eq!(inner.fullname(), "com.example.Inner");
+            } else {
+                panic!("Expected nested Record");
+            }
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn empty_namespace_is_valid() {
+        let result = parse_schema_with_options(
+            r#"{"type": "record", "name": "User", "namespace": "", "fields": []}"#,
+            true,
+        );
+        assert!(result.is_ok());
+    }
+
+    // ==================== Union Schemas ====================
+
+    #[test]
+    fn parse_simple_union() {
+        let schema = parse_schema(r#"["null", "string"]"#).unwrap();
+        if let AvroSchema::Union(variants) = schema {
+            assert_eq!(variants.len(), 2);
+            assert!(matches!(variants[0], AvroSchema::Null));
+            assert!(matches!(variants[1], AvroSchema::String));
+        } else {
+            panic!("Expected Union");
+        }
+    }
+
+    #[test]
+    fn empty_union_is_error() {
+        let result = parse_schema(r#"[]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_rejects_duplicate_types_in_union() {
+        let result = parse_schema_with_options(r#"["int", "int"]"#, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_rejects_nested_union() {
+        let result = parse_schema_with_options(r#"["null", ["string", "int"]]"#, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn permissive_allows_duplicate_types() {
+        let result = parse_schema(r#"["int", "int"]"#);
+        assert!(result.is_ok());
+    }
+
+    // ==================== Record Schemas ====================
+
+    #[test]
+    fn parse_record_with_fields() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "User",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {"name": "name", "type": "string"}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.name, "User");
+            assert_eq!(r.fields.len(), 2);
+            assert_eq!(r.fields[0].name, "id");
+            assert_eq!(r.fields[1].name, "name");
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn record_missing_name_is_error() {
+        let result = parse_schema(r#"{"type": "record", "fields": []}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_missing_fields_is_error() {
+        let result = parse_schema(r#"{"type": "record", "name": "User"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_with_doc_and_aliases() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "User",
+            "doc": "A user record",
+            "aliases": ["Person", "Account"],
+            "fields": []
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.doc, Some("A user record".to_string()));
+            assert_eq!(r.aliases, vec!["Person", "Account"]);
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn field_with_default_value() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "User",
+            "fields": [
+                {"name": "count", "type": "int", "default": 0}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.fields[0].default, Some(serde_json::json!(0)));
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn field_order_parsing() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "User",
+            "fields": [
+                {"name": "a", "type": "int", "order": "ascending"},
+                {"name": "b", "type": "int", "order": "descending"},
+                {"name": "c", "type": "int", "order": "ignore"}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            assert!(matches!(r.fields[0].order, FieldOrder::Ascending));
+            assert!(matches!(r.fields[1].order, FieldOrder::Descending));
+            assert!(matches!(r.fields[2].order, FieldOrder::Ignore));
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    // ==================== Enum Schemas ====================
+
+    #[test]
+    fn parse_enum() {
+        let schema = parse_schema(
+            r#"{
+            "type": "enum",
+            "name": "Color",
+            "symbols": ["RED", "GREEN", "BLUE"]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Enum(e) = schema {
+            assert_eq!(e.name, "Color");
+            assert_eq!(e.symbols, vec!["RED", "GREEN", "BLUE"]);
+        } else {
+            panic!("Expected Enum");
+        }
+    }
+
+    #[test]
+    fn enum_missing_symbols_is_error() {
+        let result = parse_schema(r#"{"type": "enum", "name": "Color"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn enum_empty_symbols_is_error() {
+        let result = parse_schema(r#"{"type": "enum", "name": "Color", "symbols": []}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn enum_with_default() {
+        let schema = parse_schema(
+            r#"{
+            "type": "enum",
+            "name": "Color",
+            "symbols": ["RED", "GREEN", "BLUE"],
+            "default": "RED"
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Enum(e) = schema {
+            assert_eq!(e.default, Some("RED".to_string()));
+        } else {
+            panic!("Expected Enum");
+        }
+    }
+
+    // ==================== Array Schemas ====================
+
+    #[test]
+    fn parse_array() {
+        let schema = parse_schema(r#"{"type": "array", "items": "string"}"#).unwrap();
+        if let AvroSchema::Array(items) = schema {
+            assert!(matches!(*items, AvroSchema::String));
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    #[test]
+    fn array_missing_items_is_error() {
+        let result = parse_schema(r#"{"type": "array"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nested_array() {
+        let schema =
+            parse_schema(r#"{"type": "array", "items": {"type": "array", "items": "int"}}"#)
+                .unwrap();
+        if let AvroSchema::Array(outer) = schema {
+            if let AvroSchema::Array(inner) = *outer {
+                assert!(matches!(*inner, AvroSchema::Int));
+            } else {
+                panic!("Expected nested Array");
+            }
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    // ==================== Map Schemas ====================
+
+    #[test]
+    fn parse_map() {
+        let schema = parse_schema(r#"{"type": "map", "values": "long"}"#).unwrap();
+        if let AvroSchema::Map(values) = schema {
+            assert!(matches!(*values, AvroSchema::Long));
+        } else {
+            panic!("Expected Map");
+        }
+    }
+
+    #[test]
+    fn map_missing_values_is_error() {
+        let result = parse_schema(r#"{"type": "map"}"#);
+        assert!(result.is_err());
+    }
+
+    // ==================== Fixed Schemas ====================
+
+    #[test]
+    fn parse_fixed() {
+        let schema = parse_schema(r#"{"type": "fixed", "name": "MD5", "size": 16}"#).unwrap();
+        if let AvroSchema::Fixed(f) = schema {
+            assert_eq!(f.name, "MD5");
+            assert_eq!(f.size, 16);
+        } else {
+            panic!("Expected Fixed");
+        }
+    }
+
+    #[test]
+    fn fixed_missing_size_is_error() {
+        let result = parse_schema(r#"{"type": "fixed", "name": "MD5"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fixed_missing_name_is_error() {
+        let result = parse_schema(r#"{"type": "fixed", "size": 16}"#);
+        assert!(result.is_err());
+    }
+
+    // ==================== Logical Types ====================
+
+    #[test]
+    fn parse_date() {
+        let schema = parse_schema(r#"{"type": "int", "logicalType": "date"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::Int));
+            assert!(matches!(lt.logical_type, LogicalTypeName::Date));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_time_millis() {
+        let schema = parse_schema(r#"{"type": "int", "logicalType": "time-millis"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(lt.logical_type, LogicalTypeName::TimeMillis));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_time_micros() {
+        let schema = parse_schema(r#"{"type": "long", "logicalType": "time-micros"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(lt.logical_type, LogicalTypeName::TimeMicros));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_timestamp_millis() {
+        let schema =
+            parse_schema(r#"{"type": "long", "logicalType": "timestamp-millis"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(lt.logical_type, LogicalTypeName::TimestampMillis));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_timestamp_micros() {
+        let schema =
+            parse_schema(r#"{"type": "long", "logicalType": "timestamp-micros"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(lt.logical_type, LogicalTypeName::TimestampMicros));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_timestamp_nanos() {
+        let schema = parse_schema(r#"{"type": "long", "logicalType": "timestamp-nanos"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(lt.logical_type, LogicalTypeName::TimestampNanos));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_local_timestamp_millis() {
+        let schema =
+            parse_schema(r#"{"type": "long", "logicalType": "local-timestamp-millis"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(
+                lt.logical_type,
+                LogicalTypeName::LocalTimestampMillis
+            ));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_local_timestamp_micros() {
+        let schema =
+            parse_schema(r#"{"type": "long", "logicalType": "local-timestamp-micros"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(
+                lt.logical_type,
+                LogicalTypeName::LocalTimestampMicros
+            ));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_local_timestamp_nanos() {
+        let schema =
+            parse_schema(r#"{"type": "long", "logicalType": "local-timestamp-nanos"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(
+                lt.logical_type,
+                LogicalTypeName::LocalTimestampNanos
+            ));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_uuid() {
+        let schema = parse_schema(r#"{"type": "string", "logicalType": "uuid"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::String));
+            assert!(matches!(lt.logical_type, LogicalTypeName::Uuid));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_decimal_bytes() {
+        let schema = parse_schema(
+            r#"{"type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2}"#,
+        )
+        .unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::Bytes));
+            if let LogicalTypeName::Decimal { precision, scale } = lt.logical_type {
+                assert_eq!(precision, 10);
+                assert_eq!(scale, 2);
+            } else {
+                panic!("Expected Decimal");
+            }
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_decimal_fixed() {
+        let schema = parse_schema(
+            r#"{"type": "fixed", "name": "Money", "size": 8, "logicalType": "decimal", "precision": 18, "scale": 4}"#,
+        )
+        .unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::Fixed(_)));
+            if let LogicalTypeName::Decimal { precision, scale } = lt.logical_type {
+                assert_eq!(precision, 18);
+                assert_eq!(scale, 4);
+            } else {
+                panic!("Expected Decimal");
+            }
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn decimal_scale_defaults_to_zero() {
+        let schema =
+            parse_schema(r#"{"type": "bytes", "logicalType": "decimal", "precision": 10}"#)
+                .unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            if let LogicalTypeName::Decimal { scale, .. } = lt.logical_type {
+                assert_eq!(scale, 0);
+            } else {
+                panic!("Expected Decimal");
+            }
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn decimal_missing_precision_is_error() {
+        let result = parse_schema(r#"{"type": "bytes", "logicalType": "decimal"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_duration() {
+        let schema = parse_schema(
+            r#"{"type": "fixed", "name": "duration", "size": 12, "logicalType": "duration"}"#,
+        )
+        .unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(lt.logical_type, LogicalTypeName::Duration));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn parse_big_decimal() {
+        let schema = parse_schema(r#"{"type": "bytes", "logicalType": "big-decimal"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::Bytes));
+            assert!(matches!(lt.logical_type, LogicalTypeName::BigDecimal));
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn big_decimal_requires_bytes_base() {
+        let result = parse_schema(
+            r#"{"type": "fixed", "name": "bd", "size": 16, "logicalType": "big-decimal"}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_logical_type_preserved_as_logical() {
+        let schema = parse_schema(r#"{"type": "string", "logicalType": "custom-type"}"#).unwrap();
+        // Unknown logical types are now preserved as Logical with Unknown variant
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::String));
+            assert!(
+                matches!(&lt.logical_type, LogicalTypeName::Unknown(name) if name == "custom-type")
+            );
+            assert_eq!(lt.logical_type.name(), "custom-type");
+            assert!(lt.logical_type.is_unknown());
+        } else {
+            panic!("Expected Logical with Unknown variant, got {:?}", schema);
+        }
+    }
+
+    #[test]
+    fn unknown_logical_type_on_int_base() {
+        let schema = parse_schema(r#"{"type": "int", "logicalType": "my-custom-int"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::Int));
+            assert!(
+                matches!(&lt.logical_type, LogicalTypeName::Unknown(name) if name == "my-custom-int")
+            );
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn unknown_logical_type_on_bytes_base() {
+        let schema = parse_schema(r#"{"type": "bytes", "logicalType": "encrypted-data"}"#).unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            assert!(matches!(*lt.base, AvroSchema::Bytes));
+            assert!(
+                matches!(&lt.logical_type, LogicalTypeName::Unknown(name) if name == "encrypted-data")
+            );
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn unknown_logical_type_on_fixed_base() {
+        let schema = parse_schema(
+            r#"{"type": "fixed", "name": "CustomFixed", "size": 32, "logicalType": "hash-sha256"}"#,
+        )
+        .unwrap();
+        if let AvroSchema::Logical(lt) = schema {
+            if let AvroSchema::Fixed(f) = &*lt.base {
+                assert_eq!(f.name, "CustomFixed");
+                assert_eq!(f.size, 32);
+            } else {
+                panic!("Expected Fixed base type");
+            }
+            assert!(
+                matches!(&lt.logical_type, LogicalTypeName::Unknown(name) if name == "hash-sha256")
+            );
+        } else {
+            panic!("Expected Logical");
+        }
+    }
+
+    #[test]
+    fn unknown_logical_type_serializes_correctly() {
+        let schema = parse_schema(r#"{"type": "string", "logicalType": "custom-type"}"#).unwrap();
+        let json = schema.to_json();
+        // Should serialize back with the logicalType preserved
+        assert!(json.contains("\"logicalType\":\"custom-type\""));
+        assert!(json.contains("\"type\":\"string\""));
+    }
+
+    #[test]
+    fn unknown_logical_type_in_record_field() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "TestRecord",
+            "fields": [
+                {"name": "id", "type": "int"},
+                {"name": "custom_field", "type": {"type": "string", "logicalType": "my-custom-type"}}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.fields.len(), 2);
+            if let AvroSchema::Logical(lt) = &r.fields[1].schema {
+                assert!(
+                    matches!(&lt.logical_type, LogicalTypeName::Unknown(name) if name == "my-custom-type")
+                );
+            } else {
+                panic!("Expected Logical for custom_field");
+            }
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    // ==================== Recursive Types ====================
+
+    #[test]
+    fn parse_self_recursive_record() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "Node",
+            "fields": [
+                {"name": "value", "type": "int"},
+                {"name": "next", "type": ["null", "Node"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            assert_eq!(r.name, "Node");
+            if let AvroSchema::Union(variants) = &r.fields[1].schema {
+                assert!(matches!(variants[1], AvroSchema::Named(_)));
+            } else {
+                panic!("Expected Union");
+            }
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    #[test]
+    fn parse_mutually_recursive_records() {
+        let schema = parse_schema(
+            r#"{
+            "type": "record",
+            "name": "A",
+            "fields": [{
+                "name": "b",
+                "type": {
+                    "type": "record",
+                    "name": "B",
+                    "fields": [{"name": "a", "type": ["null", "A"]}]
+                }
+            }]
+        }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(schema, AvroSchema::Record(_)));
+    }
+
+    // ==================== Named Type References ====================
+
+    #[test]
+    fn named_type_reference_resolved() {
+        let mut parser = SchemaParser::new();
+        let schema = parser
+            .parse(
+                &serde_json::from_str(
+                    r#"{
+                "type": "record",
+                "name": "Outer",
+                "fields": [
+                    {"name": "inner", "type": {"type": "record", "name": "Inner", "fields": []}},
+                    {"name": "inner_ref", "type": "Inner"}
+                ]
+            }"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        if let AvroSchema::Record(r) = schema {
+            // Second field should reference the Inner type
+            assert!(matches!(r.fields[1].schema, AvroSchema::Named(_)));
+        } else {
+            panic!("Expected Record");
+        }
+    }
+
+    // ==================== Error Cases ====================
+
+    #[test]
+    fn invalid_json_is_error() {
+        let result = parse_schema("not valid json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn number_is_invalid_schema() {
+        let result = parse_schema("42");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_type_is_error() {
+        let result = parse_schema(r#"{"type": "unknown_type"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn missing_type_field_is_error() {
+        let result = parse_schema(r#"{"name": "Foo"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_missing_name_is_error() {
+        let result =
+            parse_schema(r#"{"type": "record", "name": "User", "fields": [{"type": "int"}]}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_missing_type_is_error() {
+        let result =
+            parse_schema(r#"{"type": "record", "name": "User", "fields": [{"name": "id"}]}"#);
+        assert!(result.is_err());
+    }
+
+    // ==================== SchemaParser API ====================
+
+    #[test]
+    fn parser_tracks_named_types() {
+        let mut parser = SchemaParser::new();
+        parser
+            .parse(
+                &serde_json::from_str(
+                    r#"{"type": "record", "name": "User", "namespace": "com.example", "fields": []}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(parser.get_named_type("com.example.User").is_some());
+        assert_eq!(parser.named_types().len(), 1);
+    }
+
+    #[test]
+    fn parser_new_strict_mode() {
+        let mut parser = SchemaParser::new_strict();
+        let result = parser.parse(&serde_json::from_str(r#"["int", "int"]"#).unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parser_with_strict_builder() {
+        let mut parser = SchemaParser::new().with_strict(true);
+        let result = parser.parse(&serde_json::from_str(r#"["int", "int"]"#).unwrap());
+        assert!(result.is_err());
     }
 }

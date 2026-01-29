@@ -8,3 +8,5 @@ cc 977b8ed73439de5ff842f0f7c52e13423c16d82b71decf9ec8b6cf0777c04eb9 # shrinks to
 cc abb8f20fca2dd10318548317f9612c9f54584f7bd6ccd35c1ed9961f4eea4fa9 # shrinks to batch_size = 1, num_blocks = 1, records_per_block = 2
 cc 16343b3f4d278bc801337323ea843a05f16fb92d88ca472c7f6c463f771bd2e5 # shrinks to record_schema = RecordSchema { name: "A", namespace: None, fields: [FieldSchema { name: "A", schema: Bytes, default: None, doc: None, order: Ascending, aliases: [] }], doc: None, aliases: [] }, num_records = 1
 cc ff263713603879df44df42b5d41605deb42e1e43c8d3b7aecb3ed2ff56b91725 # shrinks to record_schema = RecordSchema { name: "a", namespace: None, fields: [FieldSchema { name: "nullable_field", schema: Union([Null, Bytes]), default: None, doc: None, order: Ascending, aliases: [] }], doc: None, aliases: [] }, num_records = 1
+cc 299bcd5684d2ef0495fc74d21b4ae88a53841a5bbfcc122ee4fa68a03f74c299 # shrinks to (schema, value) = (Map(Logical(LogicalType { base: Long, logical_type: TimestampNanos })), Map([("a", TimestampNanos(0))]))
+cc e078087d5b7411e89227cccc23926cf203a3d40314009b7a84273269ce732bb4 # shrinks to num_blocks = 17, block_size = 299, chunk_size = 5131

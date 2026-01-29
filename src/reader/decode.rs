@@ -234,6 +234,8 @@ pub enum AvroValue {
     TimestampMillis(i64),
     /// Timestamp in microseconds since Unix epoch
     TimestampMicros(i64),
+    /// Timestamp in nanoseconds since Unix epoch (Avro 1.12.0+)
+    TimestampNanos(i64),
     /// Duration (months, days, milliseconds)
     Duration {
         /// Number of months
@@ -243,6 +245,9 @@ pub enum AvroValue {
         /// Number of milliseconds
         milliseconds: u32,
     },
+    /// Big-decimal value (Avro 1.12.0+) stored as string to preserve exact representation.
+    /// Unlike regular Decimal, big-decimal has variable scale per value.
+    BigDecimal(String),
 }
 
 impl AvroValue {
@@ -310,6 +315,7 @@ impl AvroValue {
             AvroValue::TimeMicros(us) => Value::Number((*us).into()),
             AvroValue::TimestampMillis(ms) => Value::Number((*ms).into()),
             AvroValue::TimestampMicros(us) => Value::Number((*us).into()),
+            AvroValue::TimestampNanos(ns) => Value::Number((*ns).into()),
             AvroValue::Duration {
                 months,
                 days,
@@ -321,6 +327,7 @@ impl AvroValue {
                     "milliseconds": milliseconds
                 })
             }
+            AvroValue::BigDecimal(s) => Value::String(s.clone()),
         }
     }
 }
@@ -1115,6 +1122,22 @@ pub fn decode_timestamp_micros(data: &mut &[u8]) -> Result<AvroValue, DecodeErro
     Ok(AvroValue::TimestampMicros(micros))
 }
 
+/// Decode a timestamp-nanos value (Avro 1.12.0+).
+///
+/// Avro timestamp-nanos logical type is stored as a long representing the
+/// number of nanoseconds since the Unix epoch (January 1, 1970 00:00:00 UTC).
+///
+/// # Arguments
+/// * `data` - The input byte slice (cursor is advanced)
+///
+/// # Returns
+/// A TimestampNanos AvroValue containing nanoseconds since epoch
+#[inline]
+pub fn decode_timestamp_nanos(data: &mut &[u8]) -> Result<AvroValue, DecodeError> {
+    let nanos = decode_long(data)?;
+    Ok(AvroValue::TimestampNanos(nanos))
+}
+
 /// Decode a duration value.
 ///
 /// Avro duration logical type is stored as fixed[12] bytes containing
@@ -1142,6 +1165,96 @@ pub fn decode_duration(data: &mut &[u8]) -> Result<AvroValue, DecodeError> {
         days,
         milliseconds,
     })
+}
+
+/// Decode a big-decimal value from bytes.
+///
+/// Avro big-decimal logical type (Avro 1.12.0+) is stored as bytes containing:
+/// - A varint (zigzag encoded) representing the scale
+/// - The remaining bytes are the unscaled value as big-endian two's complement
+///
+/// Unlike regular decimal where scale is fixed in the schema, big-decimal
+/// stores the scale in each value, allowing variable-scale decimals.
+///
+/// # Arguments
+/// * `data` - The input byte slice (cursor is advanced)
+///
+/// # Returns
+/// A BigDecimal AvroValue containing the decimal as a string representation
+#[inline]
+pub fn decode_big_decimal(data: &mut &[u8]) -> Result<AvroValue, DecodeError> {
+    let bytes = decode_bytes(data)?;
+
+    if bytes.is_empty() {
+        return Ok(AvroValue::BigDecimal("0".to_string()));
+    }
+
+    // Read scale from the first bytes (varint, zigzag encoded)
+    let mut cursor = &bytes[..];
+    let scale = super::varint::decode_zigzag(&mut cursor)?;
+
+    // Remaining bytes are the unscaled value (big-endian two's complement)
+    let unscaled_bytes = cursor;
+
+    // Convert to decimal string
+    let decimal_str = big_decimal_bytes_to_string(unscaled_bytes, scale);
+    Ok(AvroValue::BigDecimal(decimal_str))
+}
+
+/// Convert big-decimal unscaled bytes to a string representation.
+///
+/// The unscaled value is a big-endian two's complement integer.
+/// The scale indicates how many digits are after the decimal point.
+fn big_decimal_bytes_to_string(bytes: &[u8], scale: i64) -> String {
+    if bytes.is_empty() {
+        return "0".to_string();
+    }
+
+    // Convert big-endian two's complement to arbitrary precision integer
+    let is_negative = bytes[0] & 0x80 != 0;
+
+    // Build the absolute value as a string of digits
+    // We use i128 for simplicity, but this limits precision to ~38 digits
+    // For larger values, we'd need a big integer library
+    let mut value: i128 = if is_negative { -1 } else { 0 };
+    for &byte in bytes {
+        value = (value << 8) | (byte as i128);
+    }
+
+    // Handle scale
+    if scale <= 0 {
+        // Negative or zero scale means multiply by 10^(-scale)
+        // e.g., scale=-2 means value * 100
+        let abs_scale = (-scale) as u32;
+        if abs_scale > 0 {
+            // Append zeros
+            let zeros = "0".repeat(abs_scale as usize);
+            return format!("{}{}", value, zeros);
+        }
+        return value.to_string();
+    }
+
+    // Positive scale: insert decimal point
+    let scale = scale as u32;
+    let abs_value = value.abs();
+    let value_str = abs_value.to_string();
+    let sign = if value < 0 { "-" } else { "" };
+
+    if value_str.len() <= scale as usize {
+        // Need leading zeros after decimal point
+        // e.g., value=5, scale=3 -> "0.005"
+        let leading_zeros = scale as usize - value_str.len();
+        format!("{}0.{}{}", sign, "0".repeat(leading_zeros), value_str)
+    } else {
+        // Insert decimal point at the right position
+        let decimal_pos = value_str.len() - scale as usize;
+        format!(
+            "{}{}.{}",
+            sign,
+            &value_str[..decimal_pos],
+            &value_str[decimal_pos..]
+        )
+    }
 }
 
 /// Decode a logical type value based on its schema.
@@ -1217,6 +1330,13 @@ pub fn decode_logical_value(
                 base
             ))),
         },
+        LogicalTypeName::TimestampNanos | LogicalTypeName::LocalTimestampNanos => match base {
+            AvroSchema::Long => decode_timestamp_nanos(data),
+            _ => Err(DecodeError::InvalidData(format!(
+                "timestamp-nanos logical type requires long base type, got {:?}",
+                base
+            ))),
+        },
         LogicalTypeName::Duration => match base {
             AvroSchema::Fixed(fixed) if fixed.size == 12 => decode_duration(data),
             AvroSchema::Fixed(fixed) => Err(DecodeError::InvalidData(format!(
@@ -1228,6 +1348,17 @@ pub fn decode_logical_value(
                 base
             ))),
         },
+        LogicalTypeName::BigDecimal => match base {
+            AvroSchema::Bytes => decode_big_decimal(data),
+            _ => Err(DecodeError::InvalidData(format!(
+                "big-decimal logical type requires bytes base type, got {:?}",
+                base
+            ))),
+        },
+        LogicalTypeName::Unknown(_) => {
+            // Unknown logical types are decoded as their base type per Avro spec
+            decode_value(data, base)
+        }
     }
 }
 
@@ -3291,5 +3422,102 @@ mod tests {
 
         // Should have consumed exactly the record, leaving 0xFF
         assert_eq!(cursor, &[0xFF]);
+    }
+
+    // ========================================================================
+    // Big-Decimal Tests
+    // ========================================================================
+
+    #[test]
+    fn test_decode_big_decimal_empty_bytes() {
+        // Empty bytes should decode to "0"
+        let data: &[u8] = &[0x00]; // length 0
+        let mut cursor = data;
+        let result = decode_big_decimal(&mut cursor).unwrap();
+        assert_eq!(result, AvroValue::BigDecimal("0".to_string()));
+    }
+
+    #[test]
+    fn test_decode_big_decimal_integer() {
+        // Value 12345 with scale 0
+        // scale: 0 -> zigzag(0) = 0
+        // unscaled: 12345 = 0x3039 (big-endian)
+        // bytes: [scale_varint, unscaled_bytes...] = [0x00, 0x30, 0x39]
+        // length: 3 -> zigzag(3) = 6
+        let data: &[u8] = &[0x06, 0x00, 0x30, 0x39];
+        let mut cursor = data;
+        let result = decode_big_decimal(&mut cursor).unwrap();
+        assert_eq!(result, AvroValue::BigDecimal("12345".to_string()));
+    }
+
+    #[test]
+    fn test_decode_big_decimal_with_scale() {
+        // Value 123.45 = unscaled 12345, scale 2
+        // scale: 2 -> zigzag(2) = 4
+        // unscaled: 12345 = 0x3039 (big-endian)
+        // bytes: [0x04, 0x30, 0x39]
+        // length: 3 -> zigzag(3) = 6
+        let data: &[u8] = &[0x06, 0x04, 0x30, 0x39];
+        let mut cursor = data;
+        let result = decode_big_decimal(&mut cursor).unwrap();
+        assert_eq!(result, AvroValue::BigDecimal("123.45".to_string()));
+    }
+
+    #[test]
+    fn test_decode_big_decimal_negative() {
+        // Value -123.45 = unscaled -12345, scale 2
+        // scale: 2 -> zigzag(2) = 4
+        // unscaled: -12345 in two's complement = 0xFFFFCFC7 (but we use minimal bytes)
+        // -12345 as signed bytes: 0xCFC7 (two bytes, sign-extended)
+        // bytes: [0x04, 0xCF, 0xC7]
+        // length: 3 -> zigzag(3) = 6
+        let data: &[u8] = &[0x06, 0x04, 0xCF, 0xC7];
+        let mut cursor = data;
+        let result = decode_big_decimal(&mut cursor).unwrap();
+        assert_eq!(result, AvroValue::BigDecimal("-123.45".to_string()));
+    }
+
+    #[test]
+    fn test_decode_big_decimal_small_value_large_scale() {
+        // Value 0.005 = unscaled 5, scale 3
+        // scale: 3 -> zigzag(3) = 6
+        // unscaled: 5 = 0x05
+        // bytes: [0x06, 0x05]
+        // length: 2 -> zigzag(2) = 4
+        let data: &[u8] = &[0x04, 0x06, 0x05];
+        let mut cursor = data;
+        let result = decode_big_decimal(&mut cursor).unwrap();
+        assert_eq!(result, AvroValue::BigDecimal("0.005".to_string()));
+    }
+
+    #[test]
+    fn test_big_decimal_bytes_to_string_zero_scale() {
+        // 12345 with scale 0 -> "12345"
+        let bytes: &[u8] = &[0x30, 0x39]; // 12345 big-endian
+        let result = big_decimal_bytes_to_string(bytes, 0);
+        assert_eq!(result, "12345");
+    }
+
+    #[test]
+    fn test_big_decimal_bytes_to_string_negative_scale() {
+        // 5 with scale -2 -> "500"
+        let bytes: &[u8] = &[0x05];
+        let result = big_decimal_bytes_to_string(bytes, -2);
+        assert_eq!(result, "500");
+    }
+
+    #[test]
+    fn test_big_decimal_bytes_to_string_leading_zeros() {
+        // 5 with scale 3 -> "0.005"
+        let bytes: &[u8] = &[0x05];
+        let result = big_decimal_bytes_to_string(bytes, 3);
+        assert_eq!(result, "0.005");
+    }
+
+    #[test]
+    fn test_big_decimal_to_json() {
+        let value = AvroValue::BigDecimal("123.456".to_string());
+        let json = value.to_json();
+        assert_eq!(json, serde_json::json!("123.456"));
     }
 }

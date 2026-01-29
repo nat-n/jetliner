@@ -441,17 +441,32 @@ pub enum LogicalTypeName {
     TimestampMillis,
     /// Timestamp in microseconds since Unix epoch.
     TimestampMicros,
+    /// Timestamp in nanoseconds since Unix epoch (Avro 1.12.0+).
+    TimestampNanos,
     /// Duration (months, days, milliseconds).
     Duration,
     /// Local timestamp in milliseconds (no timezone).
     LocalTimestampMillis,
     /// Local timestamp in microseconds (no timezone).
     LocalTimestampMicros,
+    /// Local timestamp in nanoseconds (no timezone) (Avro 1.12.0+).
+    LocalTimestampNanos,
+    /// Big-decimal with variable scale stored in value (Avro 1.12.0+).
+    /// Unlike regular decimal where scale is fixed in the schema,
+    /// big-decimal stores the scale as a varint prefix in each value.
+    BigDecimal,
+    /// Unknown/custom logical type.
+    /// Per Avro spec, unknown logical types should be ignored and the base type used.
+    /// We preserve the name for schema inspection while treating data as the base type.
+    Unknown(String),
 }
 
 impl LogicalTypeName {
     /// Get the string name of the logical type.
-    pub fn name(&self) -> &'static str {
+    ///
+    /// For known types, returns a static string. For unknown types, returns
+    /// a reference to the stored name.
+    pub fn name(&self) -> &str {
         match self {
             LogicalTypeName::Decimal { .. } => "decimal",
             LogicalTypeName::Uuid => "uuid",
@@ -460,10 +475,19 @@ impl LogicalTypeName {
             LogicalTypeName::TimeMicros => "time-micros",
             LogicalTypeName::TimestampMillis => "timestamp-millis",
             LogicalTypeName::TimestampMicros => "timestamp-micros",
+            LogicalTypeName::TimestampNanos => "timestamp-nanos",
             LogicalTypeName::Duration => "duration",
             LogicalTypeName::LocalTimestampMillis => "local-timestamp-millis",
             LogicalTypeName::LocalTimestampMicros => "local-timestamp-micros",
+            LogicalTypeName::LocalTimestampNanos => "local-timestamp-nanos",
+            LogicalTypeName::BigDecimal => "big-decimal",
+            LogicalTypeName::Unknown(name) => name,
         }
+    }
+
+    /// Returns true if this is an unknown/custom logical type.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, LogicalTypeName::Unknown(_))
     }
 }
 

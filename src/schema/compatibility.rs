@@ -651,7 +651,10 @@ fn check_logical_type_compatibility(
         | (LogicalTypeName::TimestampMicros, LogicalTypeName::TimestampMicros)
         | (LogicalTypeName::Duration, LogicalTypeName::Duration)
         | (LogicalTypeName::LocalTimestampMillis, LogicalTypeName::LocalTimestampMillis)
-        | (LogicalTypeName::LocalTimestampMicros, LogicalTypeName::LocalTimestampMicros) => {
+        | (LogicalTypeName::LocalTimestampMicros, LogicalTypeName::LocalTimestampMicros)
+        | (LogicalTypeName::TimestampNanos, LogicalTypeName::TimestampNanos)
+        | (LogicalTypeName::LocalTimestampNanos, LogicalTypeName::LocalTimestampNanos)
+        | (LogicalTypeName::BigDecimal, LogicalTypeName::BigDecimal) => {
             CompatibilityResult::compatible()
         }
 

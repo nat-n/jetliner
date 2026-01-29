@@ -72,6 +72,9 @@ fn arb_enum_schema() -> impl Strategy<Value = EnumSchema> {
 }
 
 /// Generate logical type names with appropriate base types.
+///
+/// Feature: avro-1-12-support, Property 1: Nanosecond Timestamp Schema Round-Trip
+/// Validates: Requirements 1.1, 1.2, 1.7
 fn arb_logical_type() -> impl Strategy<Value = AvroSchema> {
     prop_oneof![
         // Date (int base)
@@ -98,6 +101,26 @@ fn arb_logical_type() -> impl Strategy<Value = AvroSchema> {
         Just(AvroSchema::Logical(LogicalType::new(
             AvroSchema::Long,
             LogicalTypeName::TimestampMicros
+        ))),
+        // Timestamp-nanos (long base) - Avro 1.12.0+
+        Just(AvroSchema::Logical(LogicalType::new(
+            AvroSchema::Long,
+            LogicalTypeName::TimestampNanos
+        ))),
+        // Local-timestamp-millis (long base)
+        Just(AvroSchema::Logical(LogicalType::new(
+            AvroSchema::Long,
+            LogicalTypeName::LocalTimestampMillis
+        ))),
+        // Local-timestamp-micros (long base)
+        Just(AvroSchema::Logical(LogicalType::new(
+            AvroSchema::Long,
+            LogicalTypeName::LocalTimestampMicros
+        ))),
+        // Local-timestamp-nanos (long base) - Avro 1.12.0+
+        Just(AvroSchema::Logical(LogicalType::new(
+            AvroSchema::Long,
+            LogicalTypeName::LocalTimestampNanos
         ))),
         // UUID (string base)
         Just(AvroSchema::Logical(LogicalType::new(
@@ -228,6 +251,108 @@ proptest! {
             parsed1, parsed2,
             "Round-trip failed:\nOriginal JSON: {}\nFirst parse JSON: {}\nSecond parse JSON: {}",
             json1, json2, json3
+        );
+    }
+}
+
+// ============================================================================
+// Nanosecond Timestamp Arrow Type Mapping Property Tests
+// ============================================================================
+
+use jetliner::convert::avro_to_arrow;
+use polars::prelude::{DataType, TimeUnit, TimeZone};
+
+/// Generate nanosecond timestamp schemas (timestamp-nanos and local-timestamp-nanos).
+///
+/// Feature: avro-1-12-support, Property 2: Nanosecond Timestamp Arrow Type Mapping
+/// Validates: Requirements 1.3, 1.4
+fn arb_nanos_timestamp_schema() -> impl Strategy<Value = (AvroSchema, DataType)> {
+    prop_oneof![
+        // timestamp-nanos: should map to Datetime(Nanoseconds, UTC)
+        Just((
+            AvroSchema::Logical(LogicalType::new(
+                AvroSchema::Long,
+                LogicalTypeName::TimestampNanos
+            )),
+            DataType::Datetime(TimeUnit::Nanoseconds, Some(TimeZone::UTC))
+        )),
+        // local-timestamp-nanos: should map to Datetime(Nanoseconds, None)
+        Just((
+            AvroSchema::Logical(LogicalType::new(
+                AvroSchema::Long,
+                LogicalTypeName::LocalTimestampNanos
+            )),
+            DataType::Datetime(TimeUnit::Nanoseconds, None)
+        )),
+    ]
+}
+
+/// Generate nanosecond timestamp schemas wrapped in various container types.
+/// This tests that the mapping works correctly when nested in arrays, maps, unions, and records.
+fn arb_nanos_timestamp_in_container() -> impl Strategy<Value = (AvroSchema, DataType)> {
+    arb_nanos_timestamp_schema().prop_flat_map(|(base_schema, base_dtype)| {
+        prop_oneof![
+            // Direct schema
+            Just((base_schema.clone(), base_dtype.clone())),
+            // In array
+            Just((
+                AvroSchema::Array(Box::new(base_schema.clone())),
+                DataType::List(Box::new(base_dtype.clone()))
+            )),
+            // In nullable union
+            Just((
+                AvroSchema::Union(vec![AvroSchema::Null, base_schema.clone()]),
+                base_dtype.clone()
+            )),
+        ]
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: avro-1-12-support, Property 2: Nanosecond Timestamp Arrow Type Mapping
+    ///
+    /// For any timestamp-nanos logical type schema, the Arrow converter SHALL produce
+    /// `Datetime(Nanoseconds, UTC)`. For any local-timestamp-nanos logical type schema,
+    /// the Arrow converter SHALL produce `Datetime(Nanoseconds, None)`.
+    ///
+    /// **Validates: Requirements 1.3, 1.4**
+    #[test]
+    fn prop_nanos_timestamp_arrow_type_mapping(
+        (schema, expected_dtype) in arb_nanos_timestamp_schema()
+    ) {
+        // Convert the Avro schema to Arrow DataType
+        let result = avro_to_arrow(&schema)
+            .expect("Arrow conversion should succeed for nanosecond timestamp schemas");
+
+        // Verify the correct DataType is produced
+        prop_assert_eq!(
+            &result, &expected_dtype,
+            "Nanosecond timestamp Arrow type mapping failed:\nSchema: {:?}\nExpected: {:?}\nGot: {:?}",
+            schema, expected_dtype, result
+        );
+    }
+
+    /// Feature: avro-1-12-support, Property 2: Nanosecond Timestamp Arrow Type Mapping (containers)
+    ///
+    /// For any nanosecond timestamp schema nested in containers (arrays, unions),
+    /// the Arrow converter SHALL correctly map the inner type.
+    ///
+    /// **Validates: Requirements 1.3, 1.4**
+    #[test]
+    fn prop_nanos_timestamp_arrow_type_mapping_in_containers(
+        (schema, expected_dtype) in arb_nanos_timestamp_in_container()
+    ) {
+        // Convert the Avro schema to Arrow DataType
+        let result = avro_to_arrow(&schema)
+            .expect("Arrow conversion should succeed for nanosecond timestamp schemas in containers");
+
+        // Verify the correct DataType is produced
+        prop_assert_eq!(
+            &result, &expected_dtype,
+            "Nanosecond timestamp Arrow type mapping in container failed:\nSchema: {:?}\nExpected: {:?}\nGot: {:?}",
+            schema, expected_dtype, result
         );
     }
 }
@@ -1320,6 +1445,14 @@ fn encode_avro_value(value: &jetliner::reader::AvroValue, schema: &AvroSchema) -
         {
             bytes.extend(encode_zigzag(*micros));
         }
+        (AvroValue::TimestampNanos(nanos), AvroSchema::Logical(lt))
+            if matches!(
+                lt.logical_type,
+                LogicalTypeName::TimestampNanos | LogicalTypeName::LocalTimestampNanos
+            ) =>
+        {
+            bytes.extend(encode_zigzag(*nanos));
+        }
         (AvroValue::Uuid(uuid_str), AvroSchema::Logical(lt))
             if matches!(lt.logical_type, LogicalTypeName::Uuid) =>
         {
@@ -1498,6 +1631,9 @@ fn arb_avro_value_for_schema(schema: &AvroSchema) -> BoxedStrategy<AvroValue> {
                 LogicalTypeName::TimestampMicros | LogicalTypeName::LocalTimestampMicros => {
                     any::<i64>().prop_map(AvroValue::TimestampMicros).boxed()
                 }
+                LogicalTypeName::TimestampNanos | LogicalTypeName::LocalTimestampNanos => {
+                    any::<i64>().prop_map(AvroValue::TimestampNanos).boxed()
+                }
                 LogicalTypeName::Uuid => {
                     // Generate valid UUID format
                     prop::array::uniform16(any::<u8>())
@@ -1532,6 +1668,19 @@ fn arb_avro_value_for_schema(schema: &AvroSchema) -> BoxedStrategy<AvroValue> {
                         milliseconds,
                     })
                     .boxed(),
+                LogicalTypeName::BigDecimal => {
+                    // Generate big-decimal as string representation
+                    // Format: optional sign, digits, optional decimal point and more digits
+                    prop::string::string_regex("-?[0-9]{1,10}(\\.[0-9]{1,10})?")
+                        .unwrap()
+                        .prop_map(AvroValue::BigDecimal)
+                        .boxed()
+                }
+                LogicalTypeName::Unknown(_) => {
+                    // Unknown logical types are treated as their base type
+                    // Generate a value for the base type
+                    arb_avro_value_for_schema(&lt.base)
+                }
             }
         }
         AvroSchema::Named(_) => {
@@ -1640,6 +1789,7 @@ fn values_equal(a: &AvroValue, b: &AvroValue) -> bool {
         (AvroValue::TimeMicros(a), AvroValue::TimeMicros(b)) => a == b,
         (AvroValue::TimestampMillis(a), AvroValue::TimestampMillis(b)) => a == b,
         (AvroValue::TimestampMicros(a), AvroValue::TimestampMicros(b)) => a == b,
+        (AvroValue::TimestampNanos(a), AvroValue::TimestampNanos(b)) => a == b,
         (AvroValue::Uuid(a), AvroValue::Uuid(b)) => a == b,
         (
             AvroValue::Decimal {
@@ -7897,5 +8047,578 @@ proptest! {
 
             Ok(())
         })?;
+    }
+}
+
+// ============================================================================
+// Property 3: Negative Block Count Decoding Equivalence (Avro 1.12.0 Support)
+// ============================================================================
+
+use jetliner::reader::{decode_array, decode_map};
+
+/// Encode an array with positive block count (standard encoding).
+/// Format: count, items..., 0
+fn encode_array_positive(items: &[AvroValue], item_schema: &AvroSchema) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if !items.is_empty() {
+        // Write positive block count
+        bytes.extend(encode_zigzag(items.len() as i64));
+        // Write each item
+        for item in items {
+            bytes.extend(encode_avro_value(item, item_schema));
+        }
+    }
+    // Write terminating zero
+    bytes.push(0);
+    bytes
+}
+
+/// Encode an array with negative block count (alternative encoding with byte size).
+/// Format: -count, byte_size, items..., 0
+fn encode_array_negative(items: &[AvroValue], item_schema: &AvroSchema) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if !items.is_empty() {
+        // First, encode all items to calculate byte size
+        let mut item_bytes = Vec::new();
+        for item in items {
+            item_bytes.extend(encode_avro_value(item, item_schema));
+        }
+
+        // Write negative block count
+        bytes.extend(encode_zigzag(-(items.len() as i64)));
+        // Write byte size of the block data
+        bytes.extend(encode_zigzag(item_bytes.len() as i64));
+        // Write the item data
+        bytes.extend(item_bytes);
+    }
+    // Write terminating zero
+    bytes.push(0);
+    bytes
+}
+
+/// Encode a map with positive block count (standard encoding).
+fn encode_map_positive(entries: &[(String, AvroValue)], value_schema: &AvroSchema) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if !entries.is_empty() {
+        // Write positive block count
+        bytes.extend(encode_zigzag(entries.len() as i64));
+        // Write each key-value pair
+        for (key, val) in entries {
+            let key_bytes = key.as_bytes();
+            bytes.extend(encode_zigzag(key_bytes.len() as i64));
+            bytes.extend(key_bytes);
+            bytes.extend(encode_avro_value(val, value_schema));
+        }
+    }
+    // Write terminating zero
+    bytes.push(0);
+    bytes
+}
+
+/// Encode a map with negative block count (alternative encoding with byte size).
+fn encode_map_negative(entries: &[(String, AvroValue)], value_schema: &AvroSchema) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if !entries.is_empty() {
+        // First, encode all entries to calculate byte size
+        let mut entry_bytes = Vec::new();
+        for (key, val) in entries {
+            let key_bytes = key.as_bytes();
+            entry_bytes.extend(encode_zigzag(key_bytes.len() as i64));
+            entry_bytes.extend(key_bytes);
+            entry_bytes.extend(encode_avro_value(val, value_schema));
+        }
+
+        // Write negative block count
+        bytes.extend(encode_zigzag(-(entries.len() as i64)));
+        // Write byte size of the block data
+        bytes.extend(encode_zigzag(entry_bytes.len() as i64));
+        // Write the entry data
+        bytes.extend(entry_bytes);
+    }
+    // Write terminating zero
+    bytes.push(0);
+    bytes
+}
+
+/// Generate array items for testing negative block counts.
+fn arb_array_items() -> impl Strategy<Value = (AvroSchema, Vec<AvroValue>)> {
+    // Use simple item types for clarity
+    prop_oneof![
+        // Array of ints
+        prop::collection::vec(any::<i32>(), 0..10).prop_map(|ints| (
+            AvroSchema::Int,
+            ints.into_iter().map(AvroValue::Int).collect()
+        )),
+        // Array of longs
+        prop::collection::vec(any::<i64>(), 0..10).prop_map(|longs| (
+            AvroSchema::Long,
+            longs.into_iter().map(AvroValue::Long).collect()
+        )),
+        // Array of strings
+        prop::collection::vec("[a-z]{0,16}", 0..10).prop_map(|strings| (
+            AvroSchema::String,
+            strings.into_iter().map(AvroValue::String).collect()
+        )),
+        // Array of bytes
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..32), 0..10).prop_map(
+            |bytes_vec| (
+                AvroSchema::Bytes,
+                bytes_vec.into_iter().map(AvroValue::Bytes).collect()
+            )
+        ),
+    ]
+}
+
+/// Generate map entries for testing negative block counts.
+fn arb_map_entries() -> impl Strategy<Value = (AvroSchema, Vec<(String, AvroValue)>)> {
+    // Use simple value types for clarity
+    prop_oneof![
+        // Map of ints
+        prop::collection::vec(("[a-z]{1,8}", any::<i32>()), 0..10)
+            .prop_filter("keys must be unique", |entries| {
+                let mut seen = std::collections::HashSet::new();
+                entries.iter().all(|(k, _)| seen.insert(k.clone()))
+            })
+            .prop_map(|entries| {
+                (
+                    AvroSchema::Int,
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| (k, AvroValue::Int(v)))
+                        .collect(),
+                )
+            }),
+        // Map of strings
+        prop::collection::vec(("[a-z]{1,8}", "[a-z]{0,16}"), 0..10)
+            .prop_filter("keys must be unique", |entries| {
+                let mut seen = std::collections::HashSet::new();
+                entries.iter().all(|(k, _)| seen.insert(k.clone()))
+            })
+            .prop_map(|entries| {
+                (
+                    AvroSchema::String,
+                    entries
+                        .into_iter()
+                        .map(|(k, v)| (k, AvroValue::String(v)))
+                        .collect(),
+                )
+            }),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: avro-1-12-support, Property 3: Negative Block Count Decoding Equivalence
+    ///
+    /// For any array data, encoding with negative block counts (with byte size prefix)
+    /// and decoding SHALL produce the same result as encoding with positive block counts
+    /// and decoding.
+    ///
+    /// Per Avro spec: A block with count that is negative indicates that the count is
+    /// followed by a long block size indicating the number of bytes in the block.
+    ///
+    /// **Validates: Requirements 4.1, 4.2, 4.3**
+    #[test]
+    fn prop_negative_block_count_array_decoding(
+        (item_schema, items) in arb_array_items()
+    ) {
+        // Encode with positive block count (standard)
+        let positive_encoded = encode_array_positive(&items, &item_schema);
+
+        // Encode with negative block count (alternative)
+        let negative_encoded = encode_array_negative(&items, &item_schema);
+
+        // Decode both
+        let mut positive_cursor = &positive_encoded[..];
+        let positive_decoded = decode_array(&mut positive_cursor, &item_schema)
+            .expect("Failed to decode positive-encoded array");
+
+        let mut negative_cursor = &negative_encoded[..];
+        let negative_decoded = decode_array(&mut negative_cursor, &item_schema)
+            .expect("Failed to decode negative-encoded array");
+
+        // Verify both decodings consumed all bytes
+        prop_assert!(
+            positive_cursor.is_empty(),
+            "Positive encoding: not all bytes consumed"
+        );
+        prop_assert!(
+            negative_cursor.is_empty(),
+            "Negative encoding: not all bytes consumed"
+        );
+
+        // Verify both decodings produce the same result
+        prop_assert_eq!(
+            positive_decoded.len(), negative_decoded.len(),
+            "Array lengths differ: positive={}, negative={}",
+            positive_decoded.len(), negative_decoded.len()
+        );
+
+        for (i, (pos, neg)) in positive_decoded.iter().zip(negative_decoded.iter()).enumerate() {
+            prop_assert!(
+                values_equal(pos, neg),
+                "Array item {} differs:\nPositive: {:?}\nNegative: {:?}",
+                i, pos, neg
+            );
+        }
+    }
+
+    /// Feature: avro-1-12-support, Property 3: Negative Block Count Decoding Equivalence (Maps)
+    ///
+    /// For any map data, encoding with negative block counts (with byte size prefix)
+    /// and decoding SHALL produce the same result as encoding with positive block counts
+    /// and decoding.
+    ///
+    /// **Validates: Requirements 4.1, 4.2, 4.3**
+    #[test]
+    fn prop_negative_block_count_map_decoding(
+        (value_schema, entries) in arb_map_entries()
+    ) {
+        // Encode with positive block count (standard)
+        let positive_encoded = encode_map_positive(&entries, &value_schema);
+
+        // Encode with negative block count (alternative)
+        let negative_encoded = encode_map_negative(&entries, &value_schema);
+
+        // Decode both
+        let mut positive_cursor = &positive_encoded[..];
+        let positive_decoded = decode_map(&mut positive_cursor, &value_schema)
+            .expect("Failed to decode positive-encoded map");
+
+        let mut negative_cursor = &negative_encoded[..];
+        let negative_decoded = decode_map(&mut negative_cursor, &value_schema)
+            .expect("Failed to decode negative-encoded map");
+
+        // Verify both decodings consumed all bytes
+        prop_assert!(
+            positive_cursor.is_empty(),
+            "Positive encoding: not all bytes consumed"
+        );
+        prop_assert!(
+            negative_cursor.is_empty(),
+            "Negative encoding: not all bytes consumed"
+        );
+
+        // Verify both decodings produce the same result
+        prop_assert_eq!(
+            positive_decoded.len(), negative_decoded.len(),
+            "Map sizes differ: positive={}, negative={}",
+            positive_decoded.len(), negative_decoded.len()
+        );
+
+        // Convert to HashMaps for comparison (order may differ)
+        let pos_map: std::collections::HashMap<_, _> = positive_decoded.into_iter().collect();
+        let neg_map: std::collections::HashMap<_, _> = negative_decoded.into_iter().collect();
+
+        for (key, pos_val) in &pos_map {
+            let neg_val = neg_map.get(key).expect(&format!("Key '{}' missing in negative decode", key));
+            prop_assert!(
+                values_equal(pos_val, neg_val),
+                "Map value for key '{}' differs:\nPositive: {:?}\nNegative: {:?}",
+                key, pos_val, neg_val
+            );
+        }
+    }
+}
+
+// ============================================================================
+// Big-Decimal Property Tests
+// ============================================================================
+
+/// Encode a signed integer as zigzag varint for big-decimal scale.
+fn encode_zigzag_scale(value: i64) -> Vec<u8> {
+    let zigzag = ((value << 1) ^ (value >> 63)) as u64;
+    encode_varint(zigzag)
+}
+
+/// Encode an i128 value as big-endian two's complement bytes.
+/// Returns the minimal representation (no unnecessary leading bytes).
+fn encode_i128_to_bytes(value: i128) -> Vec<u8> {
+    if value == 0 {
+        return vec![0];
+    }
+
+    // Convert to big-endian bytes
+    let bytes = value.to_be_bytes();
+
+    // Find the first significant byte
+    // For positive numbers, skip leading 0x00 bytes (but keep one if next byte has high bit set)
+    // For negative numbers, skip leading 0xFF bytes (but keep one if next byte has low high bit)
+    let is_negative = value < 0;
+    let mut start = 0;
+
+    if is_negative {
+        // Skip leading 0xFF bytes, but keep one if the next byte doesn't have high bit set
+        while start < bytes.len() - 1 && bytes[start] == 0xFF && (bytes[start + 1] & 0x80) != 0 {
+            start += 1;
+        }
+    } else {
+        // Skip leading 0x00 bytes, but keep one if the next byte has high bit set
+        while start < bytes.len() - 1 && bytes[start] == 0x00 && (bytes[start + 1] & 0x80) == 0 {
+            start += 1;
+        }
+    }
+
+    bytes[start..].to_vec()
+}
+
+/// Encode a big-decimal value as Avro bytes.
+/// Format: length-prefixed bytes containing [scale_varint][unscaled_bytes]
+fn encode_big_decimal(unscaled: i128, scale: i64) -> Vec<u8> {
+    let scale_bytes = encode_zigzag_scale(scale);
+    let unscaled_bytes = encode_i128_to_bytes(unscaled);
+
+    // Combine scale and unscaled value
+    let mut value_bytes = scale_bytes;
+    value_bytes.extend_from_slice(&unscaled_bytes);
+
+    // Length-prefix the whole thing (Avro bytes encoding)
+    let mut result = encode_zigzag_varint(value_bytes.len() as i64);
+    result.extend_from_slice(&value_bytes);
+    result
+}
+
+/// Parse a decimal string back to (unscaled, scale) representation.
+/// Returns None if the string is not a valid decimal.
+fn parse_decimal_string(s: &str) -> Option<(i128, i64)> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Handle sign
+    let (is_negative, s) = if s.starts_with('-') {
+        (true, &s[1..])
+    } else if s.starts_with('+') {
+        (false, &s[1..])
+    } else {
+        (false, s)
+    };
+
+    // Find decimal point
+    if let Some(dot_pos) = s.find('.') {
+        // Has decimal point
+        let integer_part = &s[..dot_pos];
+        let fractional_part = &s[dot_pos + 1..];
+
+        // Scale is the number of digits after decimal point
+        let scale = fractional_part.len() as i64;
+
+        // Combine integer and fractional parts
+        let combined = format!("{}{}", integer_part, fractional_part);
+        let unscaled: i128 = combined.parse().ok()?;
+
+        let unscaled = if is_negative { -unscaled } else { unscaled };
+        Some((unscaled, scale))
+    } else {
+        // No decimal point - check for trailing zeros (negative scale case)
+        let unscaled: i128 = s.parse().ok()?;
+        let unscaled = if is_negative { -unscaled } else { unscaled };
+        Some((unscaled, 0))
+    }
+}
+
+/// Generate arbitrary big-decimal values.
+/// Returns (unscaled_value, scale) pairs.
+fn arb_big_decimal() -> impl Strategy<Value = (i128, i64)> {
+    // Generate scale from 0 to 38 (reasonable range for decimals)
+    // and unscaled values that fit in i128
+    (
+        // Unscaled value: use a range that won't overflow when displayed
+        prop::num::i64::ANY.prop_map(|v| v as i128),
+        // Scale: 0 to 20 (positive scales for decimal places)
+        0i64..=20,
+    )
+}
+
+/// Generate big-decimal values with negative scales (multiplied by powers of 10).
+fn arb_big_decimal_negative_scale() -> impl Strategy<Value = (i128, i64)> {
+    (
+        // Smaller unscaled values to avoid overflow when multiplied
+        -1_000_000i128..=1_000_000,
+        // Negative scale: -10 to 0
+        -10i64..=0,
+    )
+}
+
+/// Generate edge case big-decimal values.
+fn arb_big_decimal_edge_cases() -> impl Strategy<Value = (i128, i64)> {
+    prop_oneof![
+        // Zero with various scales
+        Just((0i128, 0i64)),
+        Just((0i128, 5i64)),
+        Just((0i128, 10i64)),
+        // Small values with high scale (e.g., 0.00001)
+        Just((1i128, 5i64)),
+        Just((5i128, 10i64)),
+        // Negative small values
+        Just((-1i128, 5i64)),
+        Just((-5i128, 10i64)),
+        // Values that need leading zeros after decimal
+        Just((123i128, 5i64)),  // 0.00123
+        Just((-456i128, 6i64)), // -0.000456
+        // Larger values
+        Just((123456789i128, 2i64)),  // 1234567.89
+        Just((-987654321i128, 4i64)), // -98765.4321
+    ]
+}
+
+use jetliner::reader::decode::decode_big_decimal;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// Feature: avro-1-12-support, Property 4: Big-Decimal String Representation Preserves Value
+    ///
+    /// For any valid big-decimal value (scale + unscaled integer), the decoded string
+    /// representation SHALL be parseable back to the original numeric value with the same scale.
+    ///
+    /// **Validates: Requirements 8.3, 8.4, 8.5**
+    #[test]
+    fn prop_big_decimal_string_preserves_value(
+        (unscaled, scale) in arb_big_decimal()
+    ) {
+        // Skip zero unscaled with non-zero scale edge cases that have multiple representations
+        // (e.g., 0 with scale 5 could be "0" or "0.00000")
+        if unscaled == 0 {
+            return Ok(());
+        }
+
+        // Encode as big-decimal bytes
+        let encoded = encode_big_decimal(unscaled, scale);
+
+        // Decode using jetliner's decoder
+        let mut cursor = &encoded[..];
+        let decoded = decode_big_decimal(&mut cursor)
+            .expect("Failed to decode big-decimal");
+
+        // Extract the string value
+        let decimal_str = match decoded {
+            jetliner::reader::decode::AvroValue::BigDecimal(s) => s,
+            other => panic!("Expected BigDecimal, got {:?}", other),
+        };
+
+        // Parse the string back to (unscaled, scale)
+        let (parsed_unscaled, parsed_scale) = parse_decimal_string(&decimal_str)
+            .expect(&format!("Failed to parse decimal string: '{}'", decimal_str));
+
+        // The numeric value should be equivalent
+        // Note: The scale might differ (e.g., "100" vs "100.00"), but the value should be the same
+        // We compare the actual numeric values: unscaled * 10^(-scale)
+        let original_value = (unscaled as f64) * 10f64.powi(-scale as i32);
+        let parsed_value = (parsed_unscaled as f64) * 10f64.powi(-parsed_scale as i32);
+
+        // Use relative comparison for floating point
+        let diff = (original_value - parsed_value).abs();
+        let max_val = original_value.abs().max(parsed_value.abs()).max(1e-10);
+        let relative_diff = diff / max_val;
+
+        prop_assert!(
+            relative_diff < 1e-9,
+            "Value mismatch: original={}*10^-{} ({}) vs parsed={}*10^-{} ({}), string='{}', diff={}",
+            unscaled, scale, original_value,
+            parsed_unscaled, parsed_scale, parsed_value,
+            decimal_str, relative_diff
+        );
+    }
+
+    /// Feature: avro-1-12-support, Property 4: Big-Decimal String Representation Preserves Value (negative scale)
+    ///
+    /// For big-decimal values with negative scale (integers multiplied by powers of 10),
+    /// the decoded string representation SHALL be parseable back to the original value.
+    ///
+    /// **Validates: Requirements 8.3, 8.4, 8.5**
+    #[test]
+    fn prop_big_decimal_negative_scale_preserves_value(
+        (unscaled, scale) in arb_big_decimal_negative_scale()
+    ) {
+        // Skip zero
+        if unscaled == 0 {
+            return Ok(());
+        }
+
+        // Encode as big-decimal bytes
+        let encoded = encode_big_decimal(unscaled, scale);
+
+        // Decode using jetliner's decoder
+        let mut cursor = &encoded[..];
+        let decoded = decode_big_decimal(&mut cursor)
+            .expect("Failed to decode big-decimal");
+
+        // Extract the string value
+        let decimal_str = match decoded {
+            jetliner::reader::decode::AvroValue::BigDecimal(s) => s,
+            other => panic!("Expected BigDecimal, got {:?}", other),
+        };
+
+        // For negative scale, the string should represent the multiplied value
+        // e.g., unscaled=5, scale=-2 should give "500"
+        let expected_value = unscaled * 10i128.pow((-scale) as u32);
+        let parsed_value: i128 = decimal_str.parse()
+            .expect(&format!("Failed to parse integer string: '{}'", decimal_str));
+
+        prop_assert_eq!(
+            expected_value, parsed_value,
+            "Negative scale value mismatch: unscaled={}, scale={}, expected={}, got string='{}'",
+            unscaled, scale, expected_value, decimal_str
+        );
+    }
+
+    /// Feature: avro-1-12-support, Property 4: Big-Decimal Edge Cases
+    ///
+    /// Edge case big-decimal values should decode correctly.
+    ///
+    /// **Validates: Requirements 8.3, 8.4, 8.5**
+    #[test]
+    fn prop_big_decimal_edge_cases(
+        (unscaled, scale) in arb_big_decimal_edge_cases()
+    ) {
+        // Encode as big-decimal bytes
+        let encoded = encode_big_decimal(unscaled, scale);
+
+        // Decode using jetliner's decoder
+        let mut cursor = &encoded[..];
+        let decoded = decode_big_decimal(&mut cursor)
+            .expect("Failed to decode big-decimal");
+
+        // Extract the string value
+        let decimal_str = match decoded {
+            jetliner::reader::decode::AvroValue::BigDecimal(s) => s,
+            other => panic!("Expected BigDecimal, got {:?}", other),
+        };
+
+        // For zero, just verify we get "0" or equivalent
+        if unscaled == 0 {
+            // Zero should decode to "0" regardless of scale
+            // (The implementation may or may not preserve scale for zero)
+            let parsed: f64 = decimal_str.parse()
+                .expect(&format!("Failed to parse zero string: '{}'", decimal_str));
+            prop_assert!(
+                parsed.abs() < 1e-15,
+                "Zero value should parse to 0, got '{}' = {}",
+                decimal_str, parsed
+            );
+            return Ok(());
+        }
+
+        // For non-zero, verify the value is preserved
+        let (parsed_unscaled, parsed_scale) = parse_decimal_string(&decimal_str)
+            .expect(&format!("Failed to parse decimal string: '{}'", decimal_str));
+
+        let original_value = (unscaled as f64) * 10f64.powi(-scale as i32);
+        let parsed_value = (parsed_unscaled as f64) * 10f64.powi(-parsed_scale as i32);
+
+        let diff = (original_value - parsed_value).abs();
+        let max_val = original_value.abs().max(parsed_value.abs()).max(1e-10);
+        let relative_diff = diff / max_val;
+
+        prop_assert!(
+            relative_diff < 1e-9,
+            "Edge case value mismatch: original={}*10^-{} ({}) vs parsed={}*10^-{} ({}), string='{}'",
+            unscaled, scale, original_value,
+            parsed_unscaled, parsed_scale, parsed_value,
+            decimal_str
+        );
     }
 }

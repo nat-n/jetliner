@@ -952,18 +952,21 @@ mod tests {
 
             let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
 
-            // Read all blocks
+            // Read all blocks and verify order, data, and indices
             let block1 = buffer.next().await.unwrap().unwrap();
             assert_eq!(block1.record_count, 10);
             assert_eq!(&block1.data[..], block1_data);
+            assert_eq!(block1.block_index, 0, "First block should have index 0");
 
             let block2 = buffer.next().await.unwrap().unwrap();
             assert_eq!(block2.record_count, 20);
             assert_eq!(&block2.data[..], block2_data);
+            assert_eq!(block2.block_index, 1, "Second block should have index 1");
 
             let block3 = buffer.next().await.unwrap().unwrap();
             assert_eq!(block3.record_count, 30);
             assert_eq!(&block3.data[..], block3_data);
+            assert_eq!(block3.block_index, 2, "Third block should have index 2");
 
             // EOF
             assert!(buffer.next().await.unwrap().is_none());
@@ -987,29 +990,46 @@ mod tests {
 
             let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
 
-            // Prefill should load up to 3 blocks
+            // Prefill should load exactly 3 blocks (the limit)
             buffer.prefill().await.unwrap();
 
-            assert_eq!(buffer.buffered_blocks(), 3);
+            assert_eq!(
+                buffer.buffered_blocks(),
+                3,
+                "Should buffer exactly max_blocks"
+            );
             assert!(buffer.buffered_bytes() > 0);
 
-            // Drain the buffer
-            for i in 0..3 {
-                let block = buffer.next().await.unwrap().unwrap();
-                assert_eq!(block.record_count, (i + 1) * 10);
-            }
+            // Drain the buffer and verify blocks come out in order
+            let block1 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block1.record_count, 10, "First block should be block1");
 
-            // Should still have more blocks available
-            let block = buffer.next().await.unwrap().unwrap();
-            assert_eq!(block.record_count, 40);
+            let block2 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block2.record_count, 20, "Second block should be block2");
+
+            let block3 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block3.record_count, 30, "Third block should be block3");
+
+            // Buffer should now be empty
+            assert_eq!(buffer.buffered_blocks(), 0);
+
+            // Should still have more blocks available (4 and 5)
+            let block4 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block4.record_count, 40);
+
+            let block5 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block5.record_count, 50);
+
+            // Now EOF
+            assert!(buffer.next().await.unwrap().is_none());
         });
     }
 
     #[test]
     fn test_prefetch_buffer_backpressure_blocks() {
         run_async(async {
-            // Create many blocks
-            let blocks: Vec<_> = (0..10).map(|i| (i * 10, b"data" as &[u8])).collect();
+            // Create 10 blocks with distinct record counts
+            let blocks: Vec<_> = (1..=10).map(|i| (i * 10, b"data" as &[u8])).collect();
             let file_data = create_test_avro_file(&blocks);
             let source = MockSource::new(file_data);
             let reader = BlockReader::new(source).await.unwrap();
@@ -1017,17 +1037,38 @@ mod tests {
 
             let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
 
-            // Prefill should respect max_blocks limit
+            // Prefill should respect max_blocks limit exactly
             buffer.prefill().await.unwrap();
 
-            assert!(buffer.buffered_blocks() <= 2);
+            assert_eq!(
+                buffer.buffered_blocks(),
+                2,
+                "Should buffer exactly 2 blocks (max_blocks limit)"
+            );
+
+            // Verify the buffered blocks are the first two
+            let block1 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(
+                block1.record_count, 10,
+                "First buffered block should be block 1"
+            );
+
+            let block2 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(
+                block2.record_count, 20,
+                "Second buffered block should be block 2"
+            );
+
+            // Can still read remaining blocks
+            let block3 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block3.record_count, 30);
         });
     }
 
     #[test]
     fn test_prefetch_buffer_backpressure_bytes() {
         run_async(async {
-            // Create blocks with large data
+            // Create blocks with 1KB data each
             let large_data = vec![0u8; 1024]; // 1KB per block
             let file_data = create_test_avro_file(&[
                 (10, &large_data),
@@ -1037,16 +1078,39 @@ mod tests {
             ]);
             let source = MockSource::new(file_data);
             let reader = BlockReader::new(source).await.unwrap();
-            let config = BufferConfig::new(10, 2048); // Max 2KB
+            // Max 2KB means at most 2 blocks of 1KB each
+            let config = BufferConfig::new(10, 2048);
 
             let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
 
             // Prefill should respect max_bytes limit
             buffer.prefill().await.unwrap();
 
-            // Should buffer at most 2 blocks (2KB total)
-            assert!(buffer.buffered_blocks() <= 2);
-            assert!(buffer.buffered_bytes() <= 2048);
+            // Should buffer exactly 2 blocks (2KB total, hitting the byte limit)
+            assert_eq!(
+                buffer.buffered_blocks(),
+                2,
+                "Should buffer exactly 2 blocks due to byte limit"
+            );
+            assert!(
+                buffer.buffered_bytes() <= 2048,
+                "Buffered bytes {} should not exceed limit 2048",
+                buffer.buffered_bytes()
+            );
+            assert!(
+                buffer.buffered_bytes() >= 2000,
+                "Should have buffered close to 2KB, got {}",
+                buffer.buffered_bytes()
+            );
+
+            // Verify the blocks are correct
+            let block1 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block1.record_count, 10);
+            assert_eq!(block1.data.len(), 1024);
+
+            let block2 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block2.record_count, 20);
+            assert_eq!(block2.data.len(), 1024);
         });
     }
 
@@ -1081,6 +1145,752 @@ mod tests {
             // Should be able to access header
             let header = buffer.header();
             assert_eq!(header.codec, expected_codec);
+        });
+    }
+
+    // ========================================================================
+    // Skip Mode Error Recovery Tests
+    // ========================================================================
+
+    /// Create an Avro file with a corrupted sync marker at a specific block
+    fn create_avro_with_corrupted_sync(
+        blocks: &[(i64, &[u8])],
+        corrupt_block_idx: usize,
+    ) -> Vec<u8> {
+        let mut file = Vec::new();
+
+        // Magic bytes
+        file.extend_from_slice(&AVRO_MAGIC);
+
+        // Metadata map: 1 entry (schema)
+        file.extend_from_slice(&encode_zigzag(1));
+
+        // Schema entry
+        let schema_key = b"avro.schema";
+        let schema_json = br#""string""#;
+        file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+        file.extend_from_slice(schema_key);
+        file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+        file.extend_from_slice(schema_json);
+
+        // End of map
+        file.push(0x00);
+
+        // Valid sync marker
+        let sync_marker: [u8; 16] = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+            0xDE, 0xF0,
+        ];
+        // Corrupted sync marker (all bits flipped)
+        let corrupted_sync: [u8; 16] = [
+            0x21, 0x52, 0x41, 0x10, 0x35, 0x01, 0x45, 0x41, 0xED, 0xCB, 0xA9, 0x87, 0x65, 0x43,
+            0x21, 0x0F,
+        ];
+
+        file.extend_from_slice(&sync_marker);
+
+        // Add blocks
+        for (i, (record_count, data)) in blocks.iter().enumerate() {
+            let marker = if i == corrupt_block_idx {
+                &corrupted_sync
+            } else {
+                &sync_marker
+            };
+            file.extend_from_slice(&create_test_block(*record_count, data, marker));
+        }
+
+        file
+    }
+
+    /// Create an Avro file where a block has corrupted data (invalid varint)
+    fn create_avro_with_corrupted_block_data(
+        blocks: &[(i64, &[u8])],
+        corrupt_block_idx: usize,
+    ) -> Vec<u8> {
+        let mut file = Vec::new();
+
+        // Magic bytes
+        file.extend_from_slice(&AVRO_MAGIC);
+
+        // Metadata map: 1 entry (schema)
+        file.extend_from_slice(&encode_zigzag(1));
+
+        // Schema entry
+        let schema_key = b"avro.schema";
+        let schema_json = br#""string""#;
+        file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+        file.extend_from_slice(schema_key);
+        file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+        file.extend_from_slice(schema_json);
+
+        // End of map
+        file.push(0x00);
+
+        // Sync marker
+        let sync_marker: [u8; 16] = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+            0xDE, 0xF0,
+        ];
+        file.extend_from_slice(&sync_marker);
+
+        // Add blocks
+        for (i, (record_count, data)) in blocks.iter().enumerate() {
+            if i == corrupt_block_idx {
+                // Create a block with invalid data size (claims more data than exists)
+                let mut block = Vec::new();
+                block.extend_from_slice(&encode_zigzag(*record_count));
+                // Claim a huge data size that doesn't exist
+                block.extend_from_slice(&encode_zigzag(999999));
+                // Only provide a few bytes
+                block.extend_from_slice(b"short");
+                block.extend_from_slice(&sync_marker);
+                file.extend_from_slice(&block);
+            } else {
+                file.extend_from_slice(&create_test_block(*record_count, data, &sync_marker));
+            }
+        }
+
+        file
+    }
+
+    #[test]
+    fn test_skip_mode_corrupted_sync_marker_recovery() {
+        run_async(async {
+            // Create file with 5 blocks, corrupt the sync marker after block 2 (index 2)
+            //
+            // IMPORTANT: The sync marker is validated as part of AvroBlock::parse() BEFORE
+            // the block is returned. So when block N's trailing sync marker is corrupted,
+            // block N's data is NOT returned - the error occurs during parsing of block N.
+            //
+            // Expected behavior:
+            // - Blocks 0, 1 read successfully (valid sync markers)
+            // - Block 2 parse fails (corrupted trailing sync marker)
+            // - Recovery scans and finds next valid sync marker
+            // - Blocks 3, 4 should be recoverable
+            let file_data = create_avro_with_corrupted_sync(
+                &[
+                    (10, b"block1_data"),
+                    (20, b"block2_data"),
+                    (30, b"block3_data"), // This block's trailing sync marker is corrupted
+                    (40, b"block4_data"),
+                    (50, b"block5_data"),
+                ],
+                2, // Corrupt sync marker after block index 2
+            );
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Blocks 1 and 2 should be read (their sync markers are valid)
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 1, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&20),
+                "Should have read block 2, got: {:?}",
+                blocks_read
+            );
+
+            // Block 3 should NOT be read - its trailing sync marker is corrupted,
+            // so AvroBlock::parse() fails before returning the block
+            assert!(
+                !blocks_read.contains(&30),
+                "Block 3 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+
+            // Blocks 4 and 5 should be recovered after scanning
+            assert!(
+                blocks_read.contains(&40),
+                "Should have recovered block 4 after corruption, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&50),
+                "Should have recovered block 5 after corruption, got: {:?}",
+                blocks_read
+            );
+
+            // Verify exact blocks read: 1, 2, 4, 5 (block 3 skipped)
+            assert_eq!(
+                blocks_read,
+                vec![10, 20, 40, 50],
+                "Should read blocks 1, 2, 4, 5 (block 3 skipped due to corrupted sync)"
+            );
+
+            // Should have logged at least one error for the corrupted sync marker
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted sync marker"
+            );
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_corrupted_first_block_sync() {
+        run_async(async {
+            // Corrupt the very first block's trailing sync marker
+            //
+            // IMPORTANT: The sync marker is validated as part of AvroBlock::parse() BEFORE
+            // the block is returned. So block 0's data is NOT returned when its trailing
+            // sync marker is corrupted.
+            //
+            // Expected behavior:
+            // - Block 0 parse fails (corrupted trailing sync marker)
+            // - Recovery scans and finds next valid sync marker
+            // - Blocks 1, 2 should be recovered
+            let file_data = create_avro_with_corrupted_sync(
+                &[
+                    (10, b"block1_data"), // This block's trailing sync marker is corrupted
+                    (20, b"block2_data"),
+                    (30, b"block3_data"),
+                ],
+                0,
+            );
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Block 1 should NOT be read - its trailing sync marker is corrupted
+            assert!(
+                !blocks_read.contains(&10),
+                "Block 1 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+
+            // Blocks 2 and 3 should be recovered after scanning
+            assert!(
+                blocks_read.contains(&20),
+                "Should have recovered block 2, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&30),
+                "Should have recovered block 3, got: {:?}",
+                blocks_read
+            );
+
+            // Verify exact blocks read: 2, 3 (block 1 skipped)
+            assert_eq!(
+                blocks_read,
+                vec![20, 30],
+                "Should read blocks 2, 3 (block 1 skipped due to corrupted sync)"
+            );
+
+            // Should have logged an error for the corrupted sync marker
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted sync marker"
+            );
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_corrupted_last_block_sync() {
+        run_async(async {
+            // Corrupt the last block's trailing sync marker
+            //
+            // IMPORTANT: The sync marker is validated as part of AvroBlock::parse() BEFORE
+            // the block is returned. So block 2's data is NOT returned when its trailing
+            // sync marker is corrupted.
+            //
+            // Expected behavior:
+            // - Blocks 0, 1 read successfully (valid sync markers)
+            // - Block 2 parse fails (corrupted trailing sync marker)
+            // - Recovery scans but finds no more valid sync markers (EOF)
+            // - Only blocks 0, 1 are returned
+            let file_data = create_avro_with_corrupted_sync(
+                &[
+                    (10, b"block1_data"),
+                    (20, b"block2_data"),
+                    (30, b"block3_data"), // Last block, trailing sync marker corrupted
+                ],
+                2,
+            );
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Blocks 1 and 2 should be read (their sync markers are valid)
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 1, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&20),
+                "Should have read block 2, got: {:?}",
+                blocks_read
+            );
+
+            // Block 3 should NOT be read - its trailing sync marker is corrupted
+            assert!(
+                !blocks_read.contains(&30),
+                "Block 3 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+
+            // Verify exact blocks read: 1, 2 (block 3 skipped)
+            assert_eq!(
+                blocks_read,
+                vec![10, 20],
+                "Should read blocks 1, 2 (block 3 skipped due to corrupted sync)"
+            );
+
+            assert!(buffer.is_finished());
+
+            // Should have logged an error for the corrupted sync marker
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted final sync marker"
+            );
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_multiple_consecutive_corrupted_blocks() {
+        run_async(async {
+            // Create file where multiple consecutive blocks have corrupted sync markers
+            // This is a worst-case scenario testing recovery across multiple corruptions
+            //
+            // IMPORTANT: The sync marker is validated as part of AvroBlock::parse() BEFORE
+            // the block is returned. So blocks with corrupted trailing sync markers are
+            // NOT returned.
+            //
+            // File structure:
+            // - Block 1: valid sync marker -> returned
+            // - Block 2: corrupted sync marker -> NOT returned, triggers recovery
+            // - Block 3: corrupted sync marker -> NOT returned (if recovery lands here)
+            // - Block 4: valid sync marker -> returned after recovery
+            // - Block 5: valid sync marker -> returned
+            let mut file = Vec::new();
+
+            // Magic bytes
+            file.extend_from_slice(&AVRO_MAGIC);
+
+            // Metadata
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            let bad_sync: [u8; 16] = [0xFF; 16];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Block 1: valid sync marker
+            file.extend_from_slice(&create_test_block(10, b"block1", &sync_marker));
+            // Block 2: corrupted sync marker
+            file.extend_from_slice(&create_test_block(20, b"block2", &bad_sync));
+            // Block 3: corrupted sync marker
+            file.extend_from_slice(&create_test_block(30, b"block3", &bad_sync));
+            // Block 4: valid sync marker (recovery target)
+            file.extend_from_slice(&create_test_block(40, b"block4", &sync_marker));
+            // Block 5: valid sync marker
+            file.extend_from_slice(&create_test_block(50, b"block5", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Block 1 should be read (has valid sync marker)
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 1 (valid sync), got: {:?}",
+                blocks_read
+            );
+
+            // Block 2 should NOT be read - its trailing sync marker is corrupted
+            assert!(
+                !blocks_read.contains(&20),
+                "Block 2 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+
+            // Block 3 should NOT be read - its trailing sync marker is corrupted
+            assert!(
+                !blocks_read.contains(&30),
+                "Block 3 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+
+            // Block 5 should be recovered (valid sync marker)
+            assert!(
+                blocks_read.contains(&50),
+                "Should have recovered block 5, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged errors for the corrupted sync markers
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged errors for corrupted sync markers"
+            );
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_block_parse_error_recovery() {
+        run_async(async {
+            // Create file with a block that has invalid data size.
+            // Block 2 (index 1) claims compressed_size=999999 but only has 5 bytes.
+            // The reader should:
+            // 1. Successfully read block 1
+            // 2. Fail to parse block 2 (EOF trying to read 999999 bytes)
+            // 3. Scan for next sync marker and recover
+            // 4. Successfully read blocks 3 and 4
+            let file_data = create_avro_with_corrupted_block_data(
+                &[
+                    (10, b"block1_data"),
+                    (20, b"block2_data"), // This block has corrupted data size
+                    (30, b"block3_data"),
+                    (40, b"block4_data"),
+                ],
+                1,
+            );
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Block 1 should definitely be read (before corruption)
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 1 before corruption, got: {:?}",
+                blocks_read
+            );
+
+            // Blocks 3 and 4 should be recovered (after corruption)
+            assert!(
+                blocks_read.contains(&30),
+                "Should have recovered block 3 after corruption, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&40),
+                "Should have recovered block 4 after corruption, got: {:?}",
+                blocks_read
+            );
+
+            // Block 2 should NOT be in the list (it was corrupted)
+            assert!(
+                !blocks_read.contains(&20),
+                "Corrupted block 2 should be skipped, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged an error for the corrupted block
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted block"
+            );
+
+            // Verify we read exactly 3 blocks (1, 3, 4)
+            assert_eq!(
+                blocks_read.len(),
+                3,
+                "Should have read exactly 3 blocks (skipping corrupted block 2), got: {:?}",
+                blocks_read
+            );
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_error_accumulation() {
+        run_async(async {
+            // Create file with a corrupted sync marker to test error accumulation
+            let file_data = create_avro_with_corrupted_sync(
+                &[
+                    (10, b"block1"),
+                    (20, b"block2"), // trailing sync marker corrupted
+                    (30, b"block3"),
+                    (40, b"block4"),
+                ],
+                1,
+            );
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            // Drain all blocks
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Should have read blocks
+            assert!(!blocks_read.is_empty(), "Should have read some blocks");
+
+            // Check error properties
+            let errors = buffer.errors();
+            assert!(
+                !errors.is_empty(),
+                "Should have accumulated at least one error"
+            );
+
+            for error in errors {
+                // Each error should have meaningful information
+                assert!(
+                    !error.message.is_empty(),
+                    "Error should have a non-empty message"
+                );
+                // Block index should be set
+                assert!(
+                    error.block_index < 100,
+                    "Block index should be reasonable, got {}",
+                    error.block_index
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn test_strict_mode_fails_on_corrupted_sync() {
+        run_async(async {
+            // Test that strict mode fails immediately on corrupted sync marker
+            //
+            // IMPORTANT: The sync marker is validated as part of AvroBlock::parse() BEFORE
+            // the block is returned. So when block 1's trailing sync marker is corrupted,
+            // the error occurs when trying to read block 1 (not block 2).
+            let file_data = create_avro_with_corrupted_sync(
+                &[
+                    (10, b"block1"),
+                    (20, b"block2"), // trailing sync marker corrupted
+                    (30, b"block3"),
+                ],
+                1,
+            );
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
+
+            // First block should succeed completely (its sync marker is valid)
+            let block1 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(
+                block1.record_count, 10,
+                "First block should have record_count 10"
+            );
+            assert_eq!(&block1.data[..], b"block1", "First block data should match");
+            assert_eq!(block1.block_index, 0);
+
+            // Second block read should fail - its trailing sync marker is corrupted
+            // The error occurs during AvroBlock::parse() when validating the sync marker
+            let result = buffer.next().await;
+            assert!(
+                result.is_err(),
+                "Strict mode should fail on corrupted sync marker when reading block 2"
+            );
+
+            // Verify the error is about sync marker
+            let err = result.unwrap_err();
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains("sync") || err_str.contains("marker"),
+                "Error should mention sync marker, got: {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_empty_file() {
+        run_async(async {
+            let file_data = create_test_avro_file(&[]);
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            // Should return None immediately, no errors
+            let result = buffer.next().await.unwrap();
+            assert!(result.is_none());
+            assert!(buffer.errors().is_empty());
+            assert!(buffer.is_finished());
+        });
+    }
+
+    #[test]
+    fn test_skip_mode_all_blocks_corrupted() {
+        run_async(async {
+            // Create file where ALL blocks have corrupted sync markers
+            // This tests the worst case where recovery keeps failing
+            //
+            // IMPORTANT: The sync marker is validated as part of AvroBlock::parse() BEFORE
+            // the block is returned. So NO blocks are returned when all have corrupted
+            // trailing sync markers.
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            let bad_sync: [u8; 16] = [0xFF; 16];
+
+            file.extend_from_slice(&sync_marker);
+
+            // All blocks have bad sync markers
+            file.extend_from_slice(&create_test_block(10, b"block1", &bad_sync));
+            file.extend_from_slice(&create_test_block(20, b"block2", &bad_sync));
+            file.extend_from_slice(&create_test_block(30, b"block3", &bad_sync));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            // Should eventually finish without infinite loop
+            let mut blocks_read = Vec::new();
+            let mut iterations = 0;
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+                iterations += 1;
+                if iterations > 100 {
+                    panic!("Infinite loop detected - recovery not terminating");
+                }
+            }
+
+            assert!(buffer.is_finished(), "Should reach finished state");
+
+            // NO blocks should be read - all have corrupted trailing sync markers
+            // The sync marker is validated BEFORE the block is returned
+            assert!(
+                blocks_read.is_empty(),
+                "No blocks should be read when all have corrupted sync markers, got: {:?}",
+                blocks_read
+            );
+
+            // Should have accumulated errors from the corrupted sync markers
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged errors for corrupted sync markers"
+            );
+        });
+    }
+
+    #[test]
+    fn test_buffer_bytes_tracking_accuracy() {
+        run_async(async {
+            let block1_data = vec![0u8; 1000]; // 1KB
+            let block2_data = vec![0u8; 2000]; // 2KB
+            let file_data = create_test_avro_file(&[(10, &block1_data), (20, &block2_data)]);
+            let source = MockSource::new(file_data);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::new(10, 10 * 1024 * 1024);
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
+
+            // Initially no bytes buffered
+            assert_eq!(
+                buffer.buffered_bytes(),
+                0,
+                "Should start with 0 bytes buffered"
+            );
+            assert_eq!(
+                buffer.buffered_blocks(),
+                0,
+                "Should start with 0 blocks buffered"
+            );
+
+            // Prefill both blocks
+            buffer.prefill().await.unwrap();
+
+            // Should have buffered exactly 3KB (1KB + 2KB)
+            let buffered_after_prefill = buffer.buffered_bytes();
+            assert_eq!(
+                buffered_after_prefill, 3000,
+                "Should have buffered exactly 3000 bytes (1KB + 2KB)"
+            );
+            assert_eq!(buffer.buffered_blocks(), 2, "Should have buffered 2 blocks");
+
+            // Consume first block (1KB)
+            let block1 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block1.data.len(), 1000, "Block 1 should be 1000 bytes");
+            assert_eq!(block1.record_count, 10);
+
+            // Should now have 2KB buffered
+            assert_eq!(
+                buffer.buffered_bytes(),
+                2000,
+                "Should have 2000 bytes after consuming 1KB block"
+            );
+            assert_eq!(buffer.buffered_blocks(), 1, "Should have 1 block buffered");
+
+            // Consume second block (2KB)
+            let block2 = buffer.next().await.unwrap().unwrap();
+            assert_eq!(block2.data.len(), 2000, "Block 2 should be 2000 bytes");
+            assert_eq!(block2.record_count, 20);
+
+            // Should now have 0 bytes buffered
+            assert_eq!(
+                buffer.buffered_bytes(),
+                0,
+                "Should have 0 bytes after consuming all blocks"
+            );
+            assert_eq!(buffer.buffered_blocks(), 0, "Should have 0 blocks buffered");
+
+            // EOF
+            assert!(buffer.next().await.unwrap().is_none());
         });
     }
 }

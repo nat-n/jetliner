@@ -309,6 +309,7 @@ impl AvroReaderCore {
         storage_options = None,
         read_chunk_size = None
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         path: String,
         batch_size: usize,

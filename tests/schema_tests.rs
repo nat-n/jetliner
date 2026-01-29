@@ -424,12 +424,27 @@ fn test_parse_duration_logical_type() {
 }
 
 #[test]
-fn test_parse_unknown_logical_type_returns_base() {
-    // Unknown logical types should be ignored per Avro spec
+fn test_parse_unknown_logical_type_preserves_name() {
+    // Unknown logical types are preserved as LogicalType::Unknown per Avro spec.
+    // The data is treated as the base type, but the logical type name is preserved
+    // for schema inspection purposes.
     let json = r#"{"type": "string", "logicalType": "unknown-type"}"#;
 
     let schema = parse_schema(json).unwrap();
-    assert_eq!(schema, AvroSchema::String);
+
+    // Should be a Logical type wrapping the base type
+    match &schema {
+        AvroSchema::Logical(lt) => {
+            assert_eq!(*lt.base, AvroSchema::String);
+            assert_eq!(
+                lt.logical_type,
+                LogicalTypeName::Unknown("unknown-type".to_string())
+            );
+            assert!(lt.logical_type.is_unknown());
+            assert_eq!(lt.logical_type.name(), "unknown-type");
+        }
+        _ => panic!("Expected Logical schema, got {:?}", schema),
+    }
 }
 
 #[test]
@@ -1366,4 +1381,221 @@ fn test_strict_mode_complex_schema() {
         result_strict.is_ok(),
         "Complex valid schema should work in strict mode"
     );
+}
+
+// ============================================================================
+// Schema Validation Edge Case Tests (Avro 1.12.0 Support)
+// ============================================================================
+
+/// Test that namespace with empty components (e.g., "a..b") is rejected in strict mode.
+///
+/// Validates Requirement 6.1: WHEN a namespace contains empty components,
+/// THE Schema_Parser in strict mode SHALL reject the schema with a clear error.
+///
+/// Per Avro spec: A namespace is a dot-separated sequence of names.
+/// The null namespace may not be used in a dot-separated sequence of names.
+/// Grammar: <empty> | <name>[(<dot><name>)*]
+#[test]
+fn test_empty_namespace_component_rejected_strict() {
+    let json = r#"{
+        "type": "record",
+        "name": "TestRecord",
+        "namespace": "a..b",
+        "fields": [
+            {"name": "id", "type": "int"}
+        ]
+    }"#;
+
+    let result = parse_schema_with_options(json, true);
+    assert!(
+        result.is_err(),
+        "Namespace with empty component 'a..b' should be rejected in strict mode"
+    );
+
+    let error_msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        error_msg.contains("namespace") || error_msg.contains("empty"),
+        "Error message should mention namespace/empty issue: {}",
+        error_msg
+    );
+}
+
+/// Test that namespace with empty components may be accepted in permissive mode.
+#[test]
+fn test_empty_namespace_component_permissive() {
+    let json = r#"{
+        "type": "record",
+        "name": "TestRecord",
+        "namespace": "a..b",
+        "fields": [
+            {"name": "id", "type": "int"}
+        ]
+    }"#;
+
+    // Permissive mode may accept invalid namespaces
+    let result = parse_schema_with_options(json, false);
+    // Either accepted or rejected is fine in permissive mode
+    // The key is that strict mode rejects it
+    let _ = result;
+}
+
+/// Test that enum symbol starting with digit is rejected in strict mode.
+///
+/// Validates Requirement 6.2: WHEN an enum symbol starts with a digit,
+/// THE Schema_Parser in strict mode SHALL reject the schema.
+#[test]
+fn test_invalid_enum_symbol_rejected_strict() {
+    let json = r#"{
+        "type": "enum",
+        "name": "InvalidEnum",
+        "symbols": ["VALID", "1invalid", "ALSO_VALID"]
+    }"#;
+
+    let result = parse_schema_with_options(json, true);
+    assert!(
+        result.is_err(),
+        "Enum symbol starting with digit '1invalid' should be rejected in strict mode"
+    );
+
+    let error_msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        error_msg.contains("symbol") || error_msg.contains("name") || error_msg.contains("invalid"),
+        "Error message should mention symbol/name issue: {}",
+        error_msg
+    );
+}
+
+/// Test that enum symbol starting with digit may be accepted in permissive mode.
+#[test]
+fn test_invalid_enum_symbol_permissive() {
+    let json = r#"{
+        "type": "enum",
+        "name": "InvalidEnum",
+        "symbols": ["VALID", "1invalid", "ALSO_VALID"]
+    }"#;
+
+    // Permissive mode may accept invalid symbols
+    let result = parse_schema_with_options(json, false);
+    // Either accepted or rejected is fine in permissive mode
+    let _ = result;
+}
+
+/// Test that valid names and namespaces are accepted in both modes.
+///
+/// Validates Requirement 6.3: WHEN a schema contains valid names and namespaces,
+/// THE Schema_Parser SHALL accept the schema in both strict and permissive modes.
+#[test]
+fn test_valid_names_accepted_both_modes() {
+    // Valid record with proper namespace
+    let record_json = r#"{
+        "type": "record",
+        "name": "ValidRecord",
+        "namespace": "com.example.valid",
+        "fields": [
+            {"name": "valid_field", "type": "int"}
+        ]
+    }"#;
+
+    let result_permissive = parse_schema_with_options(record_json, false);
+    assert!(
+        result_permissive.is_ok(),
+        "Valid record should be accepted in permissive mode: {:?}",
+        result_permissive.err()
+    );
+
+    let result_strict = parse_schema_with_options(record_json, true);
+    assert!(
+        result_strict.is_ok(),
+        "Valid record should be accepted in strict mode: {:?}",
+        result_strict.err()
+    );
+
+    // Valid enum with proper symbols
+    let enum_json = r#"{
+        "type": "enum",
+        "name": "ValidEnum",
+        "symbols": ["RED", "GREEN", "BLUE", "_UNDERSCORE", "CamelCase"]
+    }"#;
+
+    let result_permissive = parse_schema_with_options(enum_json, false);
+    assert!(
+        result_permissive.is_ok(),
+        "Valid enum should be accepted in permissive mode: {:?}",
+        result_permissive.err()
+    );
+
+    let result_strict = parse_schema_with_options(enum_json, true);
+    assert!(
+        result_strict.is_ok(),
+        "Valid enum should be accepted in strict mode: {:?}",
+        result_strict.err()
+    );
+}
+
+/// Test various valid namespace formats.
+#[test]
+fn test_valid_namespace_formats() {
+    let test_cases = vec![
+        ("simple", "Simple namespace"),
+        ("com.example", "Two-part namespace"),
+        ("com.example.sub", "Three-part namespace"),
+        ("_underscore.start", "Namespace starting with underscore"),
+        ("a.b.c.d.e", "Deep namespace"),
+    ];
+
+    for (namespace, description) in test_cases {
+        let json = format!(
+            r#"{{
+                "type": "record",
+                "name": "TestRecord",
+                "namespace": "{}",
+                "fields": [{{"name": "id", "type": "int"}}]
+            }}"#,
+            namespace
+        );
+
+        let result_strict = parse_schema_with_options(&json, true);
+        assert!(
+            result_strict.is_ok(),
+            "{} '{}' should be accepted in strict mode: {:?}",
+            description,
+            namespace,
+            result_strict.err()
+        );
+    }
+}
+
+/// Test various valid enum symbol formats.
+#[test]
+fn test_valid_enum_symbol_formats() {
+    let test_cases = vec![
+        (vec!["A"], "Single character symbol"),
+        (vec!["UPPERCASE"], "Uppercase symbol"),
+        (vec!["lowercase"], "Lowercase symbol"),
+        (vec!["CamelCase"], "CamelCase symbol"),
+        (vec!["_underscore"], "Symbol starting with underscore"),
+        (vec!["with_underscore"], "Symbol with underscore"),
+        (vec!["A1", "B2", "C3"], "Symbols with digits (not at start)"),
+    ];
+
+    for (symbols, description) in test_cases {
+        let symbols_json: Vec<String> = symbols.iter().map(|s| format!("\"{}\"", s)).collect();
+        let json = format!(
+            r#"{{
+                "type": "enum",
+                "name": "TestEnum",
+                "symbols": [{}]
+            }}"#,
+            symbols_json.join(", ")
+        );
+
+        let result_strict = parse_schema_with_options(&json, true);
+        assert!(
+            result_strict.is_ok(),
+            "{} {:?} should be accepted in strict mode: {:?}",
+            description,
+            symbols,
+            result_strict.err()
+        );
+    }
 }

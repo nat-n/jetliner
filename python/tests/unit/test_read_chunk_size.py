@@ -11,7 +11,6 @@ Requirements tested:
 """
 
 import polars as pl
-import pytest
 
 import jetliner
 

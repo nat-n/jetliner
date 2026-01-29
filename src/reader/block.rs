@@ -536,10 +536,12 @@ impl<S: StreamSource> BlockReader<S> {
                 Ok(Some(block))
             }
             Err(ReaderError::Parse { message, .. })
-                if message.starts_with("Not enough bytes for block data") =>
+                if message.starts_with("Not enough bytes for block data")
+                    || message.contains("Unexpected end of file") =>
             {
-                // Block is larger than current buffer - need to read more
-                // This handles blocks larger than chunk_size
+                // Block is larger than current buffer OR buffer is too small to parse header
+                // Need to read more data - this handles blocks larger than chunk_size
+                // and edge cases where chunk_size is very small
                 self.read_large_block_buffered().await
             }
             Err(e) => Err(e),
@@ -608,9 +610,32 @@ impl<S: StreamSource> BlockReader<S> {
 
     /// Handle reading a block that's larger than the current buffer.
     ///
-    /// This is the slow path - only called when a block exceeds the buffer size.
+    /// This is the slow path - only called when a block exceeds the buffer size
+    /// or when the buffer is too small to even parse the block header.
     /// It reads exactly the bytes needed for the block.
     async fn read_large_block_buffered(&mut self) -> Result<Option<AvroBlock>, ReaderError> {
+        // First, ensure we have enough data to parse the header varints.
+        // Varints can be up to 10 bytes each, so we need at least 20 bytes for the header.
+        // If we don't have enough, read more data first.
+        const MIN_HEADER_BYTES: usize = 20; // 2 varints * max 10 bytes each
+
+        if self.read_buffer.len() < MIN_HEADER_BYTES {
+            let buffer_end_offset = self.buffer_file_offset + self.read_buffer.len() as u64;
+            if buffer_end_offset < self.file_size {
+                let remaining_in_file = self.file_size - buffer_end_offset;
+                let read_size =
+                    std::cmp::min(remaining_in_file as usize, self.buffer_config.chunk_size);
+                let new_data = self.source.read_range(buffer_end_offset, read_size).await?;
+
+                if !new_data.is_empty() {
+                    let mut combined = Vec::with_capacity(self.read_buffer.len() + new_data.len());
+                    combined.extend_from_slice(&self.read_buffer);
+                    combined.extend_from_slice(&new_data);
+                    self.read_buffer = Bytes::from(combined);
+                }
+            }
+        }
+
         // Parse just the header to get the required size
         let mut cursor = &self.read_buffer[..];
         let mut offset = 0u64;
