@@ -428,6 +428,62 @@ pub fn decode_enum(data: &mut &[u8], schema: &EnumSchema) -> Result<(i32, String
     Ok((index, symbol))
 }
 
+/// Decode an enum value with schema resolution.
+///
+/// This handles the case where the writer schema has symbols not present in
+/// the reader schema. Per the Avro spec, if the reader has a default symbol,
+/// unknown writer symbols are resolved to that default.
+///
+/// # Arguments
+/// * `data` - The input byte slice (cursor is advanced)
+/// * `writer_schema` - The enum schema used by the writer
+/// * `reader_schema` - The enum schema used by the reader
+///
+/// # Returns
+/// A tuple of (reader_index, symbol_name) where reader_index is the index
+/// in the reader's symbol list.
+#[inline]
+pub fn decode_enum_with_resolution(
+    data: &mut &[u8],
+    writer_schema: &EnumSchema,
+    reader_schema: &EnumSchema,
+) -> Result<(i32, String), DecodeError> {
+    let writer_index = decode_int(data)?;
+
+    if writer_index < 0 || writer_index as usize >= writer_schema.symbols.len() {
+        return Err(DecodeError::InvalidData(format!(
+            "Enum index {} out of range for writer enum '{}' with {} symbols",
+            writer_index,
+            writer_schema.name,
+            writer_schema.symbols.len()
+        )));
+    }
+
+    let writer_symbol = &writer_schema.symbols[writer_index as usize];
+
+    // Try to find the symbol in the reader schema
+    if let Some(reader_index) = reader_schema.symbol_index(writer_symbol) {
+        return Ok((reader_index as i32, writer_symbol.clone()));
+    }
+
+    // Symbol not in reader - use default if available
+    match &reader_schema.default {
+        Some(default_symbol) => {
+            let default_index = reader_schema.symbol_index(default_symbol).ok_or_else(|| {
+                DecodeError::InvalidData(format!(
+                    "Enum default symbol '{}' not found in reader enum '{}' symbols",
+                    default_symbol, reader_schema.name
+                ))
+            })?;
+            Ok((default_index as i32, default_symbol.clone()))
+        }
+        None => Err(DecodeError::InvalidData(format!(
+            "Enum symbol '{}' from writer not found in reader enum '{}' and no default specified",
+            writer_symbol, reader_schema.name
+        ))),
+    }
+}
+
 /// Decode an enum value, returning just the index.
 ///
 /// This is useful when you only need the index and want to avoid
@@ -2149,6 +2205,174 @@ mod tests {
         let data: &[u8] = &[0x04];
         let mut cursor = data;
         assert_eq!(decode_enum_index(&mut cursor, 5).unwrap(), 2);
+    }
+
+    // ========================================================================
+    // Enum schema resolution tests
+    // ========================================================================
+
+    #[test]
+    fn test_decode_enum_with_resolution_same_symbols() {
+        use crate::schema::EnumSchema;
+
+        let writer = EnumSchema::new(
+            "Color",
+            vec!["RED".to_string(), "GREEN".to_string(), "BLUE".to_string()],
+        );
+        let reader = EnumSchema::new(
+            "Color",
+            vec!["RED".to_string(), "GREEN".to_string(), "BLUE".to_string()],
+        );
+
+        // Index 1 -> GREEN (zigzag(1) = 2)
+        let data: &[u8] = &[0x02];
+        let mut cursor = data;
+        let (index, symbol) = decode_enum_with_resolution(&mut cursor, &writer, &reader).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(symbol, "GREEN");
+    }
+
+    #[test]
+    fn test_decode_enum_with_resolution_reordered_symbols() {
+        use crate::schema::EnumSchema;
+
+        // Writer has symbols in different order than reader
+        let writer = EnumSchema::new(
+            "Color",
+            vec!["BLUE".to_string(), "GREEN".to_string(), "RED".to_string()],
+        );
+        let reader = EnumSchema::new(
+            "Color",
+            vec!["RED".to_string(), "GREEN".to_string(), "BLUE".to_string()],
+        );
+
+        // Writer index 0 -> BLUE, which is reader index 2
+        let data: &[u8] = &[0x00];
+        let mut cursor = data;
+        let (index, symbol) = decode_enum_with_resolution(&mut cursor, &writer, &reader).unwrap();
+        assert_eq!(index, 2); // Reader index for BLUE
+        assert_eq!(symbol, "BLUE");
+
+        // Writer index 2 -> RED, which is reader index 0
+        let data: &[u8] = &[0x04]; // zigzag(2) = 4
+        let mut cursor = data;
+        let (index, symbol) = decode_enum_with_resolution(&mut cursor, &writer, &reader).unwrap();
+        assert_eq!(index, 0); // Reader index for RED
+        assert_eq!(symbol, "RED");
+    }
+
+    #[test]
+    fn test_decode_enum_with_resolution_unknown_symbol_with_default() {
+        use crate::schema::EnumSchema;
+
+        // Writer has extra symbol not in reader
+        let writer = EnumSchema::new(
+            "Color",
+            vec![
+                "RED".to_string(),
+                "GREEN".to_string(),
+                "BLUE".to_string(),
+                "YELLOW".to_string(), // Not in reader
+            ],
+        );
+        let mut reader = EnumSchema::new(
+            "Color",
+            vec!["RED".to_string(), "GREEN".to_string(), "BLUE".to_string()],
+        );
+        reader.default = Some("RED".to_string()); // Default to RED
+
+        // Writer index 3 -> YELLOW, should resolve to default RED (reader index 0)
+        let data: &[u8] = &[0x06]; // zigzag(3) = 6
+        let mut cursor = data;
+        let (index, symbol) = decode_enum_with_resolution(&mut cursor, &writer, &reader).unwrap();
+        assert_eq!(index, 0); // Reader index for RED (default)
+        assert_eq!(symbol, "RED");
+    }
+
+    #[test]
+    fn test_decode_enum_with_resolution_unknown_symbol_no_default() {
+        use crate::schema::EnumSchema;
+
+        // Writer has extra symbol not in reader, and reader has no default
+        let writer = EnumSchema::new(
+            "Color",
+            vec![
+                "RED".to_string(),
+                "GREEN".to_string(),
+                "BLUE".to_string(),
+                "YELLOW".to_string(), // Not in reader
+            ],
+        );
+        let reader = EnumSchema::new(
+            "Color",
+            vec!["RED".to_string(), "GREEN".to_string(), "BLUE".to_string()],
+        );
+        // No default set
+
+        // Writer index 3 -> YELLOW, should error
+        let data: &[u8] = &[0x06]; // zigzag(3) = 6
+        let mut cursor = data;
+        let result = decode_enum_with_resolution(&mut cursor, &writer, &reader);
+        assert!(matches!(result, Err(DecodeError::InvalidData(_))));
+        if let Err(DecodeError::InvalidData(msg)) = result {
+            assert!(msg.contains("YELLOW"));
+            assert!(msg.contains("no default"));
+        }
+    }
+
+    #[test]
+    fn test_decode_enum_with_resolution_writer_index_out_of_range() {
+        use crate::schema::EnumSchema;
+
+        let writer = EnumSchema::new("Color", vec!["RED".to_string(), "GREEN".to_string()]);
+        let reader = EnumSchema::new("Color", vec!["RED".to_string(), "GREEN".to_string()]);
+
+        // Index 5 is out of range for writer (zigzag(5) = 10)
+        let data: &[u8] = &[0x0a];
+        let mut cursor = data;
+        let result = decode_enum_with_resolution(&mut cursor, &writer, &reader);
+        assert!(matches!(result, Err(DecodeError::InvalidData(_))));
+    }
+
+    #[test]
+    fn test_decode_enum_with_resolution_reader_subset() {
+        use crate::schema::EnumSchema;
+
+        // Reader has fewer symbols than writer (common evolution scenario)
+        let writer = EnumSchema::new(
+            "Status",
+            vec![
+                "PENDING".to_string(),
+                "ACTIVE".to_string(),
+                "COMPLETED".to_string(),
+                "CANCELLED".to_string(),
+                "ARCHIVED".to_string(), // New status not in old reader
+            ],
+        );
+        let mut reader = EnumSchema::new(
+            "Status",
+            vec![
+                "PENDING".to_string(),
+                "ACTIVE".to_string(),
+                "COMPLETED".to_string(),
+                "CANCELLED".to_string(),
+            ],
+        );
+        reader.default = Some("PENDING".to_string());
+
+        // Known symbol works normally
+        let data: &[u8] = &[0x02]; // zigzag(1) = 2 -> ACTIVE
+        let mut cursor = data;
+        let (index, symbol) = decode_enum_with_resolution(&mut cursor, &writer, &reader).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(symbol, "ACTIVE");
+
+        // Unknown symbol (ARCHIVED) resolves to default
+        let data: &[u8] = &[0x08]; // zigzag(4) = 8 -> ARCHIVED
+        let mut cursor = data;
+        let (index, symbol) = decode_enum_with_resolution(&mut cursor, &writer, &reader).unwrap();
+        assert_eq!(index, 0); // PENDING is at index 0
+        assert_eq!(symbol, "PENDING");
     }
 
     // ========================================================================

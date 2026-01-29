@@ -16,6 +16,7 @@ Jetliner is designed for data pipelines where Avro files live on S3 or local dis
 
 ## Features
 
+- **Avro Object Container Files** — Reads self-contained `.avro` files with embedded schemas. Does not support single-object encoding (schema registry) or bare Avro encoding
 - **High-performance streaming** — Supports block-by-block processing with minimal memory footprint, ideal for large files
 - **Query optimization** — Projection pushdown (select columns) and predicate pushdown (filter rows) at the source via Polars LazyFrames
 - **S3 and local file support** — Read Avro files from Amazon S3 or local disk with the same API
@@ -180,23 +181,20 @@ Feature flags control codec support: `snappy`, `deflate`, `zstd`, `bzip2`, `xz`.
 
 ### Read-Only
 
-Jetliner is a read-only library for Avro Object Container Files (`.avro`). It does not support:
-- Writing Avro files
-- Reading standalone schema files (`.avsc`) — schemas are extracted from the embedded header in `.avro` files
+Jetliner is a read-only library. It does not support writing Avro files.
+
+### Avro Object Container Files Only
+
+Jetliner reads **Avro Object Container Files** (`.avro`) — self-contained files where the schema is embedded in the file header. It does not support:
+- **Single-object encoding** — Used with schema registries (e.g., Confluent Schema Registry, Kafka). These encode objects with a schema fingerprint that requires external lookup.
+- **Bare Avro encoding** — Raw Avro binary without any schema information.
+- **Standalone schema files** (`.avsc`) — Schema JSON files are not read directly; schemas are extracted from `.avro` file headers.
 
 ### Recursive Types
 
 Avro supports recursive types (e.g., linked lists, trees) where a record can contain references to itself. Since Arrow and Polars don't natively support recursive data structures, Jetliner serializes recursive fields to JSON strings. This preserves data integrity while maintaining compatibility with the Polars DataFrame model.
 
 Example: A binary tree node with `left` and `right` children will have those fields serialized as JSON strings that can be parsed if needed after reading.
-
-### Nullable Enums
-
-Avro enums wrapped in a union with null (e.g., `["null", {"type": "enum", ...}]`) are not yet supported. This triggers a "not implemented" panic in polars-core. Non-nullable enums work correctly and are mapped to Polars `Enum` type with proper categories.
-
-### Fixed Type
-
-Avro `fixed` type (fixed-size binary) causes a pyo3-polars panic during schema conversion. This is a known upstream limitation.
 
 ### Complex Top-Level Schemas
 

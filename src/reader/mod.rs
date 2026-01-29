@@ -27,6 +27,7 @@ pub use decode::{
     decode_double,
     decode_enum,
     decode_enum_index,
+    decode_enum_with_resolution,
     decode_fixed,
     decode_fixed_ref,
     decode_float,

@@ -1184,4 +1184,162 @@ mod tests {
         // Cursor should be at end (extra field was skipped)
         assert!(cursor.is_empty());
     }
+
+    // ========================================================================
+    // Enum schema evolution tests
+    // ========================================================================
+
+    #[test]
+    fn test_json_to_avro_enum_default() {
+        // Test that json_to_avro_value correctly handles enum defaults
+        use crate::schema::EnumSchema;
+
+        let mut enum_schema =
+            EnumSchema::new("Status", vec!["ACTIVE".to_string(), "INACTIVE".to_string()]);
+        enum_schema.default = Some("ACTIVE".to_string());
+
+        // Valid symbol
+        let result = json_to_avro_value(
+            &serde_json::json!("ACTIVE"),
+            &AvroSchema::Enum(enum_schema.clone()),
+        )
+        .unwrap();
+        assert_eq!(result, AvroValue::Enum(0, "ACTIVE".to_string()));
+
+        // Another valid symbol
+        let result = json_to_avro_value(
+            &serde_json::json!("INACTIVE"),
+            &AvroSchema::Enum(enum_schema.clone()),
+        )
+        .unwrap();
+        assert_eq!(result, AvroValue::Enum(1, "INACTIVE".to_string()));
+
+        // Invalid symbol should error (json_to_avro_value doesn't use default)
+        let result = json_to_avro_value(
+            &serde_json::json!("UNKNOWN"),
+            &AvroSchema::Enum(enum_schema),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_enum_field_default_in_record_resolution() {
+        // Test that a record field with an enum default value works correctly
+        // This tests the case where a reader schema has a new field with an enum
+        // type and a default value.
+        use crate::schema::EnumSchema;
+
+        let enum_schema = EnumSchema::new(
+            "Priority",
+            vec!["LOW".to_string(), "MEDIUM".to_string(), "HIGH".to_string()],
+        );
+
+        let writer = simple_record("Test", vec![FieldSchema::new("id", AvroSchema::Long)]);
+
+        let reader = simple_record(
+            "Test",
+            vec![
+                FieldSchema::new("id", AvroSchema::Long),
+                FieldSchema::new("priority", AvroSchema::Enum(enum_schema))
+                    .with_default(serde_json::json!("MEDIUM")),
+            ],
+        );
+
+        let resolution = ReaderWriterResolution::new(&writer, &reader).unwrap();
+
+        // Encode: id=42 (no priority field in writer)
+        let mut data = Vec::new();
+        data.extend_from_slice(&encode_zigzag(42));
+
+        let mut cursor = data.as_slice();
+        let result = decode_record_with_resolution(&mut cursor, &resolution).unwrap();
+
+        // Result should have default priority
+        match result {
+            AvroValue::Record(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0], ("id".to_string(), AvroValue::Long(42)));
+                // Default enum value should be MEDIUM (index 1)
+                assert_eq!(
+                    fields[1],
+                    (
+                        "priority".to_string(),
+                        AvroValue::Enum(1, "MEDIUM".to_string())
+                    )
+                );
+            }
+            _ => panic!("Expected Record"),
+        }
+    }
+
+    #[test]
+    fn test_enum_schema_evolution_with_default_symbol() {
+        // Test the full enum schema evolution scenario:
+        // Writer has symbols [A, B, C, D], Reader has [A, B, C] with default "A"
+        // When writer writes D (index 3), reader should resolve to A (index 0)
+        use crate::reader::decode::decode_enum_with_resolution;
+        use crate::schema::EnumSchema;
+
+        let writer_enum = EnumSchema::new(
+            "Status",
+            vec![
+                "PENDING".to_string(),
+                "ACTIVE".to_string(),
+                "COMPLETED".to_string(),
+                "ARCHIVED".to_string(), // New status not in reader
+            ],
+        );
+
+        let mut reader_enum = EnumSchema::new(
+            "Status",
+            vec![
+                "PENDING".to_string(),
+                "ACTIVE".to_string(),
+                "COMPLETED".to_string(),
+            ],
+        );
+        reader_enum.default = Some("PENDING".to_string());
+
+        // Test decoding a known symbol (ACTIVE = index 1)
+        let data: &[u8] = &[0x02]; // zigzag(1) = 2
+        let mut cursor = data;
+        let (index, symbol) =
+            decode_enum_with_resolution(&mut cursor, &writer_enum, &reader_enum).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(symbol, "ACTIVE");
+
+        // Test decoding an unknown symbol (ARCHIVED = index 3) -> should use default
+        let data: &[u8] = &[0x06]; // zigzag(3) = 6
+        let mut cursor = data;
+        let (index, symbol) =
+            decode_enum_with_resolution(&mut cursor, &writer_enum, &reader_enum).unwrap();
+        assert_eq!(index, 0); // Default is PENDING at index 0
+        assert_eq!(symbol, "PENDING");
+    }
+
+    #[test]
+    fn test_enum_schema_evolution_no_default_errors() {
+        // Test that enum schema evolution without default properly errors
+        use crate::reader::decode::decode_enum_with_resolution;
+        use crate::schema::EnumSchema;
+
+        let writer_enum = EnumSchema::new(
+            "Status",
+            vec![
+                "PENDING".to_string(),
+                "ACTIVE".to_string(),
+                "ARCHIVED".to_string(), // Not in reader
+            ],
+        );
+
+        let reader_enum =
+            EnumSchema::new("Status", vec!["PENDING".to_string(), "ACTIVE".to_string()]);
+        // No default set
+
+        // Decoding ARCHIVED (index 2) should error
+        let data: &[u8] = &[0x04]; // zigzag(2) = 4
+        let mut cursor = data;
+        let result = decode_enum_with_resolution(&mut cursor, &writer_enum, &reader_enum);
+        assert!(result.is_err());
+    }
 }
