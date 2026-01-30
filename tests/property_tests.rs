@@ -7801,10 +7801,6 @@ impl CountingSource {
             read_count: Arc::new(AtomicUsize::new(0)),
         }
     }
-
-    fn read_count(&self) -> usize {
-        self.read_count.load(Ordering::SeqCst)
-    }
 }
 
 #[async_trait::async_trait]

@@ -36,14 +36,38 @@ class TestInteroperabilityValidation:
 
         This validates interoperability with the Java Avro implementation,
         which is the reference implementation.
+
+        The file contains 151 records with UUID and name fields.
         """
         path = get_test_data_path("fastavro/java-generated-uuid.avro")
 
         # Should be able to read without error
         df = jetliner.scan(path).collect()
 
-        # File should have data
-        assert df.height >= 0  # May be empty but should not error
+        # Verify exact record count
+        assert df.height == 151, f"Expected 151 records, got {df.height}"
+
+        # Verify schema has expected columns
+        assert "id" in df.columns, "Should have 'id' column"
+        assert "name" in df.columns, "Should have 'name' column"
+
+        # Verify UUID format (should be string representation)
+        ids = df["id"].to_list()
+        import re
+        uuid_pattern = re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            re.IGNORECASE,
+        )
+        for i, uuid_str in enumerate(ids):
+            assert uuid_pattern.match(uuid_str), f"Record {i} has invalid UUID format: {uuid_str}"
+
+        # Verify first UUID value matches known data
+        assert ids[0] == "25f95c12-d66b-4070-b581-0d92ec959193"
+
+        # Verify name values follow expected pattern
+        names = df["name"].to_list()
+        for i, name in enumerate(names):
+            assert name == f"Test Instance {i}", f"Record {i} has unexpected name: {name}"
 
     def test_cross_codec_consistency(self, get_test_data_path):
         """

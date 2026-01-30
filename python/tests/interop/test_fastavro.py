@@ -32,14 +32,28 @@ class TestFastavroEdgeCases:
         Test reading record with no fields.
 
         This is an edge case where the schema defines a record
-        type but with an empty fields array.
+        type but with an empty fields array. The file contains
+        1 record with no fields (empty dict {}).
+
+        Note: Jetliner returns 0 DataFrames for no-fields records since
+        there's no columnar data to return. This is valid behavior - the
+        file is readable but produces no output columns.
         """
         path = get_test_data_path("fastavro/no-fields.avro")
 
         with jetliner.open(path) as reader:
-            _dfs = list(reader)
-            # Should be able to read without error
-            # May have 0 columns but should not crash
+            # Verify schema is accessible and has no fields
+            schema = reader.schema
+            assert schema is not None, "Schema should be accessible"
+
+            dfs = list(reader)
+
+            # No-fields records produce no DataFrames (no columns to output)
+            # This is expected behavior - the file is valid but has no data
+            if len(dfs) > 0:
+                df = pl.concat(dfs)
+                # If any DataFrames returned, they should have 0 columns
+                assert df.width == 0, f"Expected 0 columns for no-fields record, got {df.width}"
 
     def test_read_null_type(self, get_test_data_path):
         """
@@ -105,15 +119,44 @@ class TestFastavroEdgeCases:
 
         This tests interoperability with Java Avro implementation
         and proper handling of UUID logical type.
+
+        The file contains 151 records with:
+        - id: UUID (e.g., "25f95c12-d66b-4070-b581-0d92ec959193")
+        - name: string (e.g., "Test Instance 0")
         """
+        import re
+
         path = get_test_data_path("fastavro/java-generated-uuid.avro")
 
         with jetliner.open(path) as reader:
             dfs = list(reader)
-            _df = pl.concat(dfs) if dfs else pl.DataFrame()
+            assert len(dfs) > 0, "Should yield at least one DataFrame"
 
-            # Should read without error
-            # UUID should be present as string
+            df = pl.concat(dfs)
+
+            # Verify record count
+            assert df.height == 151, f"Expected 151 records, got {df.height}"
+
+            # Verify columns exist
+            assert "id" in df.columns, "Should have 'id' column"
+            assert "name" in df.columns, "Should have 'name' column"
+
+            # Verify UUID format
+            uuid_pattern = re.compile(
+                r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                re.IGNORECASE,
+            )
+            ids = df["id"].to_list()
+            for i, uuid_str in enumerate(ids):
+                assert uuid_pattern.match(uuid_str), f"Record {i} has invalid UUID: {uuid_str}"
+
+            # Verify specific known values
+            assert ids[0] == "25f95c12-d66b-4070-b581-0d92ec959193"
+
+            # Verify name pattern
+            names = df["name"].to_list()
+            for i, name in enumerate(names):
+                assert name == f"Test Instance {i}", f"Record {i} has unexpected name: {name}"
 
 
 # =============================================================================

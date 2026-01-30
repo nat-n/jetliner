@@ -33,18 +33,45 @@ class TestEdgeCasesAndRobustness:
             assert df.equals(results[0]), f"Read {i} differs from first read"
 
     def test_concurrent_file_access(self, get_test_data_path):
-        """Test that multiple readers can access files concurrently."""
+        """Test that multiple readers can access files truly concurrently.
+
+        Uses threading to verify concurrent access works correctly.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         path = get_test_data_path("apache-avro/weather.avro")
+        results = []
+        errors = []
 
-        # Open multiple readers
-        reader1 = jetliner.open(path)
-        reader2 = jetliner.open(path)
+        def read_file(thread_id):
+            """Read the file and return the DataFrame."""
+            try:
+                with jetliner.open(path) as reader:
+                    dfs = list(reader)
+                    df = pl.concat(dfs) if dfs else pl.DataFrame()
+                    return (thread_id, df)
+            except Exception as e:
+                return (thread_id, e)
 
-        # Both should be able to read
-        df1 = pl.concat(list(reader1))
-        df2 = pl.concat(list(reader2))
+        # Run 5 concurrent readers
+        num_threads = 5
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(read_file, i) for i in range(num_threads)]
+            for future in as_completed(futures):
+                thread_id, result = future.result()
+                if isinstance(result, Exception):
+                    errors.append((thread_id, result))
+                else:
+                    results.append((thread_id, result))
 
-        assert df1.equals(df2)
+        # All reads should succeed
+        assert len(errors) == 0, f"Concurrent reads failed: {errors}"
+        assert len(results) == num_threads, f"Expected {num_threads} results, got {len(results)}"
+
+        # All results should be identical
+        first_df = results[0][1]
+        for thread_id, df in results[1:]:
+            assert df.equals(first_df), f"Thread {thread_id} produced different result"
 
     def test_reader_reuse_after_exhaustion(self, get_test_data_path):
         """Test behavior when trying to reuse exhausted reader."""

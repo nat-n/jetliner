@@ -17,33 +17,55 @@ class TestDataTypeValidation:
     """Test that data types are correctly mapped to Polars types."""
 
     def test_weather_data_types(self, get_test_data_path):
-        """Test data type mapping for weather file."""
+        """Test data type mapping for weather file.
+
+        The weather.avro schema specifies:
+        - station: string -> pl.Utf8
+        - time: long -> pl.Int64
+        - temp: int -> pl.Int32
+        """
         path = get_test_data_path("apache-avro/weather.avro")
         df = jetliner.scan(path).collect()
 
-        # station should be string
-        assert df["station"].dtype == pl.Utf8
+        # station should be string (Utf8)
+        assert df["station"].dtype == pl.Utf8, f"station should be Utf8, got {df['station'].dtype}"
 
-        # time should be integer (long)
-        assert df["time"].dtype in [pl.Int64, pl.Int32]
+        # time should be Int64 (Avro long)
+        assert df["time"].dtype == pl.Int64, f"time should be Int64 (long), got {df['time'].dtype}"
 
-        # temp should be integer
-        assert df["temp"].dtype in [pl.Int32, pl.Int64]
+        # temp should be Int32 (Avro int)
+        assert df["temp"].dtype == pl.Int32, f"temp should be Int32 (int), got {df['temp'].dtype}"
 
     def test_weather_data_values(self, get_test_data_path):
-        """Test that data values are correctly read."""
+        """Test that data values are correctly read.
+
+        Verifies specific known values from the weather.avro file.
+        """
         path = get_test_data_path("apache-avro/weather.avro")
         df = jetliner.scan(path).collect()
 
-        # Station should be non-empty strings
+        # Verify exact record count
+        assert df.height == 5, f"Expected 5 records, got {df.height}"
+
+        # Verify first record values
+        first_row = df.row(0)
+        assert first_row[0] == "011990-99999", f"First station should be '011990-99999', got {first_row[0]}"
+        assert first_row[1] == -619524000000, f"First time should be -619524000000, got {first_row[1]}"
+        assert first_row[2] == 0, f"First temp should be 0, got {first_row[2]}"
+
+        # Verify negative temperature is handled correctly (record 3)
+        third_row = df.row(2)
+        assert third_row[2] == -11, f"Third temp should be -11, got {third_row[2]}"
+
+        # Verify all stations are non-empty strings
         stations = df["station"].to_list()
         assert all(isinstance(s, str) and len(s) > 0 for s in stations)
 
-        # Time should be integers (timestamps)
+        # Verify all times are integers (timestamps)
         times = df["time"].to_list()
         assert all(isinstance(t, int) for t in times)
 
-        # Temp should be integers
+        # Verify all temps are integers
         temps = df["temp"].to_list()
         assert all(isinstance(t, int) for t in temps)
 
