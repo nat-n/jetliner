@@ -11,9 +11,10 @@
 //! - 3.4: Yield DataFrames with configurable row limit
 
 use polars::prelude::*;
+use tracing::{debug, info};
 
 use crate::convert::{BuilderConfig, DataFrameBuilder, ErrorMode};
-use crate::error::{ReadError, ReaderError, SchemaError};
+use crate::error::{BadBlockError, ReaderError, SchemaError};
 use crate::reader::{BlockReader, BufferConfig, PrefetchBuffer, ReadBufferConfig};
 use crate::schema::AvroSchema;
 use crate::source::StreamSource;
@@ -143,9 +144,9 @@ impl ReaderConfig {
 /// - 3.4: Yield DataFrames with configurable row limit
 ///
 /// # Example
-/// ```ignore
-/// use jetliner::reader::{AvroStreamReader, ReaderConfig};
-/// use jetliner::source::LocalSource;
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use jetliner::{AvroStreamReader, ReaderConfig, LocalSource};
 ///
 /// let source = LocalSource::open("data.avro").await?;
 /// let config = ReaderConfig::new().with_batch_size(50_000);
@@ -159,6 +160,8 @@ impl ReaderConfig {
 /// for error in reader.errors() {
 ///     eprintln!("Error: {}", error);
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct AvroStreamReader<S: StreamSource> {
     /// Prefetch buffer for async block loading
@@ -204,6 +207,13 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
     pub async fn open(source: S, config: ReaderConfig) -> Result<Self, ReaderError> {
         // Create block reader with read buffer config (parses header)
         let block_reader = BlockReader::with_config(source, config.read_buffer_config).await?;
+
+        info!(
+            batch_size = config.batch_size,
+            error_mode = ?config.error_mode,
+            has_projection = config.projected_columns.is_some(),
+            "Opening Avro stream reader"
+        );
 
         // Get the schema from the header
         let schema = block_reader.header().schema.clone();
@@ -315,6 +325,7 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
                 None => {
                     // EOF reached - finish any remaining records
                     self.finished = true;
+                    debug!("Reached end of Avro stream");
 
                     // Force build to get the final batch
                     if let Some(df) = self.builder.finish()? {
@@ -353,7 +364,7 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
     /// # Requirements
     /// - 7.3: Track error counts and positions
     /// - 7.4: Provide summary of skipped errors
-    pub fn errors(&self) -> Vec<ReadError> {
+    pub fn errors(&self) -> Vec<BadBlockError> {
         let mut all_errors = Vec::new();
 
         // Add block-level errors from the buffer
@@ -797,6 +808,125 @@ mod tests {
 
             // After building, should have no pending records
             assert_eq!(reader.pending_records(), 0);
+        });
+    }
+
+    #[test]
+    fn test_extra_bytes_before_sync_full_pipeline() {
+        // This test mirrors the failing property test prop_extra_bytes_before_sync_recovery
+        // with exact parameters: valid_blocks_before=1, valid_blocks_after=2, records_per_block=3, extra_bytes=7
+        //
+        // Expected: 9 records (3 before + 6 after corruption)
+        run_async(async {
+            let records_per_block = 3;
+            let extra_bytes = 7;
+
+            let mut file_data = Vec::new();
+
+            // Header
+            file_data.extend_from_slice(&AVRO_MAGIC);
+            file_data.extend_from_slice(&encode_zigzag(1)); // 1 metadata entry
+
+            let schema_key = b"avro.schema";
+            let schema_json = br#"{"type":"record","name":"TestRecord","fields":[{"name":"id","type":"long"},{"name":"value","type":"string"}]}"#;
+            file_data.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file_data.extend_from_slice(schema_key);
+            file_data.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file_data.extend_from_slice(schema_json);
+            file_data.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            file_data.extend_from_slice(&sync_marker);
+
+            // Helper to create a record with id (long) and value (string)
+            fn create_record(id: i64, value: &str) -> Vec<u8> {
+                let mut record = Vec::new();
+                record.extend_from_slice(&encode_zigzag(id));
+                record.extend_from_slice(&encode_zigzag(value.len() as i64));
+                record.extend_from_slice(value.as_bytes());
+                record
+            }
+
+            // Block 0: valid block BEFORE corruption (3 records)
+            let mut block0_data = Vec::new();
+            for j in 0..records_per_block {
+                block0_data.extend_from_slice(&create_record(j as i64, &format!("before_{}", j)));
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(block0_data.len() as i64));
+            file_data.extend_from_slice(&block0_data);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Block 1: valid data BUT extra bytes before sync marker -> InvalidSyncMarker
+            let mut block1_data = Vec::new();
+            for j in 0..records_per_block {
+                block1_data.extend_from_slice(&create_record(9999 + j as i64, "bad"));
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(block1_data.len() as i64));
+            file_data.extend_from_slice(&block1_data);
+            file_data.extend_from_slice(&vec![0xAA; extra_bytes]); // EXTRA BYTES
+            file_data.extend_from_slice(&sync_marker);
+
+            // Block 2: valid block AFTER corruption (3 records)
+            let mut block2_data = Vec::new();
+            for j in 0..records_per_block {
+                block2_data
+                    .extend_from_slice(&create_record(8000 + j as i64, &format!("after_{}", j)));
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(block2_data.len() as i64));
+            file_data.extend_from_slice(&block2_data);
+            file_data.extend_from_slice(&sync_marker);
+
+            // Block 3: valid block AFTER corruption (3 records)
+            let mut block3_data = Vec::new();
+            for j in 0..records_per_block {
+                block3_data.extend_from_slice(&create_record(
+                    8003 + j as i64,
+                    &format!("after_{}", 3 + j),
+                ));
+            }
+            file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
+            file_data.extend_from_slice(&encode_zigzag(block3_data.len() as i64));
+            file_data.extend_from_slice(&block3_data);
+            file_data.extend_from_slice(&sync_marker);
+
+            let source = MockSource::new(file_data);
+            let config = ReaderConfig::new().skip_errors();
+            let mut reader = AvroStreamReader::open(source, config)
+                .await
+                .expect("Failed to open");
+
+            let mut total_rows = 0;
+            let mut batches = Vec::new();
+            loop {
+                match reader.next_batch().await {
+                    Ok(Some(df)) => {
+                        eprintln!("Batch with {} rows", df.height());
+                        batches.push(df.height());
+                        total_rows += df.height();
+                    }
+                    Ok(None) => {
+                        eprintln!("EOF");
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+
+            // Expected: 9 records (3 before + 6 after)
+            assert_eq!(
+                total_rows, 9,
+                "Expected 9 records (3 before + 6 after corruption), got {}. Batches: {:?}. Errors: {:?}",
+                total_rows, batches, reader.errors()
+            );
         });
     }
 }

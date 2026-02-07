@@ -144,19 +144,19 @@ class TestApacheAvroWeatherFiles:
 
 
 class TestApacheAvroWeatherScan:
-    """Test scan() API with Apache Avro weather files."""
+    """Test scan_avro() API with Apache Avro weather files."""
 
     def test_scan_weather_returns_lazyframe(self, get_test_data_path):
-        """Test that scan() returns a LazyFrame."""
+        """Test that scan_avro() returns a LazyFrame."""
         path = get_test_data_path("apache-avro/weather.avro")
-        lf = jetliner.scan(path)
+        lf = jetliner.scan_avro(path)
 
         assert isinstance(lf, pl.LazyFrame)
 
     def test_scan_weather_collect(self, get_test_data_path):
         """Test collecting scanned weather file."""
         path = get_test_data_path("apache-avro/weather.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         assert isinstance(df, pl.DataFrame)
         assert df.height > 0
@@ -165,7 +165,7 @@ class TestApacheAvroWeatherScan:
     def test_scan_weather_projection(self, get_test_data_path):
         """Test projection pushdown with weather file."""
         path = get_test_data_path("apache-avro/weather.avro")
-        df = jetliner.scan(path).select(["station", "temp"]).collect()
+        df = jetliner.scan_avro(path).select(["station", "temp"]).collect()
 
         assert df.width == 2
         assert "station" in df.columns
@@ -177,13 +177,13 @@ class TestApacheAvroWeatherScan:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Get all data first to know what to filter
-        all_df = jetliner.scan(path).collect()
+        all_df = jetliner.scan_avro(path).collect()
 
         # Filter for specific station
         if all_df.height > 0:
             first_station = all_df["station"][0]
             filtered_df = (
-                jetliner.scan(path).filter(pl.col("station") == first_station).collect()
+                jetliner.scan_avro(path).filter(pl.col("station") == first_station).collect()
             )
 
             # All records should have the filtered station
@@ -192,23 +192,23 @@ class TestApacheAvroWeatherScan:
     def test_scan_weather_head(self, get_test_data_path):
         """Test early stopping with weather file."""
         path = get_test_data_path("apache-avro/weather.avro")
-        df = jetliner.scan(path).head(2).collect()
+        df = jetliner.scan_avro(path).head(2).collect()
 
         assert df.height <= 2
 
     @pytest.mark.parametrize("codec", ["deflate", "snappy", "zstd"])
     def test_scan_all_codecs(self, get_test_data_path, codec):
-        """Test scan() with all codec variants."""
+        """Test scan_avro() with all codec variants."""
         path = get_test_data_path(f"apache-avro/weather-{codec}.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         assert df.height > 0
         assert "station" in df.columns
 
     def test_scan_snappy_codec(self, get_test_data_path):
-        """Test scan() with snappy codec."""
+        """Test scan_avro() with snappy codec."""
         path = get_test_data_path("apache-avro/weather-snappy.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         assert df.height > 0
         assert "station" in df.columns

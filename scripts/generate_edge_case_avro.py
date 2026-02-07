@@ -12,8 +12,6 @@ This script creates an Avro file containing:
 Requirements tested: 1.4, 1.5 (primitive and complex types)
 """
 
-import io
-import math
 import sys
 from pathlib import Path
 

@@ -29,7 +29,7 @@ class TestPerformanceSanity:
         path = get_test_data_path("apache-avro/weather.avro")
 
         start = time.time()
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
         elapsed = time.time() - start
 
         # Should complete in under 1 second for small file
@@ -51,7 +51,7 @@ class TestPerformanceSanity:
             path = get_test_data_path(f"apache-avro/{filename}")
 
             start = time.time()
-            df = jetliner.scan(path).collect()
+            df = jetliner.scan_avro(path).collect()
             elapsed = time.time() - start
 
             # Should complete in under 1 second
@@ -69,7 +69,7 @@ class TestPerformanceSanity:
         path = get_test_data_path("large/weather-large.avro")
 
         start = time.time()
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
         elapsed = time.time() - start
 
         # Verify we read all records
@@ -90,7 +90,7 @@ class TestPerformanceSanity:
 
         # Bulk read timing
         start = time.time()
-        bulk_df = jetliner.scan(path).collect()
+        bulk_df = jetliner.scan_avro(path).collect()
         bulk_elapsed = time.time() - start
 
         # Streaming read timing

@@ -8,5 +8,5 @@ mod s3;
 mod traits;
 
 pub use local::LocalSource;
-pub use s3::{S3Config, S3Source};
+pub use s3::{S3Config, S3Source, DEFAULT_MAX_RETRIES};
 pub use traits::{BoxedSource, StreamSource};

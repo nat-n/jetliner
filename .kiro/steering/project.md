@@ -2,11 +2,17 @@
 
 High-performance Polars plugin for streaming Avro files into DataFrames.
 
+## This code base requires a high quality bar
+- All edge cases should be covered by strong test cases at the appropriate levels.
+- All potential performance optimizations should be considered
+- Code smells and easily avoidable code duplication must be avoided. Code must be well organized, for an elegant solution to a clear problem, with clear intention in the code.
+- Shortcuts or simplifications that compromise on these principals must be avoided
+
 ## Poe tasks
 
 - Poe is installed globally, check available tasks by running `poe` or inspecting the task config in pyproject.toml
-- Prefer running relevant tasks via poe if possible, for building, testing, linting, etc. For example, the easiest way to run cargo tests correctly is `poe test-rust`
-- cmd tasks accept extra arguments which are appended to the inner command
+- Whenever you need to execute builds, tests, linting, formatting, inspect avro files or other project tasks then you should first look for an appropriate poe task, which will be guaranteed to work and be pre-approved for use. For example, the easiest way to run cargo tests correctly is `poe test-rust`
+- cmd tasks accept extra arguments which are appended to the inner command, e.g `poe test-python python/tests/types/*`
 
 ## Performance
 

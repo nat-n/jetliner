@@ -222,12 +222,12 @@ class TestNullablePrimitives:
 
     def test_read_nullable_primitives_file(self, nullable_primitives_avro_file):
         """Test that nullable primitives file can be read without errors."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
         assert df.height == 4
 
     def test_nullable_string(self, nullable_primitives_avro_file):
         """Test nullable string is read correctly."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         # Even IDs have values, odd IDs are null
         assert df["nullable_string"][0] == "value_0"
@@ -237,7 +237,7 @@ class TestNullablePrimitives:
 
     def test_nullable_int(self, nullable_primitives_avro_file):
         """Test nullable int (value-first union) is read correctly."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         assert df["nullable_int"][0] == 0
         assert df["nullable_int"][1] is None
@@ -246,7 +246,7 @@ class TestNullablePrimitives:
 
     def test_nullable_long(self, nullable_primitives_avro_file):
         """Test nullable long is read correctly."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         assert df["nullable_long"][0] == 0
         assert df["nullable_long"][1] is None
@@ -255,7 +255,7 @@ class TestNullablePrimitives:
 
     def test_nullable_double(self, nullable_primitives_avro_file):
         """Test nullable double is read correctly."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         assert df["nullable_double"][0] == 0.0
         assert df["nullable_double"][1] is None
@@ -264,7 +264,7 @@ class TestNullablePrimitives:
 
     def test_nullable_boolean(self, nullable_primitives_avro_file):
         """Test nullable boolean is read correctly."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         assert df["nullable_bool"][0] is True  # 0 % 4 == 0
         assert df["nullable_bool"][1] is None
@@ -273,7 +273,7 @@ class TestNullablePrimitives:
 
     def test_nullable_bytes(self, nullable_primitives_avro_file):
         """Test nullable bytes is read correctly."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         assert df["nullable_bytes"][0] == bytes([0, 0, 0, 0])
         assert df["nullable_bytes"][1] is None
@@ -282,7 +282,7 @@ class TestNullablePrimitives:
 
     def test_null_count(self, nullable_primitives_avro_file):
         """Test null counts are correct."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         # Half the records should have nulls
         assert df["nullable_string"].null_count() == 2
@@ -291,7 +291,7 @@ class TestNullablePrimitives:
 
     def test_nullable_dtypes(self, nullable_primitives_avro_file):
         """Test that nullable types have correct dtypes."""
-        df = jetliner.scan(nullable_primitives_avro_file).collect()
+        df = jetliner.scan_avro(nullable_primitives_avro_file).collect()
 
         assert df["nullable_string"].dtype == pl.String
         assert df["nullable_int"].dtype == pl.Int32
@@ -306,12 +306,12 @@ class TestNullableArray:
 
     def test_read_nullable_array_file(self, nullable_array_avro_file):
         """Test that nullable array file can be read without errors."""
-        df = jetliner.scan(nullable_array_avro_file).collect()
+        df = jetliner.scan_avro(nullable_array_avro_file).collect()
         assert df.height == 4
 
     def test_nullable_array_values(self, nullable_array_avro_file):
         """Test nullable array is read correctly."""
-        df = jetliner.scan(nullable_array_avro_file).collect()
+        df = jetliner.scan_avro(nullable_array_avro_file).collect()
 
         # Non-null arrays
         arr0 = df["nullable_array"][0]
@@ -329,12 +329,12 @@ class TestNullableArray:
 
     def test_nullable_array_dtype(self, nullable_array_avro_file):
         """Test nullable array has correct dtype."""
-        df = jetliner.scan(nullable_array_avro_file).collect()
+        df = jetliner.scan_avro(nullable_array_avro_file).collect()
         assert df["nullable_array"].dtype == pl.List(pl.Int32)
 
     def test_nullable_array_null_count(self, nullable_array_avro_file):
         """Test nullable array null count."""
-        df = jetliner.scan(nullable_array_avro_file).collect()
+        df = jetliner.scan_avro(nullable_array_avro_file).collect()
         assert df["nullable_array"].null_count() == 2
 
 
@@ -343,12 +343,12 @@ class TestNullableRecord:
 
     def test_read_nullable_record_file(self, nullable_record_avro_file):
         """Test that nullable record file can be read without errors."""
-        df = jetliner.scan(nullable_record_avro_file).collect()
+        df = jetliner.scan_avro(nullable_record_avro_file).collect()
         assert df.height == 4
 
     def test_nullable_record_values(self, nullable_record_avro_file):
         """Test nullable record is read correctly."""
-        df = jetliner.scan(nullable_record_avro_file).collect()
+        df = jetliner.scan_avro(nullable_record_avro_file).collect()
 
         # Non-null record
         rec0 = df["nullable_record"][0]
@@ -364,7 +364,7 @@ class TestNullableRecord:
 
     def test_nullable_record_dtype(self, nullable_record_avro_file):
         """Test nullable record has correct dtype."""
-        df = jetliner.scan(nullable_record_avro_file).collect()
+        df = jetliner.scan_avro(nullable_record_avro_file).collect()
         assert df["nullable_record"].dtype == pl.Struct({"value": pl.Int32})
 
 
@@ -373,12 +373,12 @@ class TestFullNullableTypes:
 
     def test_read_full_nullable_file(self, nullable_types_avro_file):
         """Test that full nullable types file can be read without errors."""
-        df = jetliner.scan(nullable_types_avro_file).collect()
+        df = jetliner.scan_avro(nullable_types_avro_file).collect()
         assert df.height == 4
 
     def test_all_nullable_types(self, nullable_types_avro_file):
         """Test all nullable types are read correctly."""
-        df = jetliner.scan(nullable_types_avro_file).collect()
+        df = jetliner.scan_avro(nullable_types_avro_file).collect()
 
         # Check primitives
         assert df["nullable_string"][0] == "value_0"

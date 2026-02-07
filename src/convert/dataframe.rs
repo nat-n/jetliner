@@ -9,7 +9,7 @@
 //! - 5.7: Convert Avro maps to Polars List columns containing Structs
 //! - 5.8: Convert nested Avro records to Polars Struct columns
 
-use crate::error::{DecodeError, ReadError, ReadErrorKind, SchemaError};
+use crate::error::{BadBlockError, BadBlockErrorKind, DecodeError, SchemaError};
 use crate::reader::{DecompressedBlock, RecordDecode, RecordDecoder};
 use crate::schema::AvroSchema;
 use polars::prelude::*;
@@ -86,17 +86,35 @@ pub enum BuilderError {
     /// Schema error during builder creation.
     #[error("Schema error: {0}")]
     Schema(#[from] SchemaError),
-    /// Decode error during record processing.
-    #[error("Decode error: {0}")]
-    Decode(#[from] DecodeError),
+    /// Decode error during record processing with position context.
+    #[error("{}", format_decode_error(.error, .block_index, .record_index))]
+    Decode {
+        /// The underlying decode error.
+        error: DecodeError,
+        /// The block index where the error occurred (0-based).
+        block_index: usize,
+        /// The record index within the block where the error occurred (0-based).
+        /// `None` if the error occurred during batch finalization and cannot
+        /// be attributed to a specific record.
+        record_index: Option<usize>,
+    },
     /// Polars error during DataFrame creation.
     #[error("Polars error: {0}")]
-    Polars(String),
+    Polars(#[from] PolarsError),
 }
 
-impl From<PolarsError> for BuilderError {
-    fn from(err: PolarsError) -> Self {
-        BuilderError::Polars(err.to_string())
+/// Format decode error message with optional record index.
+fn format_decode_error(
+    error: &DecodeError,
+    block_index: &usize,
+    record_index: &Option<usize>,
+) -> String {
+    match record_index {
+        Some(idx) => format!(
+            "Decode error in block {}, record {}: {}",
+            block_index, idx, error
+        ),
+        None => format!("Decode error in block {}: {}", block_index, error),
     }
 }
 
@@ -121,15 +139,21 @@ impl From<PolarsError> for BuilderError {
 /// - 5.8: Convert nested Avro records to Polars Struct columns
 ///
 /// # Example
-/// ```ignore
-/// use jetliner::convert::{DataFrameBuilder, BuilderConfig, ErrorMode};
-/// use jetliner::schema::AvroSchema;
+/// ```no_run
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use jetliner::{DataFrameBuilder, BuilderConfig, ErrorMode, AvroSchema, RecordSchema};
+///
+/// // Create a simple schema
+/// let schema = AvroSchema::Record(RecordSchema {
+///     name: "Example".to_string(),
+///     namespace: None,
+///     doc: None,
+///     fields: vec![],
+///     aliases: vec![],
+/// });
 ///
 /// let config = BuilderConfig::new(10_000).with_error_mode(ErrorMode::Skip);
 /// let mut builder = DataFrameBuilder::new(&schema, config)?;
-///
-/// // Add blocks
-/// builder.add_block(block)?;
 ///
 /// // Build DataFrame when ready
 /// if let Some(df) = builder.build(false)? {
@@ -140,6 +164,8 @@ impl From<PolarsError> for BuilderError {
 /// for error in builder.errors() {
 ///     eprintln!("Error: {}", error);
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct DataFrameBuilder {
     /// The record decoder that handles Avro-to-Arrow conversion.
@@ -149,7 +175,7 @@ pub struct DataFrameBuilder {
     /// Error handling mode.
     error_mode: ErrorMode,
     /// Accumulated errors (in skip mode).
-    errors: Vec<ReadError>,
+    errors: Vec<BadBlockError>,
     /// Current block index being processed.
     current_block_index: usize,
 }
@@ -232,12 +258,16 @@ impl DataFrameBuilder {
                 Err(e) => {
                     match self.error_mode {
                         ErrorMode::Strict => {
-                            return Err(BuilderError::Decode(e));
+                            return Err(BuilderError::Decode {
+                                error: e,
+                                block_index: block.block_index,
+                                record_index: Some(record_index),
+                            });
                         }
                         ErrorMode::Skip => {
                             // Log the error and continue
-                            self.errors.push(ReadError::new(
-                                ReadErrorKind::RecordDecodeFailed,
+                            self.errors.push(BadBlockError::new(
+                                BadBlockErrorKind::RecordDecodeFailed,
                                 block.block_index,
                                 Some(record_index),
                                 0, // We don't track exact byte offset here
@@ -280,8 +310,19 @@ impl DataFrameBuilder {
         }
 
         // Finish the batch and get Series
-        let series = self.decoder.finish_batch()?;
+        // Errors during finalization are attributed to the current block, but we don't
+        // have a specific record index at this point (hence `None`).
+        let series = self
+            .decoder
+            .finish_batch()
+            .map_err(|e| BuilderError::Decode {
+                error: e,
+                block_index: self.current_block_index,
+                record_index: None,
+            })?;
 
+        // Defensive check: zero-field schemas are rejected in RecordDecoder::new(),
+        // so this should not trigger in normal operation.
         if series.is_empty() {
             return Ok(None);
         }
@@ -314,7 +355,7 @@ impl DataFrameBuilder {
     }
 
     /// Get the accumulated errors (in skip mode).
-    pub fn errors(&self) -> &[ReadError] {
+    pub fn errors(&self) -> &[BadBlockError] {
         &self.errors
     }
 
@@ -593,7 +634,7 @@ mod tests {
         // Should have recorded an error
         assert_eq!(builder.errors().len(), 1);
         let error = &builder.errors()[0];
-        assert_eq!(error.kind, ReadErrorKind::RecordDecodeFailed);
+        assert_eq!(error.kind, BadBlockErrorKind::RecordDecodeFailed);
         assert_eq!(error.block_index, 5);
         assert_eq!(error.record_index, Some(0));
 
@@ -627,5 +668,80 @@ mod tests {
         assert_eq!(polars_schema.len(), 2);
         assert!(polars_schema.get_field("id").is_some());
         assert!(polars_schema.get_field("name").is_some());
+    }
+
+    #[test]
+    fn test_builder_strict_mode_error_includes_position() {
+        let schema = create_test_schema();
+        let config = BuilderConfig::new(100).strict();
+        let mut builder = DataFrameBuilder::new(&schema, config).unwrap();
+
+        // First add a valid block to advance block index
+        let mut valid_data = Vec::new();
+        valid_data.extend_from_slice(&create_test_record(1, "Alice"));
+        valid_data.extend_from_slice(&create_test_record(2, "Bob"));
+        let valid_block = DecompressedBlock::new(2, Bytes::from(valid_data), 3); // block_index = 3
+        builder.add_block(valid_block).unwrap();
+
+        // Now add an invalid block at a different block index
+        // Create block with 3 records but data for only 2, so third record fails
+        let mut partial_data = Vec::new();
+        partial_data.extend_from_slice(&create_test_record(3, "Charlie"));
+        partial_data.extend_from_slice(&create_test_record(4, "Diana"));
+        // Third record is truncated - just a partial varint
+        partial_data.push(0x80); // High bit set, expecting more bytes
+        let bad_block = DecompressedBlock::new(3, Bytes::from(partial_data), 7); // block_index = 7
+
+        // Should error in strict mode
+        let result = builder.add_block(bad_block);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        // The error should include the block_index and record_index
+        match err {
+            BuilderError::Decode {
+                block_index,
+                record_index,
+                ..
+            } => {
+                assert_eq!(block_index, 7, "block_index should be 7");
+                assert_eq!(
+                    record_index,
+                    Some(2),
+                    "record_index should be Some(2) (third record, 0-indexed)"
+                );
+            }
+            _ => panic!(
+                "Expected BuilderError::Decode with position, got: {:?}",
+                err
+            ),
+        }
+    }
+
+    #[test]
+    fn test_builder_error_decode_display_includes_position() {
+        let schema = create_test_schema();
+        let config = BuilderConfig::new(100).strict();
+        let mut builder = DataFrameBuilder::new(&schema, config).unwrap();
+
+        // Create invalid block at specific position
+        let block_data = vec![0x80]; // Invalid varint (high bit set, no continuation)
+        let block = DecompressedBlock::new(1, Bytes::from(block_data), 42); // block_index = 42
+
+        let result = builder.add_block(block);
+        let err = result.unwrap_err();
+
+        // The error message should include position information
+        let msg = err.to_string();
+        assert!(
+            msg.contains("block 42") || msg.contains("block_index: 42"),
+            "Error message should include block index 42, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("record 0") || msg.contains("record_index: 0"),
+            "Error message should include record index 0, got: {}",
+            msg
+        );
     }
 }

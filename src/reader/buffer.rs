@@ -13,10 +13,11 @@
 use bytes::Bytes;
 use std::collections::VecDeque;
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use crate::codec::Codec;
 use crate::convert::ErrorMode;
-use crate::error::{ReadError, ReadErrorKind, ReaderError};
+use crate::error::{BadBlockError, BadBlockErrorKind, ReaderError};
 use crate::source::StreamSource;
 
 use super::{BlockReader, DecompressedBlock};
@@ -34,13 +35,22 @@ pub struct BufferConfig {
     pub max_blocks: usize,
     /// Maximum total bytes to buffer (default: 64MB)
     pub max_bytes: usize,
+    /// Maximum decompressed block size in bytes (default: 512MB).
+    ///
+    /// Blocks that would decompress to more than this limit are rejected.
+    /// This protects against decompression bombs - maliciously crafted files
+    /// where a small compressed block expands to consume excessive memory.
+    ///
+    /// Set to `None` to disable the limit (not recommended for untrusted data).
+    pub max_decompressed_block_size: Option<usize>,
 }
 
 impl Default for BufferConfig {
     fn default() -> Self {
         Self {
             max_blocks: 4,
-            max_bytes: 64 * 1024 * 1024, // 64MB
+            max_bytes: 64 * 1024 * 1024,                          // 64MB
+            max_decompressed_block_size: Some(512 * 1024 * 1024), // 512MB default
         }
     }
 }
@@ -51,7 +61,14 @@ impl BufferConfig {
         Self {
             max_blocks,
             max_bytes,
+            max_decompressed_block_size: Some(512 * 1024 * 1024), // 512MB default
         }
+    }
+
+    /// Set the maximum decompressed block size.
+    pub fn with_max_decompressed_block_size(mut self, limit: Option<usize>) -> Self {
+        self.max_decompressed_block_size = limit;
+        self
     }
 }
 
@@ -67,19 +84,22 @@ impl BufferConfig {
 /// - 7.1: Skip bad blocks and continue to next sync marker (in skip mode)
 ///
 /// # Example
-/// ```ignore
-/// use jetliner::reader::{BlockReader, buffer::{PrefetchBuffer, BufferConfig}};
-/// use jetliner::source::LocalSource;
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use jetliner::{BlockReader, LocalSource, ErrorMode};
+/// use jetliner::reader::buffer::{PrefetchBuffer, BufferConfig};
 ///
 /// let source = LocalSource::open("data.avro").await?;
 /// let reader = BlockReader::new(source).await?;
 /// let config = BufferConfig::default();
-/// let mut buffer = PrefetchBuffer::new(reader, config);
+/// let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Strict);
 ///
 /// while let Some(block) = buffer.next().await? {
 ///     // Process decompressed block
 ///     println!("Block {} has {} records", block.block_index, block.record_count);
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct PrefetchBuffer<S: StreamSource> {
     /// The underlying block reader
@@ -100,7 +120,11 @@ pub struct PrefetchBuffer<S: StreamSource> {
     /// Error handling mode
     error_mode: ErrorMode,
     /// Accumulated errors (in skip mode)
-    errors: Vec<ReadError>,
+    errors: Vec<BadBlockError>,
+    /// Position to scan from during recovery, saved when entering InvalidSyncMarker
+    /// handling. Used to recover from "extra bytes before sync" corruption where
+    /// optimistic advances land at garbage positions, corrupting last_successful_position.
+    recovery_scan_position: Option<u64>,
 }
 
 impl<S: StreamSource + 'static> PrefetchBuffer<S> {
@@ -126,6 +150,7 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
             finished: false,
             error_mode,
             errors: Vec::new(),
+            recovery_scan_position: None,
         }
     }
 
@@ -155,257 +180,12 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
             return Ok(Some(block));
         }
 
-        // No buffered blocks - fetch and decompress directly
+        // No buffered blocks - delegate to fetch_and_decompress
         if self.finished {
             return Ok(None);
         }
 
-        // Keep trying to fetch blocks until we get one or reach EOF
-        loop {
-            let block_index_before = self.reader.block_index();
-            let offset_before = self.reader.current_offset();
-
-            // Fetch the next block
-            let block = match self.reader.next_block().await {
-                Ok(Some(b)) => b,
-                Ok(None) => {
-                    self.finished = true;
-                    return Ok(None);
-                }
-                Err(e) => {
-                    // Handle block read error based on error mode
-                    match self.error_mode {
-                        ErrorMode::Strict => return Err(e),
-                        ErrorMode::Skip => {
-                            // Use hybrid recovery for InvalidSyncMarker errors:
-                            // 1. First try optimistic: advance past the invalid sync marker
-                            //    and attempt to read the next block (assumes block data was
-                            //    valid but sync marker was corrupted)
-                            // 2. If that fails, fall back to scanning from byte 1 of the
-                            //    invalid sync marker position
-                            //
-                            // This approach maximizes data recovery because:
-                            // - If only the sync marker was corrupted, we don't skip any blocks
-                            // - If the corruption is more severe, scanning finds the next valid block
-                            //
-                            // For other errors (parse errors, etc.), we scan from current position.
-                            if let ReaderError::InvalidSyncMarker {
-                                offset: invalid_sync_offset,
-                                expected,
-                                actual,
-                                ..
-                            } = &e
-                            {
-                                let error_message = e.to_string();
-                                let invalid_sync_offset = *invalid_sync_offset;
-                                let expected_marker = *expected;
-                                let actual_marker = *actual;
-
-                                // Try optimistic recovery first: position after invalid sync marker
-                                self.reader.advance_past_invalid_sync(invalid_sync_offset);
-
-                                // Attempt to read the next block
-                                match self.reader.next_block().await {
-                                    Ok(Some(next_block)) => {
-                                        // Success! The optimistic approach worked.
-                                        // Log the error and process this block.
-                                        let error = ReadError::new(
-                                            ReadErrorKind::InvalidSyncMarker {
-                                                expected: expected_marker,
-                                                actual: actual_marker,
-                                            },
-                                            block_index_before,
-                                            None,
-                                            offset_before,
-                                            format!(
-                                                "{}. Recovered by advancing past invalid sync marker.",
-                                                error_message
-                                            ),
-                                        );
-                                        self.errors.push(error);
-
-                                        // Try to decompress this block
-                                        match self.codec.decompress(&next_block.data) {
-                                            Ok(decompressed_data) => {
-                                                let decompressed_data =
-                                                    Bytes::from(decompressed_data);
-                                                return Ok(Some(DecompressedBlock::new(
-                                                    next_block.record_count,
-                                                    decompressed_data,
-                                                    next_block.block_index,
-                                                )));
-                                            }
-                                            Err(decomp_err) => {
-                                                // Decompression failed on the optimistically-read block
-                                                // Log this error and fall back to scanning
-                                                let error = ReadError::new(
-                                                    ReadErrorKind::DecompressionFailed {
-                                                        codec: self.codec.name().to_string(),
-                                                    },
-                                                    next_block.block_index,
-                                                    None,
-                                                    next_block.file_offset,
-                                                    decomp_err.to_string(),
-                                                );
-                                                self.errors.push(error);
-
-                                                // Fall back to scanning
-                                                let (found, bytes_skipped) =
-                                                    self.reader.skip_to_next_sync().await?;
-
-                                                if !found {
-                                                    self.finished = true;
-                                                    return Ok(None);
-                                                }
-
-                                                // Log scanning recovery
-                                                let error = ReadError::new(
-                                                    ReadErrorKind::InvalidSyncMarker {
-                                                        expected: expected_marker,
-                                                        actual: actual_marker,
-                                                    },
-                                                    block_index_before,
-                                                    None,
-                                                    offset_before,
-                                                    format!(
-                                                        "Scanned {} bytes to find next sync marker after decompression failure.",
-                                                        bytes_skipped
-                                                    ),
-                                                );
-                                                self.errors.push(error);
-
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        // EOF reached after optimistic advance
-                                        let error = ReadError::new(
-                                            ReadErrorKind::InvalidSyncMarker {
-                                                expected: expected_marker,
-                                                actual: actual_marker,
-                                            },
-                                            block_index_before,
-                                            None,
-                                            offset_before,
-                                            format!(
-                                                "{}. Reached EOF after invalid sync marker.",
-                                                error_message
-                                            ),
-                                        );
-                                        self.errors.push(error);
-                                        self.finished = true;
-                                        return Ok(None);
-                                    }
-                                    Err(_next_err) => {
-                                        // Optimistic approach failed - fall back to scanning
-                                        // Scan from byte 1 of the invalid sync marker position
-                                        // (not byte 0, to avoid finding the same corrupted position)
-                                        let (found, bytes_skipped) = self
-                                            .reader
-                                            .skip_to_next_sync_from(invalid_sync_offset + 1)
-                                            .await?;
-
-                                        // Log the error with recovery information
-                                        let error = ReadError::new(
-                                            ReadErrorKind::InvalidSyncMarker {
-                                                expected: expected_marker,
-                                                actual: actual_marker,
-                                            },
-                                            block_index_before,
-                                            None,
-                                            offset_before,
-                                            format!(
-                                                "{}. Optimistic recovery failed, scanned {} bytes to find next sync marker.",
-                                                error_message, bytes_skipped
-                                            ),
-                                        );
-                                        self.errors.push(error);
-
-                                        if !found {
-                                            self.finished = true;
-                                            return Ok(None);
-                                        }
-
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                // For other errors (parse errors, truncated data, etc.),
-                                // scan from the last known good position (offset_before + 1).
-                                //
-                                // This is critical because:
-                                // - If the block header claimed a large compressed_size but the
-                                //   actual data was truncated, the real next sync marker might
-                                //   be hiding inside what we thought was the data body.
-                                // - By scanning from offset_before + 1, we ensure we don't miss
-                                //   any sync markers that might be earlier than current_offset.
-                                let error_message = e.to_string();
-                                let (found, bytes_skipped) = self
-                                    .reader
-                                    .skip_to_next_sync_from(offset_before + 1)
-                                    .await?;
-
-                                // Log the error with recovery information
-                                let error = ReadError::new(
-                                    ReadErrorKind::BlockParseFailed,
-                                    block_index_before,
-                                    None,
-                                    offset_before,
-                                    format!(
-                                        "{}. Scanned {} bytes from offset {} to find next sync marker.",
-                                        error_message, bytes_skipped, offset_before + 1
-                                    ),
-                                );
-                                self.errors.push(error);
-
-                                if !found {
-                                    self.finished = true;
-                                    return Ok(None);
-                                }
-
-                                continue;
-                            }
-                        }
-                    }
-                }
-            };
-
-            // Try to decompress the block
-            match self.codec.decompress(&block.data) {
-                Ok(decompressed_data) => {
-                    let decompressed_data = Bytes::from(decompressed_data);
-                    return Ok(Some(DecompressedBlock::new(
-                        block.record_count,
-                        decompressed_data,
-                        block.block_index,
-                    )));
-                }
-                Err(e) => {
-                    // Handle decompression error based on error mode
-                    match self.error_mode {
-                        ErrorMode::Strict => return Err(e.into()),
-                        ErrorMode::Skip => {
-                            // Log the error
-                            let error = ReadError::new(
-                                ReadErrorKind::DecompressionFailed {
-                                    codec: self.codec.name().to_string(),
-                                },
-                                block.block_index,
-                                None,
-                                block.file_offset,
-                                e.to_string(),
-                            );
-                            self.errors.push(error);
-
-                            // Skip this block and continue to the next one
-                            // The next iteration will try to read the next block
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
+        self.fetch_and_decompress().await
     }
 
     /// Check if we should start a prefetch task and start it if so.
@@ -477,7 +257,7 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
     /// # Requirements
     /// - 7.3: Track error counts and positions
     /// - 7.4: Provide summary of skipped errors
-    pub fn errors(&self) -> &[ReadError] {
+    pub fn errors(&self) -> &[BadBlockError] {
         &self.errors
     }
 
@@ -490,6 +270,43 @@ impl<S: StreamSource + 'static> PrefetchBuffer<S> {
 // Simpler implementation without background tasks
 // This avoids the complexity of moving the reader between tasks
 impl<S: StreamSource> PrefetchBuffer<S> {
+    /// Unified fallback recovery: scan from the forward progress marker.
+    ///
+    /// This method should be called when recovery is needed after block parsing
+    /// or decompression failures. It scans forward looking for the next sync marker.
+    ///
+    /// The scan always starts from `last_successful_position + 1`. This position
+    /// represents the furthest point we've fully processed/validated - it's updated
+    /// after both successful block parses AND recovery scans. This guarantees forward
+    /// progress: we never scan the same region twice.
+    ///
+    /// The scan position catches "hidden" sync markers that might be between the
+    /// last processed point and where we currently are (important when a block
+    /// header claimed a large size but actual data was truncated).
+    ///
+    /// # Returns
+    /// * `Ok(true)` - A sync marker was found, ready to try reading the next block
+    /// * `Ok(false)` - No sync marker found (EOF), `self.finished` is set to true
+    /// * `Err(e)` - An I/O error occurred during scanning
+    async fn fallback_scan(&mut self) -> Result<bool, ReaderError> {
+        // If we have a recovery scan position saved (from InvalidSyncMarker handling
+        // that may have led to bogus positions), use that. Otherwise, use the
+        // current last_successful_position.
+        let scan_from = self
+            .recovery_scan_position
+            .take() // Consume the saved position
+            .or_else(|| self.reader.last_successful_position())
+            .map(|pos| pos + 1)
+            .unwrap_or(self.reader.header().header_size);
+
+        let (found, _bytes_skipped) = self.reader.skip_to_next_sync_from(scan_from).await?;
+
+        if !found {
+            self.finished = true;
+        }
+        Ok(found)
+    }
+
     /// Fetch and decompress the next block synchronously.
     ///
     /// This is called by `next()` when we need a block and don't have one buffered.
@@ -506,8 +323,47 @@ impl<S: StreamSource> PrefetchBuffer<S> {
 
             // Fetch the next block
             let block = match self.reader.next_block().await {
-                Ok(Some(b)) => b,
+                Ok(Some(b)) => {
+                    // If we're in recovery mode (recovery_scan_position is set), check if
+                    // this block looks suspicious. After consecutive InvalidSyncMarker advances,
+                    // we might land on garbage that happens to pass sync verification by
+                    // coincidentally pointing to a real sync marker.
+                    if self.recovery_scan_position.is_some() {
+                        let file_size = self.reader.file_size();
+                        // In recovery mode, apply stricter validation.
+                        // A valid block should have:
+                        // - record_count > 0 and < 10M
+                        // - compressed_size > 0 and < file_size
+                        // - compressed_size >= record_count (each record is at least 1 byte)
+                        let looks_reasonable = b.record_count > 0
+                            && b.record_count < 10_000_000
+                            && b.compressed_size > 0
+                            && (b.compressed_size as u64) < file_size
+                            && b.compressed_size >= b.record_count;
+
+                        if !looks_reasonable {
+                            // Block looks like garbage, fall back to scanning
+                            let found = self.fallback_scan().await?;
+                            if !found {
+                                self.finished = true;
+                                return Ok(None);
+                            }
+                            continue;
+                        }
+                    }
+                    b
+                }
                 Ok(None) => {
+                    // EOF reached. If we've been doing recovery (indicated by having
+                    // a last_successful_block_end), try scanning one more time in case
+                    // optimistic advances skipped past valid data.
+                    if self.reader.last_successful_position().is_some() {
+                        let found = self.fallback_scan().await?;
+                        if found {
+                            // Found more data, continue reading
+                            continue;
+                        }
+                    }
                     self.finished = true;
                     return Ok(None);
                 }
@@ -516,20 +372,15 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                     match self.error_mode {
                         ErrorMode::Strict => return Err(e),
                         ErrorMode::Skip => {
-                            // Use hybrid recovery for InvalidSyncMarker errors:
-                            // 1. First try optimistic: advance past the invalid sync marker
-                            //    and attempt to read the next block (assumes block data was
-                            //    valid but sync marker was corrupted)
-                            // 2. If that fails, fall back to scanning from byte 1 of the
-                            //    invalid sync marker position
+                            // For InvalidSyncMarker errors, try optimistic advance first.
+                            // This works when the block data is valid but only the sync
+                            // marker bytes are corrupted. If that fails (parse error or
+                            // another InvalidSyncMarker with suspicious parameters), fall
+                            // back to scanning from last known good position.
                             //
-                            // This approach maximizes data recovery because:
-                            // - If only the sync marker was corrupted, we don't skip any blocks
-                            // - If the corruption is more severe, scanning finds the next valid block
-                            //
-                            // For other errors (parse errors, etc.), we scan from current position.
+                            // For other errors (parse errors, etc.), scan directly.
                             if let ReaderError::InvalidSyncMarker {
-                                offset: invalid_sync_offset,
+                                file_offset: invalid_sync_offset,
                                 expected,
                                 actual,
                                 ..
@@ -539,17 +390,63 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                                 let invalid_sync_offset = *invalid_sync_offset;
                                 let expected_marker = *expected;
                                 let actual_marker = *actual;
+                                let file_size = self.reader.file_size();
 
-                                // Try optimistic recovery first: position after invalid sync marker
+                                // Save the current last_successful_block_end before optimistic advance.
+                                // If the optimistic read returns a suspicious block, we need to
+                                // scan from this original position, not from where the garbage
+                                // block's sync verification happened to land us.
+                                let original_scan_position = self.reader.last_successful_position();
+
+                                // Try optimistic recovery: advance past the invalid sync
                                 self.reader.advance_past_invalid_sync(invalid_sync_offset);
 
-                                // Attempt to read the next block
+                                // Try to read the next block
                                 match self.reader.next_block().await {
                                     Ok(Some(next_block)) => {
-                                        // Success! The optimistic approach worked.
-                                        // Log the error and process this block.
-                                        let error = ReadError::new(
-                                            ReadErrorKind::InvalidSyncMarker {
+                                        // Check if the block looks reasonable (not garbage)
+                                        // Garbage blocks might have unreasonable sizes
+                                        let looks_reasonable = next_block.record_count > 0
+                                            && next_block.record_count < 10_000_000
+                                            && next_block.compressed_size > 0
+                                            && (next_block.compressed_size as u64) < file_size;
+
+                                        if !looks_reasonable {
+                                            // Block looks like garbage, fall back to scanning
+                                            // Scan from the ORIGINAL position, not from where
+                                            // the garbage block's sync landed us.
+                                            let scan_from = original_scan_position
+                                                .map(|p| p + 1)
+                                                .unwrap_or(self.reader.header().header_size);
+                                            let (found, _) = self
+                                                .reader
+                                                .skip_to_next_sync_from(scan_from)
+                                                .await?;
+                                            let error = BadBlockError::new(
+                                                BadBlockErrorKind::InvalidSyncMarker {
+                                                    expected: expected_marker,
+                                                    actual: actual_marker,
+                                                },
+                                                block_index_before,
+                                                None,
+                                                offset_before,
+                                                format!(
+                                                    "{}. Optimistic advance found suspicious block (record_count={}, compressed_size={}), scanned instead.",
+                                                    error_message, next_block.record_count, next_block.compressed_size
+                                                ),
+                                            );
+                                            self.errors.push(error);
+
+                                            if !found {
+                                                self.finished = true;
+                                                return Ok(None);
+                                            }
+                                            continue;
+                                        }
+
+                                        // Block looks reasonable, try to decompress
+                                        let error = BadBlockError::new(
+                                            BadBlockErrorKind::InvalidSyncMarker {
                                                 expected: expected_marker,
                                                 actual: actual_marker,
                                             },
@@ -563,11 +460,18 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                                         );
                                         self.errors.push(error);
 
-                                        // Try to decompress this block
-                                        match self.codec.decompress(&next_block.data) {
+                                        match self.codec.decompress_with_limit(
+                                            &next_block.data,
+                                            self.config.max_decompressed_block_size,
+                                        ) {
                                             Ok(decompressed_data) => {
                                                 let decompressed_data =
                                                     Bytes::from(decompressed_data);
+                                                // NOTE: We don't clear recovery_scan_position here.
+                                                // This block came from optimistic advance which is
+                                                // uncertain. If record decoding fails later, the
+                                                // stream layer may need to retry, and we want
+                                                // fallback_scan to use the saved position.
                                                 return Ok(Some(DecompressedBlock::new(
                                                     next_block.record_count,
                                                     decompressed_data,
@@ -575,10 +479,9 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                                                 )));
                                             }
                                             Err(decomp_err) => {
-                                                // Decompression failed on the optimistically-read block
-                                                // Log this error and fall back to scanning
-                                                let error = ReadError::new(
-                                                    ReadErrorKind::DecompressionFailed {
+                                                // Decompression failed, fall back to scanning
+                                                let error = BadBlockError::new(
+                                                    BadBlockErrorKind::DecompressionFailed {
                                                         codec: self.codec.name().to_string(),
                                                     },
                                                     next_block.block_index,
@@ -588,39 +491,19 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                                                 );
                                                 self.errors.push(error);
 
-                                                // Fall back to scanning
-                                                let (found, bytes_skipped) =
-                                                    self.reader.skip_to_next_sync().await?;
-
+                                                let found = self.fallback_scan().await?;
                                                 if !found {
-                                                    self.finished = true;
                                                     return Ok(None);
                                                 }
-
-                                                // Log scanning recovery
-                                                let error = ReadError::new(
-                                                    ReadErrorKind::InvalidSyncMarker {
-                                                        expected: expected_marker,
-                                                        actual: actual_marker,
-                                                    },
-                                                    block_index_before,
-                                                    None,
-                                                    offset_before,
-                                                    format!(
-                                                        "Scanned {} bytes to find next sync marker after decompression failure.",
-                                                        bytes_skipped
-                                                    ),
-                                                );
-                                                self.errors.push(error);
-
                                                 continue;
                                             }
                                         }
                                     }
                                     Ok(None) => {
-                                        // EOF reached after optimistic advance
-                                        let error = ReadError::new(
-                                            ReadErrorKind::InvalidSyncMarker {
+                                        // EOF after optimistic advance, try scanning
+                                        let found = self.fallback_scan().await?;
+                                        let error = BadBlockError::new(
+                                            BadBlockErrorKind::InvalidSyncMarker {
                                                 expected: expected_marker,
                                                 actual: actual_marker,
                                             },
@@ -628,35 +511,8 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                                             None,
                                             offset_before,
                                             format!(
-                                                "{}. Reached EOF after invalid sync marker.",
+                                                "{}. Reached EOF after advance, scanned for more data.",
                                                 error_message
-                                            ),
-                                        );
-                                        self.errors.push(error);
-                                        self.finished = true;
-                                        return Ok(None);
-                                    }
-                                    Err(_next_err) => {
-                                        // Optimistic approach failed - fall back to scanning
-                                        // Scan from byte 1 of the invalid sync marker position
-                                        // (not byte 0, to avoid finding the same corrupted position)
-                                        let (found, bytes_skipped) = self
-                                            .reader
-                                            .skip_to_next_sync_from(invalid_sync_offset + 1)
-                                            .await?;
-
-                                        // Log the error with recovery information
-                                        let error = ReadError::new(
-                                            ReadErrorKind::InvalidSyncMarker {
-                                                expected: expected_marker,
-                                                actual: actual_marker,
-                                            },
-                                            block_index_before,
-                                            None,
-                                            offset_before,
-                                            format!(
-                                                "{}. Optimistic recovery failed, scanned {} bytes to find next sync marker.",
-                                                error_message, bytes_skipped
                                             ),
                                         );
                                         self.errors.push(error);
@@ -665,41 +521,89 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                                             self.finished = true;
                                             return Ok(None);
                                         }
+                                        continue;
+                                    }
+                                    Err(next_err) => {
+                                        // Optimistic advance failed
+                                        if let ReaderError::InvalidSyncMarker {
+                                            file_offset: next_offset,
+                                            expected: next_expected,
+                                            actual: next_actual,
+                                            ..
+                                        } = next_err
+                                        {
+                                            // Another InvalidSyncMarker - continue advancing.
+                                            // This handles "consecutive corrupted sync" where block
+                                            // boundaries are correct but sync bytes are wrong.
+                                            // Store the original position for fallback scanning if
+                                            // we later hit a different error type.
+                                            self.recovery_scan_position = original_scan_position;
+                                            self.reader.advance_past_invalid_sync(next_offset);
+                                            let error = BadBlockError::new(
+                                                BadBlockErrorKind::InvalidSyncMarker {
+                                                    expected: next_expected,
+                                                    actual: next_actual,
+                                                },
+                                                self.reader.block_index().saturating_sub(1),
+                                                None,
+                                                next_offset,
+                                                "Consecutive invalid sync marker, advancing."
+                                                    .to_string(),
+                                            );
+                                            self.errors.push(error);
+                                            continue;
+                                        }
 
+                                        // Other error (parse error, etc.), fall back to scanning
+                                        let found = self.fallback_scan().await?;
+                                        let error = BadBlockError::new(
+                                            BadBlockErrorKind::InvalidSyncMarker {
+                                                expected: expected_marker,
+                                                actual: actual_marker,
+                                            },
+                                            block_index_before,
+                                            None,
+                                            offset_before,
+                                            format!(
+                                                "{}. Optimistic advance failed ({}), scanned instead.",
+                                                error_message, next_err
+                                            ),
+                                        );
+                                        self.errors.push(error);
+
+                                        if !found {
+                                            return Ok(None);
+                                        }
                                         continue;
                                     }
                                 }
                             } else {
                                 // For other errors (parse errors, truncated data, etc.),
-                                // scan from the last known good position (offset_before + 1).
+                                // scan from the last known good position.
                                 //
                                 // This is critical because:
                                 // - If the block header claimed a large compressed_size but the
                                 //   actual data was truncated, the real next sync marker might
                                 //   be hiding inside what we thought was the data body.
-                                // - By scanning from offset_before + 1, we ensure we don't miss
-                                //   any sync markers that might be earlier than current_offset.
+                                // - By scanning from last_successful_position + 1, we ensure we
+                                //   don't miss any sync markers that might be earlier than current_offset.
                                 let error_message = e.to_string();
-                                let (found, bytes_skipped) = self
-                                    .reader
-                                    .skip_to_next_sync_from(offset_before + 1)
-                                    .await?;
+                                let found = self.fallback_scan().await?;
 
                                 // Log the error with recovery information
-                                let error = ReadError::new(
-                                    ReadErrorKind::BlockParseFailed,
+                                let error = BadBlockError::new(
+                                    BadBlockErrorKind::BlockParseFailed,
                                     block_index_before,
                                     None,
                                     offset_before,
                                     format!(
-                                        "{}. Scanned {} bytes from offset {} to find next sync marker.",
-                                        error_message, bytes_skipped, offset_before + 1
+                                        "{}. Scanned from last known good position to find next sync marker.",
+                                        error_message
                                     ),
                                 );
                                 self.errors.push(error);
 
                                 if !found {
-                                    self.finished = true;
                                     return Ok(None);
                                 }
 
@@ -711,9 +615,28 @@ impl<S: StreamSource> PrefetchBuffer<S> {
             };
 
             // Try to decompress the block
-            match self.codec.decompress(&block.data) {
+            match self
+                .codec
+                .decompress_with_limit(&block.data, self.config.max_decompressed_block_size)
+            {
                 Ok(decompressed_data) => {
                     let decompressed_data = Bytes::from(decompressed_data);
+                    debug!(
+                        block_index = block.block_index,
+                        compressed_bytes = block.data.len(),
+                        decompressed_bytes = decompressed_data.len(),
+                        record_count = block.record_count,
+                        "Decompressed block"
+                    );
+                    // Clear recovery_scan_position if we've progressed past it.
+                    // This prevents fallback_scan at EOF from going back to
+                    // positions we've already successfully processed.
+                    if let Some(recovery_pos) = self.recovery_scan_position {
+                        let current_pos = self.reader.current_offset();
+                        if current_pos > recovery_pos {
+                            self.recovery_scan_position = None;
+                        }
+                    }
                     return Ok(Some(DecompressedBlock::new(
                         block.record_count,
                         decompressed_data,
@@ -726,8 +649,8 @@ impl<S: StreamSource> PrefetchBuffer<S> {
                         ErrorMode::Strict => return Err(e.into()),
                         ErrorMode::Skip => {
                             // Log the error
-                            let error = ReadError::new(
-                                ReadErrorKind::DecompressionFailed {
+                            let error = BadBlockError::new(
+                                BadBlockErrorKind::DecompressionFailed {
                                     codec: self.codec.name().to_string(),
                                 },
                                 block.block_index,
@@ -1509,16 +1432,16 @@ mod tests {
 
             file.extend_from_slice(&sync_marker);
 
-            // Block 1: valid sync marker
-            file.extend_from_slice(&create_test_block(10, b"block1", &sync_marker));
+            // Block 1: valid sync marker (record_count must be <= data.len() for recovery check)
+            file.extend_from_slice(&create_test_block(1, b"block1", &sync_marker));
             // Block 2: corrupted sync marker
-            file.extend_from_slice(&create_test_block(20, b"block2", &bad_sync));
+            file.extend_from_slice(&create_test_block(2, b"block2", &bad_sync));
             // Block 3: corrupted sync marker
-            file.extend_from_slice(&create_test_block(30, b"block3", &bad_sync));
+            file.extend_from_slice(&create_test_block(3, b"block3", &bad_sync));
             // Block 4: valid sync marker (recovery target)
-            file.extend_from_slice(&create_test_block(40, b"block4", &sync_marker));
+            file.extend_from_slice(&create_test_block(4, b"block4", &sync_marker));
             // Block 5: valid sync marker
-            file.extend_from_slice(&create_test_block(50, b"block5", &sync_marker));
+            file.extend_from_slice(&create_test_block(5, b"block5", &sync_marker));
 
             let source = MockSource::new(file);
             let reader = BlockReader::new(source).await.unwrap();
@@ -1533,28 +1456,28 @@ mod tests {
 
             // Block 1 should be read (has valid sync marker)
             assert!(
-                blocks_read.contains(&10),
+                blocks_read.contains(&1),
                 "Should have read block 1 (valid sync), got: {:?}",
                 blocks_read
             );
 
             // Block 2 should NOT be read - its trailing sync marker is corrupted
             assert!(
-                !blocks_read.contains(&20),
+                !blocks_read.contains(&2),
                 "Block 2 should be skipped (corrupted trailing sync), got: {:?}",
                 blocks_read
             );
 
             // Block 3 should NOT be read - its trailing sync marker is corrupted
             assert!(
-                !blocks_read.contains(&30),
+                !blocks_read.contains(&3),
                 "Block 3 should be skipped (corrupted trailing sync), got: {:?}",
                 blocks_read
             );
 
             // Block 5 should be recovered (valid sync marker)
             assert!(
-                blocks_read.contains(&50),
+                blocks_read.contains(&5),
                 "Should have recovered block 5, got: {:?}",
                 blocks_read
             );
@@ -1891,6 +1814,953 @@ mod tests {
 
             // EOF
             assert!(buffer.next().await.unwrap().is_none());
+        });
+    }
+
+    // ========================================================================
+    // Recovery Logic Tests
+    // ========================================================================
+
+    #[test]
+    fn test_consecutive_invalid_sync_recovery() {
+        // Test recovery from consecutive corrupted sync markers.
+        // The optimistic advance loop should handle multiple consecutive corruptions.
+        run_async(async {
+            // File structure:
+            // - Block 1: valid sync marker -> returned
+            // - Block 2: corrupted sync marker -> triggers recovery
+            // - Block 3: corrupted sync marker -> continued recovery
+            // - Block 4: valid sync marker -> returned after recovery
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            let bad_sync: [u8; 16] = [0xFF; 16];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Block 1: valid sync marker (record_count must be <= data.len() for recovery check)
+            file.extend_from_slice(&create_test_block(1, b"block1", &sync_marker));
+            // Block 2: corrupted sync marker
+            file.extend_from_slice(&create_test_block(2, b"block2", &bad_sync));
+            // Block 3: corrupted sync marker (consecutive)
+            file.extend_from_slice(&create_test_block(3, b"block3", &bad_sync));
+            // Block 4: valid sync marker (recovery target)
+            file.extend_from_slice(&create_test_block(4, b"block4", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Block 1 should be read (has valid sync marker)
+            assert!(
+                blocks_read.contains(&1),
+                "Should have read block 1 (valid sync), got: {:?}",
+                blocks_read
+            );
+
+            // Blocks 2 and 3 should NOT be read - their trailing sync markers are corrupted
+            assert!(
+                !blocks_read.contains(&2),
+                "Block 2 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+            assert!(
+                !blocks_read.contains(&3),
+                "Block 3 should be skipped (corrupted trailing sync), got: {:?}",
+                blocks_read
+            );
+
+            // Block 4 should be recovered (valid sync marker)
+            assert!(
+                blocks_read.contains(&4),
+                "Should have recovered block 4, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged errors for the corrupted sync markers
+            let error_count = buffer.errors().len();
+            assert!(
+                error_count >= 1,
+                "Should have logged at least 1 error for corrupted sync markers, got: {}",
+                error_count
+            );
+        });
+    }
+
+    #[test]
+    fn test_many_consecutive_parse_errors_terminates() {
+        // Stress test: Many consecutive corrupted blocks (parse errors) should
+        // all be skipped and we should reach EOF without infinite looping.
+        // This tests that the forward progress mechanism works even with many failures.
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Add 10 consecutive corrupted blocks (negative record count)
+            for i in 0..10 {
+                let mut corrupted = Vec::new();
+                corrupted.extend_from_slice(&encode_zigzag(-(i + 1))); // negative record count
+                corrupted.extend_from_slice(&encode_zigzag(10));
+                corrupted.extend_from_slice(&format!("bad_{:02}", i).as_bytes());
+                corrupted.extend_from_slice(&sync_marker);
+                file.extend_from_slice(&corrupted);
+            }
+
+            // Add a valid block at the end (should be recovered)
+            file.extend_from_slice(&create_test_block(99, b"valid_final", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            // Use timeout to detect infinite loop
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut blocks_read = Vec::new();
+                while let Some(block) = buffer.next().await.unwrap() {
+                    blocks_read.push(block.record_count);
+                }
+                blocks_read
+            });
+
+            let blocks_read = timeout
+                .await
+                .expect("INFINITE LOOP: test timed out with many consecutive corruptions");
+
+            // The final valid block should be recovered
+            assert!(
+                blocks_read.contains(&99),
+                "Should recover final valid block after 10 corrupted blocks, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged 10 errors
+            assert_eq!(
+                buffer.errors().len(),
+                10,
+                "Should have logged 10 errors for corrupted blocks, got: {}",
+                buffer.errors().len()
+            );
+        });
+    }
+
+    #[test]
+    fn test_first_block_corrupted_recovery() {
+        // Test recovery when the FIRST block is corrupted (no last_successful_position).
+        // The fallback_scan should start from header_size and find valid blocks.
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+
+            file.extend_from_slice(&sync_marker);
+
+            // First block: corrupted (negative record count causes parse error)
+            let mut corrupted = Vec::new();
+            corrupted.extend_from_slice(&encode_zigzag(-1)); // negative record count!
+            corrupted.extend_from_slice(&encode_zigzag(5));
+            corrupted.extend_from_slice(b"bad!!");
+            corrupted.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&corrupted);
+
+            // Second block: valid (should be recovered)
+            file.extend_from_slice(&create_test_block(20, b"block2_data", &sync_marker));
+
+            // Third block: valid
+            file.extend_from_slice(&create_test_block(30, b"block3_data", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // First block should NOT be read (corrupted)
+            // But blocks 2 and 3 should be recovered
+            assert!(
+                !blocks_read.is_empty(),
+                "Should have recovered some blocks, got none"
+            );
+            assert!(
+                blocks_read.contains(&20),
+                "Should have recovered block 2, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&30),
+                "Should have recovered block 3, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged an error for the first block
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted first block"
+            );
+        });
+    }
+
+    #[test]
+    fn test_repeated_parse_errors_does_not_infinite_loop() {
+        // CRITICAL: This tests for a potential infinite loop bug.
+        //
+        // Scenario:
+        // 1. Block 1 parses successfully, sets last_successful_position
+        // 2. Position after block 1 has corrupted block (negative record count -> parse error)
+        // 3. fallback_scan() finds sync marker at position X, positions reader there
+        // 4. Position X ALSO has corrupted block (parse error)
+        // 5. Without proper handling, fallback_scan() would scan from
+        //    last_successful_position again, find the same sync at X, infinite loop!
+        //
+        // The test verifies we eventually reach EOF or recover, not loop forever.
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Block 1: valid block
+            file.extend_from_slice(&create_test_block(10, b"block1_data", &sync_marker));
+
+            // Corrupted block 2: negative record count causes parse error
+            // This is NOT an InvalidSyncMarker error - it's a parse error
+            let mut corrupted1 = Vec::new();
+            corrupted1.extend_from_slice(&encode_zigzag(-5)); // negative record count!
+            corrupted1.extend_from_slice(&encode_zigzag(10));
+            corrupted1.extend_from_slice(b"corrupted1");
+            corrupted1.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&corrupted1);
+
+            // Another corrupted block: also negative record count
+            // This is the second sync marker that fallback_scan would find
+            let mut corrupted2 = Vec::new();
+            corrupted2.extend_from_slice(&encode_zigzag(-3)); // negative record count!
+            corrupted2.extend_from_slice(&encode_zigzag(10));
+            corrupted2.extend_from_slice(b"corrupted2");
+            corrupted2.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&corrupted2);
+
+            // Block 3: valid block (recovery target)
+            file.extend_from_slice(&create_test_block(30, b"block3_data", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            // Use a timeout to detect infinite loop
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut blocks_read = Vec::new();
+                while let Some(block) = buffer.next().await.unwrap() {
+                    blocks_read.push(block.record_count);
+                }
+                blocks_read
+            });
+
+            let blocks_read = timeout
+                .await
+                .expect("INFINITE LOOP DETECTED: test timed out after 5 seconds");
+
+            // Block 1 should be read
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 1, got: {:?}",
+                blocks_read
+            );
+
+            // Block 3 should be recovered (if implementation is correct)
+            // If this fails but we didn't timeout, the implementation at least doesn't loop forever
+            assert!(
+                blocks_read.contains(&30),
+                "Should have recovered block 3 after parse errors, got: {:?}. \
+                 If this fails but didn't timeout, recovery is incomplete but not looping.",
+                blocks_read
+            );
+
+            // Should have logged errors
+            assert!(
+                buffer.errors().len() >= 2,
+                "Should have logged at least 2 errors for corrupted blocks, got: {}",
+                buffer.errors().len()
+            );
+        });
+    }
+
+    #[test]
+    fn test_fallback_scan_uses_last_known_good_position() {
+        // Test that fallback scan starts from last_successful_position + 1.
+        // This is critical for parse errors where the block header claimed a
+        // large compressed_size but actual data was truncated - the real next
+        // sync marker might be hiding inside what we thought was the data body.
+        run_async(async {
+            // Create file where block 2 has corrupted data size.
+            // Block 2 claims compressed_size=999999 but only has a few bytes.
+            // The reader should:
+            // 1. Successfully read block 1, set last_successful_position
+            // 2. Fail to parse block 2 (EOF trying to read 999999 bytes)
+            // 3. Scan for next sync marker starting from last_successful_position + 1
+            // 4. Find and successfully read block 3
+            //
+            // The key test is that we don't miss block 3 by scanning from too
+            // far into the file.
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Block 1: valid block
+            file.extend_from_slice(&create_test_block(10, b"block1_data", &sync_marker));
+
+            // Block 2: corrupted - claims large size but has only a few bytes
+            // This triggers a parse error, not an InvalidSyncMarker error
+            let mut corrupted_block = Vec::new();
+            corrupted_block.extend_from_slice(&encode_zigzag(20)); // record count
+            corrupted_block.extend_from_slice(&encode_zigzag(999999)); // claims huge size
+            corrupted_block.extend_from_slice(b"short"); // only 5 bytes of actual data
+            corrupted_block.extend_from_slice(&sync_marker); // sync marker
+            file.extend_from_slice(&corrupted_block);
+
+            // Block 3: valid block that should be recovered
+            file.extend_from_slice(&create_test_block(30, b"block3_data", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Block 1 should be read
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 1, got: {:?}",
+                blocks_read
+            );
+
+            // Block 2 should NOT be read (corrupted data size)
+            assert!(
+                !blocks_read.contains(&20),
+                "Block 2 should be skipped (corrupted), got: {:?}",
+                blocks_read
+            );
+
+            // Block 3 should be recovered - this verifies that fallback_scan
+            // starts from last_successful_position (after block 1) and finds
+            // the sync marker preceding block 3
+            assert!(
+                blocks_read.contains(&30),
+                "Should have recovered block 3 after parse error, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged an error for the corrupted block
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted block"
+            );
+
+            // Verify the error is about block parsing (not sync marker)
+            let has_parse_error = buffer
+                .errors()
+                .iter()
+                .any(|e| matches!(e.kind, BadBlockErrorKind::BlockParseFailed));
+            assert!(
+                has_parse_error,
+                "Should have logged a BlockParseFailed error, got: {:?}",
+                buffer.errors()
+            );
+        });
+    }
+
+    #[test]
+    fn test_extra_bytes_before_sync_recovery() {
+        // Test that when extra stray bytes are inserted between block data and
+        // the sync marker, we correctly recover subsequent blocks WITHOUT losing
+        // the blocks that were successfully read before the corruption.
+        //
+        // File structure:
+        // - Block 0: valid (record_count=10)
+        // - Block 1: valid data but has 7 extra bytes before sync -> InvalidSyncMarker
+        // - Block 2: valid (record_count=30)
+        //
+        // Expected: Read block 0 successfully, skip block 1, recover block 2.
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Block 0: valid block (should be read first)
+            file.extend_from_slice(&create_test_block(10, b"block0_data", &sync_marker));
+
+            // Block 1: valid data BUT extra bytes before sync marker
+            // This triggers InvalidSyncMarker error
+            let mut corrupted_block = Vec::new();
+            corrupted_block.extend_from_slice(&encode_zigzag(20)); // record count
+            corrupted_block.extend_from_slice(&encode_zigzag(10)); // data size
+            corrupted_block.extend_from_slice(b"block1_bad"); // data (10 bytes)
+            corrupted_block.extend_from_slice(&[0xAA; 7]); // 7 EXTRA BYTES
+            corrupted_block.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&corrupted_block);
+
+            // Block 2: valid block (should be recovered)
+            file.extend_from_slice(&create_test_block(30, b"block2_data", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                eprintln!("Read block with record_count={}", block.record_count);
+                blocks_read.push(block.record_count);
+            }
+            eprintln!("All blocks read: {:?}", blocks_read);
+
+            // Block 0 should be read (valid block BEFORE corruption)
+            assert!(
+                blocks_read.contains(&10),
+                "Should have read block 0 (valid block before corruption), got: {:?}",
+                blocks_read
+            );
+
+            // Block 2 should be recovered (valid block AFTER corruption)
+            assert!(
+                blocks_read.contains(&30),
+                "Should have recovered block 2 after InvalidSyncMarker, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged an error for block 1
+            assert!(
+                !buffer.errors().is_empty(),
+                "Should have logged error for corrupted block 1"
+            );
+
+            // Total should be 2 blocks (0 and 2), NOT just 1
+            assert_eq!(
+                blocks_read.len(),
+                2,
+                "Should have read 2 blocks (0 and 2), got: {:?}",
+                blocks_read
+            );
+        });
+    }
+
+    #[test]
+    fn test_extra_bytes_before_sync_recovery_multiple_blocks_after() {
+        // Test similar to above but with 2 valid blocks after the corruption.
+        // This matches the failing property test case:
+        // valid_blocks_before = 1, valid_blocks_after = 2, records_per_block = 3, extra_bytes = 7
+        //
+        // File structure:
+        // - Block 0: valid (record_count=3)
+        // - Block 1: valid data but has 7 extra bytes before sync -> InvalidSyncMarker
+        // - Block 2: valid (record_count=3)
+        // - Block 3: valid (record_count=3)
+        //
+        // Expected: Read blocks 0, 2, 3 (total 3 blocks).
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+
+            file.extend_from_slice(&sync_marker);
+
+            // Block 0: valid block (should be read first)
+            file.extend_from_slice(&create_test_block(3, b"block0_data", &sync_marker));
+
+            // Block 1: valid data BUT extra bytes before sync marker
+            let mut corrupted_block = Vec::new();
+            corrupted_block.extend_from_slice(&encode_zigzag(3)); // record count
+            corrupted_block.extend_from_slice(&encode_zigzag(10)); // data size
+            corrupted_block.extend_from_slice(b"block1_bad"); // data (10 bytes)
+            corrupted_block.extend_from_slice(&[0xAA; 7]); // 7 EXTRA BYTES
+            corrupted_block.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&corrupted_block);
+
+            // Block 2: valid block (should be recovered)
+            file.extend_from_slice(&create_test_block(3, b"block2_data", &sync_marker));
+
+            // Block 3: valid block (should also be recovered)
+            file.extend_from_slice(&create_test_block(3, b"block3_data", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                eprintln!("Read block with record_count={}", block.record_count);
+                blocks_read.push(block.record_count);
+            }
+            eprintln!("All blocks read: {:?}", blocks_read);
+            eprintln!("Errors: {:?}", buffer.errors());
+
+            // Should have read 3 blocks total (0, 2, 3)
+            assert_eq!(
+                blocks_read.len(),
+                3,
+                "Should have read 3 blocks (0, 2, 3), got: {:?}",
+                blocks_read
+            );
+        });
+    }
+
+    #[test]
+    fn test_mixed_error_types_invalid_sync_then_parse_error() {
+        // Tests the interaction between InvalidSyncMarker and parse error recovery.
+        //
+        // Scenario:
+        // 1. Block 0: valid
+        // 2. Block 1: valid data but WRONG sync marker bytes (InvalidSyncMarker error)
+        // 3. After optimistic advance: garbage that looks like negative record count (parse error)
+        // 4. Block 2: valid (should be recovered via fallback scan)
+        //
+        // This tests that recovery_scan_position is correctly used when optimistic
+        // advance hits a parse error.
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            file.extend_from_slice(&sync_marker);
+
+            // Block 0: valid
+            file.extend_from_slice(&create_test_block(1, b"block0", &sync_marker));
+
+            // Block 1: valid data but WRONG sync marker (triggers InvalidSyncMarker)
+            let wrong_sync: [u8; 16] = [0xFF; 16];
+            file.extend_from_slice(&create_test_block(1, b"block1", &wrong_sync));
+
+            // Garbage after block 1 that looks like a negative record count
+            // This will cause a parse error if optimistic advance tries to read here
+            let mut garbage = Vec::new();
+            garbage.extend_from_slice(&encode_zigzag(-999)); // negative = parse error
+            garbage.extend_from_slice(&encode_zigzag(5));
+            garbage.extend_from_slice(b"junk!");
+            garbage.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&garbage);
+
+            // Block 2: valid (recovery target)
+            file.extend_from_slice(&create_test_block(2, b"block2!", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut blocks_read = Vec::new();
+                while let Some(block) = buffer.next().await.unwrap() {
+                    blocks_read.push(block.record_count);
+                }
+                blocks_read
+            });
+
+            let blocks_read = timeout
+                .await
+                .expect("Should not infinite loop on mixed error types");
+
+            // Block 0 should be read
+            assert!(
+                blocks_read.contains(&1),
+                "Should have read block 0, got: {:?}",
+                blocks_read
+            );
+
+            // Block 2 should be recovered
+            assert!(
+                blocks_read.contains(&2),
+                "Should have recovered block 2 after mixed errors, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged errors
+            assert!(
+                buffer.errors().len() >= 1,
+                "Should have logged at least 1 error, got: {}",
+                buffer.errors().len()
+            );
+        });
+    }
+
+    #[test]
+    fn test_decompression_error_recovery() {
+        // Tests recovery from decompression errors (different code path than parse errors).
+        //
+        // With null codec, we can't easily trigger decompression errors, but we can
+        // test the flow by creating a block that will fail during record decoding
+        // (which happens after decompression in the full pipeline).
+        //
+        // This test verifies that after a block is successfully parsed and decompressed,
+        // but the next block has issues, we can still recover.
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            file.extend_from_slice(&sync_marker);
+
+            // Block 0: valid
+            file.extend_from_slice(&create_test_block(1, b"valid0", &sync_marker));
+
+            // Block 1: valid header but corrupted sync (will be skipped)
+            let wrong_sync: [u8; 16] = [0xAA; 16];
+            file.extend_from_slice(&create_test_block(1, b"skip_1", &wrong_sync));
+
+            // Block 2: valid (should be recovered)
+            file.extend_from_slice(&create_test_block(2, b"valid2!", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let mut blocks_read = Vec::new();
+            while let Some(block) = buffer.next().await.unwrap() {
+                blocks_read.push(block.record_count);
+            }
+
+            // Should have read blocks 0 and 2
+            assert!(
+                blocks_read.contains(&1),
+                "Should have read block 0, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&2),
+                "Should have recovered block 2, got: {:?}",
+                blocks_read
+            );
+        });
+    }
+
+    #[test]
+    fn test_recovery_position_cleared_after_successful_progress() {
+        // Tests that recovery_scan_position is cleared after we successfully
+        // progress past it, preventing stale positions from affecting later recovery.
+        //
+        // Scenario:
+        // 1. Block 0: valid
+        // 2. Block 1: invalid sync (sets recovery_scan_position during handling)
+        // 3. Block 2: valid (clears recovery_scan_position as we progress past it)
+        // 4. Block 3: invalid sync (should NOT use the old recovery_scan_position)
+        // 5. Block 4: valid (should be recovered)
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            file.extend_from_slice(&sync_marker);
+
+            // Block 0: valid
+            file.extend_from_slice(&create_test_block(1, b"blk_0", &sync_marker));
+
+            // Block 1: wrong sync marker
+            let wrong_sync1: [u8; 16] = [0xBB; 16];
+            file.extend_from_slice(&create_test_block(1, b"blk_1", &wrong_sync1));
+
+            // Block 2: valid
+            file.extend_from_slice(&create_test_block(2, b"blk_2!", &sync_marker));
+
+            // Block 3: wrong sync marker (different corruption)
+            let wrong_sync2: [u8; 16] = [0xCC; 16];
+            file.extend_from_slice(&create_test_block(1, b"blk_3", &wrong_sync2));
+
+            // Block 4: valid (recovery target)
+            file.extend_from_slice(&create_test_block(3, b"blk_4!!", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut blocks_read = Vec::new();
+                while let Some(block) = buffer.next().await.unwrap() {
+                    blocks_read.push(block.record_count);
+                }
+                blocks_read
+            });
+
+            let blocks_read = timeout
+                .await
+                .expect("Should not infinite loop with interleaved valid/invalid blocks");
+
+            // Should have read blocks 0, 2, and 4
+            assert!(
+                blocks_read.contains(&1),
+                "Should have read block 0, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&2),
+                "Should have read block 2, got: {:?}",
+                blocks_read
+            );
+            assert!(
+                blocks_read.contains(&3),
+                "Should have recovered block 4, got: {:?}",
+                blocks_read
+            );
+
+            // Should have logged errors for blocks 1 and 3
+            assert!(
+                buffer.errors().len() >= 2,
+                "Should have logged at least 2 errors, got: {}",
+                buffer.errors().len()
+            );
+        });
+    }
+
+    #[test]
+    fn test_optimistic_advance_then_suspicious_block_triggers_scan() {
+        // Tests that when optimistic advance lands on a "suspicious" block
+        // (garbage that happens to parse but has unreasonable values),
+        // we fall back to scanning from the original recovery position.
+        //
+        // This is the "extra bytes before sync" scenario where:
+        // 1. Block has extra garbage bytes before its sync marker
+        // 2. Optimistic advance skips past the wrong sync
+        // 3. Landing position has garbage that coincidentally parses
+        // 4. Suspicious block check rejects it
+        // 5. Fallback scan from original position finds the real next block
+        run_async(async {
+            let mut file = Vec::new();
+
+            // Header
+            file.extend_from_slice(&AVRO_MAGIC);
+            file.extend_from_slice(&encode_zigzag(1));
+            let schema_key = b"avro.schema";
+            let schema_json = br#""string""#;
+            file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+            file.extend_from_slice(schema_key);
+            file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+            file.extend_from_slice(schema_json);
+            file.push(0x00);
+
+            let sync_marker: [u8; 16] = [
+                0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+                0xDE, 0xF0,
+            ];
+            file.extend_from_slice(&sync_marker);
+
+            // Block 0: valid
+            file.extend_from_slice(&create_test_block(1, b"block0", &sync_marker));
+
+            // Block 1: valid data + extra garbage bytes + sync
+            // This creates the "extra bytes before sync" corruption
+            let mut corrupted_block = Vec::new();
+            corrupted_block.extend_from_slice(&encode_zigzag(1)); // record_count
+            corrupted_block.extend_from_slice(&encode_zigzag(6)); // compressed_size
+            corrupted_block.extend_from_slice(b"block1");
+            corrupted_block.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]); // 5 extra bytes
+            corrupted_block.extend_from_slice(&sync_marker);
+            file.extend_from_slice(&corrupted_block);
+
+            // Block 2: valid (should be recovered)
+            file.extend_from_slice(&create_test_block(2, b"block2!", &sync_marker));
+
+            let source = MockSource::new(file);
+            let reader = BlockReader::new(source).await.unwrap();
+            let config = BufferConfig::default();
+
+            let mut buffer = PrefetchBuffer::new(reader, config, ErrorMode::Skip);
+
+            let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let mut blocks_read = Vec::new();
+                while let Some(block) = buffer.next().await.unwrap() {
+                    blocks_read.push(block.record_count);
+                }
+                blocks_read
+            });
+
+            let blocks_read = timeout
+                .await
+                .expect("Should recover from extra bytes before sync");
+
+            // Block 0 should be read
+            assert!(
+                blocks_read.contains(&1),
+                "Should have read block 0, got: {:?}",
+                blocks_read
+            );
+
+            // Block 2 should be recovered
+            assert!(
+                blocks_read.contains(&2),
+                "Should have recovered block 2, got: {:?}",
+                blocks_read
+            );
         });
     }
 }

@@ -4,21 +4,41 @@ This guide covers reading Avro files from the local filesystem.
 
 ## Basic Usage
 
-### Using scan() (Recommended)
+### Using scan_avro() (Recommended)
 
-The `scan()` function returns a Polars LazyFrame, enabling query optimizations:
+The `scan_avro()` function returns a Polars LazyFrame, enabling query optimizations:
 
 ```python
 import jetliner
 
 # Read entire file
-df = jetliner.scan("data.avro").collect()
+df = jetliner.scan_avro("data.avro").collect()
 
 # Relative paths work too
-df = jetliner.scan("./data/records.avro").collect()
+df = jetliner.scan_avro("./data/records.avro").collect()
 
 # Absolute paths
-df = jetliner.scan("/home/user/data/records.avro").collect()
+df = jetliner.scan_avro("/home/user/data/records.avro").collect()
+```
+
+### Using read_avro() for Eager Loading
+
+The `read_avro()` function returns a DataFrame directly with optional column selection:
+
+```python
+import jetliner
+
+# Read entire file
+df = jetliner.read_avro("data.avro")
+
+# Read specific columns
+df = jetliner.read_avro("data.avro", columns=["user_id", "amount"])
+
+# Read specific columns by index
+df = jetliner.read_avro("data.avro", columns=[0, 2, 5])
+
+# Limit rows
+df = jetliner.read_avro("data.avro", n_rows=1000)
 ```
 
 ### Using open() for Streaming
@@ -31,6 +51,7 @@ import jetliner
 with jetliner.open("data.avro") as reader:
     for batch in reader:
         print(f"Batch with {batch.height} rows")
+```
 ```
 
 ## Path Formats
@@ -54,35 +75,53 @@ jetliner.scan(str(Path.home() / "data" / "records.avro"))
 
 ## Working with Multiple Files
 
-To read multiple Avro files, process them individually and concatenate:
+Jetliner supports reading multiple Avro files with glob patterns or explicit lists:
 
 ```python
 import jetliner
-import polars as pl
-from pathlib import Path
 
-# Find all Avro files in a directory
-avro_files = list(Path("data").glob("*.avro"))
+# Glob pattern
+df = jetliner.read_avro("data/*.avro")
 
-# Read and concatenate
-dfs = [jetliner.scan(str(f)).collect() for f in avro_files]
-combined = pl.concat(dfs)
+# Explicit list
+df = jetliner.read_avro(["file1.avro", "file2.avro"])
+
+# With row index continuity across files
+df = jetliner.read_avro("data/*.avro", row_index_name="idx")
+
+# Track which file each row came from
+df = jetliner.read_avro("data/*.avro", include_file_paths="source_file")
 ```
 
-For large numbers of files, use lazy concatenation:
+For lazy evaluation with multiple files:
 
 ```python
 import jetliner
 import polars as pl
-from pathlib import Path
 
-avro_files = list(Path("data").glob("*.avro"))
+# Lazy concatenation with glob
+lf = jetliner.scan_avro("data/*.avro")
 
-# Create lazy frames
-lazy_frames = [jetliner.scan(str(f)) for f in avro_files]
+# Apply transformations before collecting
+result = (
+    lf.select(["user_id", "amount"])
+    .filter(pl.col("amount") > 100)
+    .collect()
+)
+```
 
-# Concatenate lazily and collect once
-combined = pl.concat(lazy_frames).collect()
+### Schema Validation
+
+When reading multiple files, all files must have identical schemas. If schemas differ, an error is raised:
+
+```python
+import jetliner
+
+# Reads successfully - identical schemas
+df = jetliner.read_avro(["file1.avro", "file2.avro"])
+
+# Raises SchemaError if schemas differ
+# SchemaError: Schema mismatch between 'file1.avro' and 'file2.avro'. All files must have identical schemas.
 ```
 
 ## Batch Processing with open()
@@ -148,7 +187,7 @@ Or use the standalone function:
 import jetliner
 
 # Get Polars schema without reading data
-polars_schema = jetliner.parse_avro_schema("data.avro")
+polars_schema = jetliner.read_avro_schema("data.avro")
 print(polars_schema)
 ```
 
@@ -171,24 +210,28 @@ except jetliner.SchemaError as e:
 
 ## Performance Tips
 
-1. **Use scan() for queries**: Enables projection and predicate pushdown
-2. **Adjust buffer settings**: For very large files, tune `buffer_blocks` and `buffer_bytes`
-3. **Process in batches**: Use `open()` when memory is constrained
-4. **Select only needed columns**: Reduces I/O and memory usage
+1. **Use scan_avro() for queries**: Enables projection and predicate pushdown
+2. **Use read_avro() with columns**: For eager loading with column selection
+3. **Adjust buffer settings**: For very large files, tune `buffer_blocks` and `buffer_bytes`
+4. **Process in batches**: Use `open()` when memory is constrained
+5. **Select only needed columns**: Reduces I/O and memory usage
 
 ```python
 import jetliner
 import polars as pl
 
-# Efficient: only reads two columns
+# Efficient: only reads two columns (via LazyFrame)
 df = (
-    jetliner.scan("large_file.avro")
+    jetliner.scan_avro("large_file.avro")
     .select(["id", "value"])
     .collect()
 )
 
+# Efficient: only reads two columns (via read_avro)
+df = jetliner.read_avro("large_file.avro", columns=["id", "value"])
+
 # Less efficient: reads all columns, then selects
-df = jetliner.scan("large_file.avro").collect()
+df = jetliner.scan_avro("large_file.avro").collect()
 df = df.select(["id", "value"])
 ```
 

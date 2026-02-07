@@ -4,10 +4,13 @@ These tests verify that jetliner can connect to S3-compatible services
 (MinIO, LocalStack, R2) using the storage_options parameter.
 
 Requirements tested:
-- 4.9: Connect to custom endpoint when `endpoint_url` is provided
+- 4.9: Connect to custom endpoint when `endpoint` is provided
 - 4.10: Use provided credentials when specified
 - 4.11: `storage_options` takes precedence over environment variables
 - 4.12: Successfully read files from S3-compatible services
+
+Note: The old `endpoint_url` key has been replaced with `endpoint` to align
+with Polars' AmazonS3ConfigKey::Endpoint.
 """
 
 from __future__ import annotations
@@ -22,22 +25,22 @@ import jetliner
 
 
 @pytest.mark.container
-class TestMinioEndpointUrl:
-    """Tests for connecting to MinIO via endpoint_url in storage_options.
+class TestMinioEndpoint:
+    """Tests for connecting to MinIO via endpoint in storage_options.
 
     Requirements: 4.9, 4.12
     """
 
-    def test_open_with_minio_endpoint_url(
+    def test_open_with_minio_endpoint(
         self, mock_s3_minio, s3_weather_file_minio, minio_container
     ):
-        """Test jetliner.open() with MinIO endpoint_url in storage_options.
+        """Test jetliner.open() with MinIO endpoint in storage_options.
 
         Verifies that we can read an Avro file from MinIO by providing
-        the endpoint_url in storage_options.
+        the endpoint in storage_options.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -51,21 +54,21 @@ class TestMinioEndpointUrl:
         total_rows = sum(df.height for df in dfs)
         assert total_rows > 0
 
-    def test_scan_with_minio_endpoint_url(
+    def test_scan_with_minio_endpoint(
         self, mock_s3_minio, s3_weather_file_minio, minio_container
     ):
-        """Test jetliner.scan() with MinIO endpoint_url in storage_options.
+        """Test jetliner.scan_avro() with MinIO endpoint in storage_options.
 
         Verifies that we can scan an Avro file from MinIO using the
         LazyFrame API with storage_options.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        lf = jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
         df = lf.collect()
 
         assert df.height > 0
@@ -100,7 +103,7 @@ class TestCredentialOverride:
                 os.environ.pop(key, None)
 
             storage_options = {
-                "endpoint_url": mock_s3_minio.endpoint_url,
+                "endpoint": mock_s3_minio.endpoint_url,
                 "aws_access_key_id": minio_container.access_key,
                 "aws_secret_access_key": minio_container.secret_key,
             }
@@ -120,7 +123,7 @@ class TestCredentialOverride:
         Verifies that the region parameter in storage_options is accepted.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
             "region": "us-east-1",
@@ -160,7 +163,7 @@ class TestStorageOptionsPrecedence:
         with patch.dict(os.environ, invalid_env):
             # Provide valid credentials via storage_options
             storage_options = {
-                "endpoint_url": mock_s3_minio.endpoint_url,
+                "endpoint": mock_s3_minio.endpoint_url,
                 "aws_access_key_id": minio_container.access_key,
                 "aws_secret_access_key": minio_container.secret_key,
             }
@@ -176,7 +179,7 @@ class TestStorageOptionsPrecedence:
     def test_storage_options_override_env_endpoint(
         self, mock_s3_minio, s3_weather_file_minio, minio_container
     ):
-        """Test that storage_options endpoint_url overrides AWS_ENDPOINT_URL.
+        """Test that storage_options endpoint overrides AWS_ENDPOINT_URL.
 
         Sets an invalid endpoint in environment and valid endpoint in
         storage_options. The read should succeed, proving storage_options
@@ -192,7 +195,7 @@ class TestStorageOptionsPrecedence:
         with patch.dict(os.environ, invalid_env):
             # Provide valid endpoint via storage_options
             storage_options = {
-                "endpoint_url": mock_s3_minio.endpoint_url,
+                "endpoint": mock_s3_minio.endpoint_url,
                 "aws_access_key_id": minio_container.access_key,
                 "aws_secret_access_key": minio_container.secret_key,
             }
@@ -225,7 +228,7 @@ class TestS3CompatibleServiceIntegration:
         4. Process all records
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -249,18 +252,18 @@ class TestS3CompatibleServiceIntegration:
     def test_scan_with_projection_on_minio(
         self, mock_s3_minio, s3_weather_file_minio, minio_container
     ):
-        """Test scan() with projection pushdown on MinIO.
+        """Test scan_avro() with projection pushdown on MinIO.
 
         Verifies that projection pushdown works correctly when
         reading from an S3-compatible service.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        lf = jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
 
         # Get all columns first
         all_cols = lf.collect().columns
@@ -274,18 +277,18 @@ class TestS3CompatibleServiceIntegration:
     def test_scan_with_filter_on_minio(
         self, mock_s3_minio, s3_weather_file_minio, minio_container
     ):
-        """Test scan() with predicate pushdown on MinIO.
+        """Test scan_avro() with predicate pushdown on MinIO.
 
         Verifies that predicate pushdown works correctly when
         reading from an S3-compatible service.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        lf = jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
 
         # Apply a filter - this should work regardless of data content
         # Just verify the operation completes without error
@@ -293,13 +296,13 @@ class TestS3CompatibleServiceIntegration:
         assert result.height <= 5
 
     def test_error_with_invalid_endpoint(self, mock_s3_minio, s3_weather_file_minio):
-        """Test that invalid endpoint_url produces appropriate error.
+        """Test that invalid endpoint produces appropriate error.
 
         Verifies that connection errors are properly reported when
         the endpoint is unreachable.
         """
         storage_options = {
-            "endpoint_url": "http://localhost:59999",  # Invalid port
+            "endpoint": "http://localhost:59999",  # Invalid port
             "aws_access_key_id": "test",
             "aws_secret_access_key": "test",
         }
@@ -319,7 +322,7 @@ class TestS3CompatibleServiceIntegration:
         credentials are invalid.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": "invalid_key",
             "aws_secret_access_key": "invalid_secret",
         }

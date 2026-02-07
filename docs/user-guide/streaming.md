@@ -81,7 +81,7 @@ For maximum speed when memory is available:
 import jetliner
 
 # More prefetching, larger buffer
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "data.avro",
     buffer_blocks=8,
     buffer_bytes=128 * 1024 * 1024,  # 128MB
@@ -177,16 +177,16 @@ with jetliner.open("data.avro") as reader:
     print(f"For 1M rows: {bytes_per_row * 1_000_000 / 1024**2:.0f} MB")
 ```
 
-## Streaming with scan()
+## Streaming with scan_avro()
 
-The `scan()` API also streams internally, but collects results at the end:
+The `scan_avro()` API also streams internally, but collects results at the end:
 
 ```python
 import jetliner
 import polars as pl
 
 # Streaming happens internally, but collect() accumulates results
-df = jetliner.scan("large_file.avro").collect()
+df = jetliner.scan_avro("large_file.avro").collect()
 ```
 
 For truly large results, use `open()` or write results incrementally:
@@ -195,7 +195,7 @@ For truly large results, use `open()` or write results incrementally:
 import jetliner
 
 # Stream and write without full accumulation
-lf = jetliner.scan("large_file.avro")
+lf = jetliner.scan_avro("large_file.avro")
 lf.sink_parquet("output.parquet")  # Polars streaming sink
 ```
 

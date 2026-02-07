@@ -2,8 +2,8 @@
 Integration tests for error handling modes with real files.
 
 Tests cover:
-- Skip mode error handling on valid files
-- Strict mode error handling on valid files
+- ignore_errors=True (skip mode) error handling on valid files
+- ignore_errors=False (strict mode) error handling on valid files
 - Error accumulation behavior
 """
 
@@ -20,10 +20,10 @@ class TestErrorHandlingRealFiles:
     """Test error handling with real files."""
 
     def test_skip_mode_on_valid_file(self, get_test_data_path):
-        """Test that skip mode works on valid files without errors."""
+        """Test that ignore_errors=True works on valid files without errors."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should read successfully
@@ -34,10 +34,10 @@ class TestErrorHandlingRealFiles:
             assert len(reader.errors) == 0
 
     def test_strict_mode_on_valid_file(self, get_test_data_path):
-        """Test that strict mode works on valid files."""
+        """Test that ignore_errors=False works on valid files."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, strict=True) as reader:
+        with jetliner.open(path, ignore_errors=False) as reader:
             dfs = list(reader)
 
             # Should read successfully
@@ -130,7 +130,7 @@ class TestUnknownCodecError:
 
         try:
             with pytest.raises(Exception) as exc_info:
-                jetliner.scan(temp_path).collect()
+                jetliner.scan_avro(temp_path).collect()
 
             error_message = str(exc_info.value).lower()
             assert codec_name in error_message, (
@@ -157,7 +157,7 @@ class TestUnknownCodecError:
 
             try:
                 with pytest.raises(Exception) as exc_info:
-                    jetliner.scan(temp_path).collect()
+                    jetliner.scan_avro(temp_path).collect()
 
                 error_message = str(exc_info.value).lower()
                 assert codec_name in error_message, (
@@ -222,7 +222,7 @@ class TestComplexUnionError:
         indicating complex unions are not supported.
         """
         with pytest.raises(Exception) as exc_info:
-            jetliner.scan(complex_union_avro_file).collect()
+            jetliner.scan_avro(complex_union_avro_file).collect()
 
         error_message = str(exc_info.value).lower()
 
@@ -256,7 +256,7 @@ class TestComplexUnionError:
 
         try:
             with pytest.raises(Exception) as exc_info:
-                jetliner.scan(temp_path).collect()
+                jetliner.scan_avro(temp_path).collect()
 
             error_message = str(exc_info.value).lower()
             assert "union" in error_message, (

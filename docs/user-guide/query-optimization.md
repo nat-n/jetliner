@@ -1,10 +1,10 @@
 # Query Optimization
 
-Jetliner's `scan()` API integrates with Polars' query optimizer to minimize I/O and memory usage. This guide explains the three main optimizations and how to use them effectively.
+Jetliner's `scan_avro()` API integrates with Polars' query optimizer to minimize I/O and memory usage. This guide explains the three main optimizations and how to use them effectively.
 
 ## Overview
 
-When you use `scan()`, Jetliner registers as a Polars IO source, enabling three key optimizations:
+When you use `scan_avro()`, Jetliner registers as a Polars IO source, enabling three key optimizations:
 
 | Optimization        | What it does                     | Benefit                       |
 | ------------------- | -------------------------------- | ----------------------------- |
@@ -24,7 +24,7 @@ import polars as pl
 
 # Only reads "user_id" and "amount" columns from the file
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .select(["user_id", "amount"])
     .collect()
 )
@@ -39,7 +39,7 @@ Polars automatically detects which columns are needed:
 ```python
 # Only reads columns used in the expression
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .filter(pl.col("status") == "active")  # needs "status"
     .select(pl.col("amount").sum())        # needs "amount"
     .collect()
@@ -53,13 +53,25 @@ For clarity, explicitly select columns early in your query:
 
 ```python
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .select(["user_id", "amount", "status"])  # Explicit projection
     .filter(pl.col("status") == "active")
     .group_by("user_id")
     .agg(pl.col("amount").sum())
     .collect()
 )
+```
+
+### Using read_avro() with columns
+
+For eager loading, use `read_avro()` with the `columns` parameter:
+
+```python
+# Directly specify columns to read
+df = jetliner.read_avro("data.avro", columns=["user_id", "amount"])
+
+# Or by column index
+df = jetliner.read_avro("data.avro", columns=[0, 2, 5])
 ```
 
 ## Predicate Pushdown
@@ -74,7 +86,7 @@ import polars as pl
 
 # Filter is applied as each batch is read
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .filter(pl.col("amount") > 100)
     .collect()
 )
@@ -88,7 +100,7 @@ Chain multiple filters for compound conditions:
 
 ```python
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .filter(pl.col("status") == "active")
     .filter(pl.col("amount") > 100)
     .filter(pl.col("region").is_in(["US", "EU"]))
@@ -100,7 +112,7 @@ Or combine them:
 
 ```python
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .filter(
         (pl.col("status") == "active") &
         (pl.col("amount") > 100) &
@@ -130,7 +142,7 @@ Early stopping terminates reading once the requested number of rows is reached.
 import jetliner
 
 # Stops reading after 1000 rows
-result = jetliner.scan("large_file.avro").head(1000).collect()
+result = jetliner.scan_avro("large_file.avro").head(1000).collect()
 ```
 
 For a 10GB file where you only need 1000 rows, this might read only a few MB.
@@ -138,7 +150,20 @@ For a 10GB file where you only need 1000 rows, this might read only a few MB.
 ### With limit()
 
 ```python
-result = jetliner.scan("data.avro").limit(500).collect()
+result = jetliner.scan_avro("data.avro").limit(500).collect()
+```
+
+### With n_rows Parameter
+
+You can also use the `n_rows` parameter directly:
+
+```python
+# Limit at scan time
+lf = jetliner.scan_avro("data.avro", n_rows=1000)
+df = lf.collect()
+
+# Or with read_avro
+df = jetliner.read_avro("data.avro", n_rows=1000)
 ```
 
 ### Combined with Filters
@@ -150,7 +175,7 @@ import polars as pl
 
 # Stops after finding 100 rows where amount > 1000
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .filter(pl.col("amount") > 1000)
     .head(100)
     .collect()
@@ -167,7 +192,7 @@ import polars as pl
 
 # Highly optimized query
 result = (
-    jetliner.scan("s3://bucket/huge_file.avro")
+    jetliner.scan_avro("s3://bucket/huge_file.avro")
     .select(["user_id", "amount", "timestamp"])  # Projection: 3 of 50 columns
     .filter(pl.col("amount") > 0)                # Predicate: ~60% of rows
     .head(10000)                                 # Early stop: first 10k matches
@@ -188,7 +213,7 @@ import polars as pl
 # Only reads user_id and amount columns
 # Filters during read
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .filter(pl.col("amount") > 0)
     .group_by("user_id")
     .agg(pl.col("amount").sum().alias("total"))
@@ -206,7 +231,7 @@ import polars as pl
 
 # Must read all rows to sort, but projection still helps
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .select(["user_id", "amount"])  # Projection helps
     .sort("amount", descending=True)
     .head(10)  # Applied after sort, not during read
@@ -225,14 +250,14 @@ import time
 
 # Unoptimized: read everything, then filter and select
 start = time.time()
-df = jetliner.scan("large_file.avro").collect()
+df = jetliner.scan_avro("large_file.avro").collect()
 result = df.filter(pl.col("amount") > 100).select(["user_id", "amount"])
 print(f"Unoptimized: {time.time() - start:.2f}s")
 
 # Optimized: pushdown enabled
 start = time.time()
 result = (
-    jetliner.scan("large_file.avro")
+    jetliner.scan_avro("large_file.avro")
     .select(["user_id", "amount"])
     .filter(pl.col("amount") > 100)
     .collect()
@@ -246,15 +271,10 @@ print(f"Optimized: {time.time() - start:.2f}s")
 2. **Filter early**: Apply filters before aggregations or joins
 3. **Use head() for sampling**: When exploring data, use `.head()` to avoid reading entire files
 4. **Combine with S3**: Optimizations are especially valuable for remote files where I/O is expensive
+5. **Use read_avro() with columns**: For eager loading, specify columns directly
 
 ## Limitations
 
 - **Sorting**: Early stopping doesn't apply when sorting (all data must be read)
 - **Complex expressions**: Some complex filter expressions may not push down
 - **Joins**: Pushdown applies to each side of a join independently
-
-## Next Steps
-
-- [Streaming Large Files](streaming.md) - Memory-efficient processing
-- [S3 Access](s3-access.md) - Optimize cloud data access
-- [Error Handling](error-handling.md) - Handle failures gracefully

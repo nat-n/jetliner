@@ -53,7 +53,7 @@ class TestEdgeCaseValues:
     def test_int32_boundary_values(self, get_test_data_path):
         """Test int32 max/min boundary values are read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # First record should have max/min values
         first_row = df.head(1)
@@ -72,7 +72,7 @@ class TestEdgeCaseValues:
     def test_int64_boundary_values(self, get_test_data_path):
         """Test int64 max/min boundary values are read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
 
@@ -92,7 +92,7 @@ class TestEdgeCaseValues:
     def test_float_special_values(self, get_test_data_path):
         """Test float NaN, Infinity, -Infinity are read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
 
@@ -115,7 +115,7 @@ class TestEdgeCaseValues:
     def test_double_special_values(self, get_test_data_path):
         """Test double NaN, Infinity, -Infinity are read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
 
@@ -143,7 +143,7 @@ class TestEdgeCaseValues:
     def test_empty_string(self, get_test_data_path):
         """Test empty string is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         assert first_row["string_empty"][0] == "", "string_empty should be empty string"
@@ -151,7 +151,7 @@ class TestEdgeCaseValues:
     def test_long_string(self, get_test_data_path):
         """Test long string (~10KB) is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         long_str = first_row["string_long"][0]
@@ -163,7 +163,7 @@ class TestEdgeCaseValues:
     def test_unicode_emoji(self, get_test_data_path):
         """Test string with emoji is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         emoji_str = first_row["string_unicode_emoji"][0]
@@ -176,7 +176,7 @@ class TestEdgeCaseValues:
     def test_unicode_rtl(self, get_test_data_path):
         """Test string with RTL (Arabic/Hebrew) characters is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         rtl_str = first_row["string_unicode_rtl"][0]
@@ -189,7 +189,7 @@ class TestEdgeCaseValues:
     def test_unicode_combining_characters(self, get_test_data_path):
         """Test string with combining characters is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         combining_str = first_row["string_unicode_combining"][0]
@@ -201,7 +201,7 @@ class TestEdgeCaseValues:
     def test_unicode_surrogate_pairs(self, get_test_data_path):
         """Test string with surrogate pairs (musical symbols, etc.) is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         surrogate_str = first_row["string_unicode_surrogate"][0]
@@ -213,7 +213,7 @@ class TestEdgeCaseValues:
     def test_string_with_null_character(self, get_test_data_path):
         """Test string with embedded null character is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         null_str = first_row["string_null_char"][0]
@@ -225,7 +225,7 @@ class TestEdgeCaseValues:
     def test_string_with_newlines(self, get_test_data_path):
         """Test string with various newline characters is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         newline_str = first_row["string_newlines"][0]
@@ -242,7 +242,7 @@ class TestEdgeCaseValues:
         that exceed the inline limit and must be stored in separate buffers.
         """
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         very_long_str = first_row["string_very_long"][0]
@@ -258,7 +258,7 @@ class TestEdgeCaseValues:
         This tests that small strings are handled correctly.
         """
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         small_str = first_row["string_small"][0]
@@ -273,7 +273,7 @@ class TestEdgeCaseValues:
         Strings <= 12 bytes are inlined, > 12 bytes go to buffer.
         """
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         boundary_str = first_row["string_exactly_12"][0]
@@ -288,7 +288,7 @@ class TestEdgeCaseValues:
         Strings > 12 bytes must be stored in separate buffers.
         """
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         over_limit_str = first_row["string_13_bytes"][0]
@@ -304,7 +304,7 @@ class TestEdgeCaseValues:
         - Buffer-stored large strings
         """
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
 
@@ -320,7 +320,7 @@ class TestEdgeCaseValues:
     def test_empty_bytes(self, get_test_data_path):
         """Test empty bytes is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         empty_bytes = first_row["bytes_empty"][0]
@@ -330,7 +330,7 @@ class TestEdgeCaseValues:
     def test_long_bytes(self, get_test_data_path):
         """Test long bytes (~10KB) is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         long_bytes = first_row["bytes_long"][0]
@@ -347,7 +347,7 @@ class TestEdgeCaseValues:
     def test_bytes_all_zeros(self, get_test_data_path):
         """Test bytes with all zeros is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         zero_bytes = first_row["bytes_all_zeros"][0]
@@ -358,7 +358,7 @@ class TestEdgeCaseValues:
     def test_bytes_all_ones(self, get_test_data_path):
         """Test bytes with all 0xFF is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         ones_bytes = first_row["bytes_all_ones"][0]
@@ -369,7 +369,7 @@ class TestEdgeCaseValues:
     def test_empty_array(self, get_test_data_path):
         """Test empty array is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         empty_array = first_row["array_empty"][0]
@@ -379,7 +379,7 @@ class TestEdgeCaseValues:
     def test_single_element_array(self, get_test_data_path):
         """Test single element array is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         single_array = first_row["array_single"][0]
@@ -390,7 +390,7 @@ class TestEdgeCaseValues:
     def test_large_array(self, get_test_data_path):
         """Test large array (1000 elements) is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         large_array = first_row["array_large"][0]
@@ -403,7 +403,7 @@ class TestEdgeCaseValues:
     def test_array_of_strings(self, get_test_data_path):
         """Test array of strings is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         string_array = first_row["array_strings"][0]
@@ -416,7 +416,7 @@ class TestEdgeCaseValues:
     def test_empty_map(self, get_test_data_path):
         """Test empty map is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         empty_map = first_row["map_empty"][0]
@@ -426,7 +426,7 @@ class TestEdgeCaseValues:
     def test_single_entry_map(self, get_test_data_path):
         """Test single entry map is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         single_map = first_row["map_single"][0]
@@ -440,7 +440,7 @@ class TestEdgeCaseValues:
     def test_map_with_unicode_keys(self, get_test_data_path):
         """Test map with unicode keys is read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
         unicode_map = first_row["map_unicode_keys"][0]
@@ -455,7 +455,7 @@ class TestEdgeCaseValues:
     def test_boolean_values(self, get_test_data_path):
         """Test boolean true/false values are read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         first_row = df.head(1)
 
@@ -463,10 +463,10 @@ class TestEdgeCaseValues:
         assert first_row["bool_false"][0] is False, "bool_false should be False"
 
     def test_edge_case_scan_api(self, get_test_data_path):
-        """Test scan() API works with edge case file."""
+        """Test scan_avro() API works with edge case file."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
 
-        lf = jetliner.scan(path)
+        lf = jetliner.scan_avro(path)
         assert isinstance(lf, pl.LazyFrame)
 
         df = lf.collect()
@@ -479,7 +479,7 @@ class TestEdgeCaseValues:
 
         # Select only integer columns
         df = (
-            jetliner.scan(path)
+            jetliner.scan_avro(path)
             .select(["int32_max", "int64_max", "string_unicode_emoji"])
             .collect()
         )
@@ -492,7 +492,7 @@ class TestEdgeCaseValues:
     def test_multiple_records_variation(self, get_test_data_path):
         """Test that multiple records with variations are read correctly."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Should have 3 records with different values
         assert df.height == 3
@@ -524,5 +524,5 @@ def test_edge_case_file_readable(filename, get_test_data_path):
     """Test that edge case test file is readable."""
     path = get_test_data_path(f"edge-cases/{filename}")
 
-    df = jetliner.scan(path).collect()
+    df = jetliner.scan_avro(path).collect()
     assert df.height > 0

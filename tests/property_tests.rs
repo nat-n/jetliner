@@ -3130,7 +3130,7 @@ proptest! {
 // Resilient Reading Property Tests
 // ============================================================================
 
-use jetliner::error::ReadErrorKind;
+use jetliner::error::BadBlockErrorKind;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
@@ -3268,7 +3268,7 @@ proptest! {
 
             // At least one error should be about invalid sync marker
             let has_sync_error = errors.iter().any(|e| {
-                matches!(e.kind, ReadErrorKind::InvalidSyncMarker { .. })
+                matches!(e.kind, BadBlockErrorKind::InvalidSyncMarker { .. })
             });
             prop_assert!(
                 has_sync_error,
@@ -6980,11 +6980,9 @@ proptest! {
     ///
     /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 6c)**
     ///
-    /// NOTE: This test is ignored because it exposes a real recovery bug where
-    /// the reader fails to recover blocks after consecutive corrupted blocks.
-    /// See task-12.5 devnote for recovery strategy discussion.
+    /// Tests that optimistic recovery correctly handles consecutive corrupted
+    /// sync markers by advancing past each one until a valid sync is found.
     #[test]
-    #[ignore = "Exposes recovery bug: fails to find blocks after consecutive corruption"]
     fn prop_consecutive_corrupted_blocks_extended(
         // Generate number of valid blocks before corruption (1-3)
         valid_blocks_before in 1usize..=3,
@@ -7382,13 +7380,25 @@ proptest! {
                 .expect("Failed to open reader");
 
             let mut total_rows_read = 0;
+            let mut batch_num = 0;
             loop {
                 match reader.next_batch().await {
-                    Ok(Some(df)) => total_rows_read += df.height(),
-                    Ok(None) => break,
-                    Err(_) => break,
+                    Ok(Some(df)) => {
+                        eprintln!("Batch {}: {} rows", batch_num, df.height());
+                        total_rows_read += df.height();
+                        batch_num += 1;
+                    }
+                    Ok(None) => {
+                        eprintln!("EOF after {} batches, {} total rows", batch_num, total_rows_read);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {:?}", e);
+                        break;
+                    }
                 }
             }
+            eprintln!("Errors: {:?}", reader.errors());
 
             // Should have recovered valid records after scanning past extra bytes
             prop_assert_eq!(
@@ -7412,11 +7422,9 @@ proptest! {
     ///
     /// **Validates: Requirements 7.1, 7.2 (Recovery Strategy)**
     ///
-    /// NOTE: This test is ignored because it exposes a real recovery bug where
-    /// the reader doesn't rewind to scan from the last known good position.
-    /// See task-12.5 devnote for the "last known good position" insight.
+    /// Tests that the reader tracks last_successful_position and uses it
+    /// for fallback scanning when optimistic recovery isn't applicable.
     #[test]
-    #[ignore = "Exposes recovery bug: doesn't rewind to last known good position"]
     fn prop_recovery_from_last_known_good_position(
         // Generate number of valid blocks before corruption (1-3)
         valid_blocks_before in 1usize..=3,
@@ -7531,10 +7539,9 @@ proptest! {
     ///
     /// **Validates: Requirements 7.1, 7.2 (Corruption Scenario 3b)**
     ///
-    /// NOTE: This test is ignored because it exposes a real recovery bug where
-    /// the reader fails to recover blocks after decompression failure.
+    /// Tests that corrupted deflate data causes decompression failure, which
+    /// is handled gracefully in skip mode by continuing to the next block.
     #[test]
-    #[ignore = "Exposes recovery bug: fails to recover after decompression failure"]
     fn prop_corrupted_deflate_data_recovery(
         // Generate number of valid blocks before corruption (1-3)
         valid_blocks_before in 1usize..=3,
@@ -7599,12 +7606,17 @@ proptest! {
                 bad_block_data.extend_from_slice(&create_simple_record(9999 + j as i64, "bad"));
             }
             let mut corrupted_compressed = compress_deflate(&bad_block_data);
-            // Flip multiple bytes to ensure corruption
+            // Corrupt bytes at position determined by test input.
+            // Also corrupt the header bytes (0-2) to ensure decompression fails reliably.
+            // Deflate header corruption almost always causes failure, while mid-stream
+            // corruption sometimes produces parseable garbage.
             if corrupted_compressed.len() >= 4 {
+                // Always corrupt header bytes
+                corrupted_compressed[0] ^= 0xFF;
+                corrupted_compressed[1] ^= 0xAA;
+                // Also corrupt at the random position for variety
                 let pos = corrupt_byte_pos % (corrupted_compressed.len() - 3);
-                corrupted_compressed[pos] ^= 0xFF;
-                corrupted_compressed[pos + 1] ^= 0xAA;
-                corrupted_compressed[pos + 2] ^= 0x55;
+                corrupted_compressed[pos] ^= 0x55;
             }
             file_data.extend_from_slice(&encode_zigzag(records_per_block as i64));
             file_data.extend_from_slice(&encode_zigzag(corrupted_compressed.len() as i64));

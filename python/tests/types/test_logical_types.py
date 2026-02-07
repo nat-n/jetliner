@@ -118,12 +118,12 @@ class TestLogicalTypes:
 
     def test_read_logical_types_file(self, logical_types_avro_file):
         """Test that logical types file can be read without errors."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
         assert df.height == 3
 
     def test_date_type(self, logical_types_avro_file):
         """Test date logical type is read correctly."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # Check dtype
         assert df["birth_date"].dtype == pl.Date
@@ -135,7 +135,7 @@ class TestLogicalTypes:
 
     def test_time_millis_type(self, logical_types_avro_file):
         """Test time-millis logical type is read correctly."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # Check dtype is Time
         assert df["start_time_ms"].dtype == pl.Time
@@ -145,7 +145,7 @@ class TestLogicalTypes:
 
     def test_time_micros_type(self, logical_types_avro_file):
         """Test time-micros logical type is read correctly."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # Check dtype is Time
         assert df["start_time_us"].dtype == pl.Time
@@ -155,7 +155,7 @@ class TestLogicalTypes:
 
     def test_timestamp_millis_type(self, logical_types_avro_file):
         """Test timestamp-millis logical type is read correctly."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # Check dtype is Datetime
         assert df["created_at_ms"].dtype == pl.Datetime("ms", "UTC")
@@ -166,14 +166,14 @@ class TestLogicalTypes:
 
     def test_timestamp_micros_type(self, logical_types_avro_file):
         """Test timestamp-micros logical type is read correctly."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # Check dtype is Datetime with microsecond precision
         assert df["created_at_us"].dtype == pl.Datetime("us", "UTC")
 
     def test_uuid_type(self, logical_types_avro_file):
         """Test uuid logical type is read as string."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # UUID is stored as String
         assert df["uuid_field"].dtype == pl.String
@@ -184,7 +184,7 @@ class TestLogicalTypes:
 
     def test_decimal_type(self, logical_types_avro_file):
         """Test decimal logical type is read correctly."""
-        df = jetliner.scan(logical_types_avro_file).collect()
+        df = jetliner.scan_avro(logical_types_avro_file).collect()
 
         # Check dtype is Decimal
         assert df["price"].dtype == pl.Decimal(precision=10, scale=2)
@@ -272,42 +272,42 @@ class TestTemporalLogicalTypes:
 
     def test_read_temporal_types_file(self, temporal_types_avro_file):
         """Test that temporal types file can be read without errors."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df.height == 3
 
     def test_date_dtype(self, temporal_types_avro_file):
         """Test date logical type has correct dtype."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df["birth_date"].dtype == pl.Date
 
     def test_time_millis_dtype(self, temporal_types_avro_file):
         """Test time-millis logical type has correct dtype."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df["start_time_ms"].dtype == pl.Time
 
     def test_time_micros_dtype(self, temporal_types_avro_file):
         """Test time-micros logical type has correct dtype."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df["start_time_us"].dtype == pl.Time
 
     def test_timestamp_millis_dtype(self, temporal_types_avro_file):
         """Test timestamp-millis logical type has correct dtype."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df["created_at_ms"].dtype == pl.Datetime("ms", "UTC")
 
     def test_timestamp_micros_dtype(self, temporal_types_avro_file):
         """Test timestamp-micros logical type has correct dtype."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df["created_at_us"].dtype == pl.Datetime("us", "UTC")
 
     def test_uuid_dtype(self, temporal_types_avro_file):
         """Test uuid logical type has correct dtype (String)."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         assert df["uuid_field"].dtype == pl.String
 
     def test_uuid_values(self, temporal_types_avro_file):
         """Test uuid values are valid UUID strings."""
-        df = jetliner.scan(temporal_types_avro_file).collect()
+        df = jetliner.scan_avro(temporal_types_avro_file).collect()
         for i in range(3):
             uuid_str = df["uuid_field"][i]
             # Should be a valid UUID
@@ -359,17 +359,17 @@ class TestDecimalType:
 
     def test_read_decimal_file(self, decimal_avro_file):
         """Test that decimal file can be read without errors."""
-        df = jetliner.scan(decimal_avro_file).collect()
+        df = jetliner.scan_avro(decimal_avro_file).collect()
         assert df.height == 3
 
     def test_decimal_dtype(self, decimal_avro_file):
         """Test decimal has correct dtype."""
-        df = jetliner.scan(decimal_avro_file).collect()
+        df = jetliner.scan_avro(decimal_avro_file).collect()
         assert df["price"].dtype == pl.Decimal(precision=10, scale=2)
 
     def test_decimal_values(self, decimal_avro_file):
         """Test decimal values are read correctly."""
-        df = jetliner.scan(decimal_avro_file).collect()
+        df = jetliner.scan_avro(decimal_avro_file).collect()
         assert float(df["price"][0]) == 100.00
         assert float(df["price"][1]) == 101.01
         assert float(df["price"][2]) == 102.02
@@ -433,7 +433,7 @@ class TestTimestampNanosType:
 
     def test_read_timestamp_nanos_file(self, timestamp_nanos_avro_file):
         """Test that timestamp-nanos file can be read without errors."""
-        df = jetliner.scan(timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(timestamp_nanos_avro_file).collect()
         assert df.height == 3
 
     def test_timestamp_nanos_dtype(self, timestamp_nanos_avro_file):
@@ -442,7 +442,7 @@ class TestTimestampNanosType:
         Validates Requirement 1.3: Arrow_Converter maps TimestampNanos to
         Datetime type with Nanoseconds precision and UTC timezone.
         """
-        df = jetliner.scan(timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(timestamp_nanos_avro_file).collect()
         assert df["created_at_ns"].dtype == pl.Datetime("ns", "UTC")
 
     def test_timestamp_nanos_values(self, timestamp_nanos_avro_file):
@@ -451,7 +451,7 @@ class TestTimestampNanosType:
         Validates Requirement 1.5: Record_Decoder decodes timestamp-nanos
         field as nanoseconds since Unix epoch.
         """
-        df = jetliner.scan(timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(timestamp_nanos_avro_file).collect()
 
         # Expected values: 2020-01-01 12:00:00 UTC + record_id days
         expected_base = datetime(2020, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -468,7 +468,7 @@ class TestTimestampNanosType:
         This test verifies that the nanosecond precision is maintained
         when reading timestamp-nanos values.
         """
-        df = jetliner.scan(timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(timestamp_nanos_avro_file).collect()
 
         # The dtype should be nanoseconds, not milliseconds or microseconds
         dtype = df["created_at_ns"].dtype
@@ -539,7 +539,7 @@ class TestLocalTimestampNanosType:
 
     def test_read_local_timestamp_nanos_file(self, local_timestamp_nanos_avro_file):
         """Test that local-timestamp-nanos file can be read without errors."""
-        df = jetliner.scan(local_timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_nanos_avro_file).collect()
         assert df.height == 3
 
     def test_local_timestamp_nanos_dtype(self, local_timestamp_nanos_avro_file):
@@ -548,7 +548,7 @@ class TestLocalTimestampNanosType:
         Validates Requirement 1.4: Arrow_Converter maps LocalTimestampNanos to
         Datetime type with Nanoseconds precision and NO timezone (None).
         """
-        df = jetliner.scan(local_timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_nanos_avro_file).collect()
         # Local timestamps have no timezone (None)
         assert df["local_created_at_ns"].dtype == pl.Datetime("ns", None)
 
@@ -558,7 +558,7 @@ class TestLocalTimestampNanosType:
         Validates Requirement 1.6: Record_Decoder decodes local-timestamp-nanos
         field as nanoseconds without timezone conversion.
         """
-        df = jetliner.scan(local_timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_nanos_avro_file).collect()
 
         # Expected values: 2020-01-01 12:00:00 (local) + record_id days
         # Note: No timezone - these are wall-clock times
@@ -576,7 +576,7 @@ class TestLocalTimestampNanosType:
         This test verifies that local timestamps are stored without
         timezone information, as per the Avro specification.
         """
-        df = jetliner.scan(local_timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_nanos_avro_file).collect()
 
         # The dtype should be nanoseconds with no timezone
         dtype = df["local_created_at_ns"].dtype
@@ -595,7 +595,7 @@ class TestLocalTimestampNanosType:
         This test verifies that the nanosecond precision is maintained
         when reading local-timestamp-nanos values.
         """
-        df = jetliner.scan(local_timestamp_nanos_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_nanos_avro_file).collect()
 
         # The dtype should be nanoseconds, not milliseconds or microseconds
         dtype = df["local_created_at_ns"].dtype
@@ -688,7 +688,7 @@ class TestDurationType:
 
         Validates Requirement 2.1: Jetliner returns DataFrame with Duration columns.
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
         assert df.height == 5
 
     def test_duration_dtype(self, duration_avro_file):
@@ -697,7 +697,7 @@ class TestDurationType:
         Validates Requirement 2.1: Jetliner returns DataFrame with Duration columns.
         Duration is mapped to Polars Duration type with microsecond precision.
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
         assert df["duration_field"].dtype == pl.Duration("us")
 
     def test_duration_milliseconds_only(self, duration_avro_file):
@@ -706,7 +706,7 @@ class TestDurationType:
         Validates Requirement 2.2: Jetliner correctly interprets milliseconds.
         Record 0: 0 months, 0 days, 1000 milliseconds = 1 second
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
 
         # Record 0: 1000 milliseconds = 1,000,000 microseconds
         expected_us = 1000 * 1000  # 1 second in microseconds
@@ -719,7 +719,7 @@ class TestDurationType:
         Validates Requirement 2.2: Jetliner correctly interprets days.
         Record 1: 0 months, 1 day, 0 milliseconds
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
 
         # Record 1: 1 day = 24 * 60 * 60 * 1,000,000 microseconds
         expected_us = 1 * 24 * 60 * 60 * 1_000_000
@@ -732,7 +732,7 @@ class TestDurationType:
         Validates Requirement 2.3: Jetliner approximates months as 30 days.
         Record 2: 1 month, 0 days, 0 milliseconds = 30 days
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
 
         # Record 2: 1 month = 30 days = 30 * 24 * 60 * 60 * 1,000,000 microseconds
         expected_us = 30 * 24 * 60 * 60 * 1_000_000
@@ -747,7 +747,7 @@ class TestDurationType:
         = 30 days + 2 days + 3 seconds
         = 32 days + 3 seconds
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
 
         # Record 3: 1 month (30 days) + 2 days + 3000 ms
         months_us = 30 * 24 * 60 * 60 * 1_000_000  # 30 days in microseconds
@@ -766,7 +766,7 @@ class TestDurationType:
         = 60 days + 15 days + 12 hours
         = 75 days + 12 hours
         """
-        df = jetliner.scan(duration_avro_file).collect()
+        df = jetliner.scan_avro(duration_avro_file).collect()
 
         # Record 4: 2 months (60 days) + 15 days + 43200000 ms (12 hours)
         months_us = 2 * 30 * 24 * 60 * 60 * 1_000_000  # 60 days in microseconds
@@ -856,7 +856,7 @@ class TestUuidFixed16Type:
 
         Validates Requirement 3.1: Jetliner returns DataFrame with String columns.
         """
-        df = jetliner.scan(uuid_fixed16_avro_file).collect()
+        df = jetliner.scan_avro(uuid_fixed16_avro_file).collect()
         assert df.height == 5
 
     def test_uuid_fixed16_dtype(self, uuid_fixed16_avro_file):
@@ -865,7 +865,7 @@ class TestUuidFixed16Type:
         Validates Requirement 3.1: Jetliner returns DataFrame with String columns
         containing valid UUID strings.
         """
-        df = jetliner.scan(uuid_fixed16_avro_file).collect()
+        df = jetliner.scan_avro(uuid_fixed16_avro_file).collect()
         assert df["uuid_field"].dtype == pl.String
 
     def test_uuid_fixed16_format(self, uuid_fixed16_avro_file):
@@ -874,7 +874,7 @@ class TestUuidFixed16Type:
         Validates Requirement 3.2: Jetliner correctly formats 16 bytes as
         standard UUID string (8-4-4-4-12 format like "550e8400-e29b-41d4-a716-446655440000").
         """
-        df = jetliner.scan(uuid_fixed16_avro_file).collect()
+        df = jetliner.scan_avro(uuid_fixed16_avro_file).collect()
 
         # Check each UUID is in valid format
         for i in range(5):
@@ -899,7 +899,7 @@ class TestUuidFixed16Type:
         Validates Requirement 3.2: Jetliner correctly formats 16 bytes as
         standard UUID string.
         """
-        df = jetliner.scan(uuid_fixed16_avro_file).collect()
+        df = jetliner.scan_avro(uuid_fixed16_avro_file).collect()
 
         # Expected UUIDs (lowercase, as per standard UUID string format)
         expected_uuids = [
@@ -922,7 +922,7 @@ class TestUuidFixed16Type:
 
         Validates Requirement 3.1: String columns contain valid UUID strings.
         """
-        df = jetliner.scan(uuid_fixed16_avro_file).collect()
+        df = jetliner.scan_avro(uuid_fixed16_avro_file).collect()
 
         # All UUIDs should be parseable
         for i in range(5):
@@ -990,7 +990,7 @@ class TestLocalTimestampMillisType:
 
     def test_read_local_timestamp_millis_file(self, local_timestamp_millis_avro_file):
         """Test that local-timestamp-millis file can be read without errors."""
-        df = jetliner.scan(local_timestamp_millis_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_millis_avro_file).collect()
         assert df.height == 3
 
     def test_local_timestamp_millis_dtype(self, local_timestamp_millis_avro_file):
@@ -999,7 +999,7 @@ class TestLocalTimestampMillisType:
         Local timestamps should have NO timezone (None), distinguishing them
         from regular timestamps which have UTC timezone.
         """
-        df = jetliner.scan(local_timestamp_millis_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_millis_avro_file).collect()
         assert df["local_created_at_ms"].dtype == pl.Datetime("ms", None)
 
     def test_local_timestamp_millis_no_timezone(self, local_timestamp_millis_avro_file):
@@ -1007,7 +1007,7 @@ class TestLocalTimestampMillisType:
 
         This is the key distinction from timestamp-millis which has UTC timezone.
         """
-        df = jetliner.scan(local_timestamp_millis_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_millis_avro_file).collect()
 
         dtype = df["local_created_at_ms"].dtype
         assert dtype.time_unit == "ms"
@@ -1015,7 +1015,7 @@ class TestLocalTimestampMillisType:
 
     def test_local_timestamp_millis_values(self, local_timestamp_millis_avro_file):
         """Test local-timestamp-millis values are correctly decoded."""
-        df = jetliner.scan(local_timestamp_millis_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_millis_avro_file).collect()
 
         for i in range(3):
             # Convert to datetime for comparison (treating as naive/local)
@@ -1080,7 +1080,7 @@ class TestLocalTimestampMicrosType:
 
     def test_read_local_timestamp_micros_file(self, local_timestamp_micros_avro_file):
         """Test that local-timestamp-micros file can be read without errors."""
-        df = jetliner.scan(local_timestamp_micros_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_micros_avro_file).collect()
         assert df.height == 3
 
     def test_local_timestamp_micros_dtype(self, local_timestamp_micros_avro_file):
@@ -1089,7 +1089,7 @@ class TestLocalTimestampMicrosType:
         Local timestamps should have NO timezone (None), distinguishing them
         from regular timestamps which have UTC timezone.
         """
-        df = jetliner.scan(local_timestamp_micros_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_micros_avro_file).collect()
         assert df["local_created_at_us"].dtype == pl.Datetime("us", None)
 
     def test_local_timestamp_micros_no_timezone(self, local_timestamp_micros_avro_file):
@@ -1097,7 +1097,7 @@ class TestLocalTimestampMicrosType:
 
         This is the key distinction from timestamp-micros which has UTC timezone.
         """
-        df = jetliner.scan(local_timestamp_micros_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_micros_avro_file).collect()
 
         dtype = df["local_created_at_us"].dtype
         assert dtype.time_unit == "us"
@@ -1105,7 +1105,7 @@ class TestLocalTimestampMicrosType:
 
     def test_local_timestamp_micros_values(self, local_timestamp_micros_avro_file):
         """Test local-timestamp-micros values are correctly decoded."""
-        df = jetliner.scan(local_timestamp_micros_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_micros_avro_file).collect()
 
         for i in range(3):
             # Convert to datetime for comparison (treating as naive/local)
@@ -1115,7 +1115,7 @@ class TestLocalTimestampMicrosType:
 
     def test_local_timestamp_micros_precision(self, local_timestamp_micros_avro_file):
         """Test that microsecond precision is preserved."""
-        df = jetliner.scan(local_timestamp_micros_avro_file).collect()
+        df = jetliner.scan_avro(local_timestamp_micros_avro_file).collect()
 
         dtype = df["local_created_at_us"].dtype
         assert dtype.time_unit == "us"
@@ -1259,7 +1259,7 @@ class TestBigDecimalType:
 
         Validates Requirement 8.2: BigDecimal maps to String type.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
         assert df.height == 8
 
     def test_big_decimal_dtype(self, big_decimal_avro_file):
@@ -1268,7 +1268,7 @@ class TestBigDecimalType:
         Validates Requirement 8.2: Arrow_Converter maps BigDecimal to String
         to preserve exact decimal representation without precision loss.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
         assert df["value"].dtype == pl.String
 
     def test_big_decimal_scale_0(self, big_decimal_avro_file):
@@ -1276,7 +1276,7 @@ class TestBigDecimalType:
 
         Validates Requirement 8.3, 8.4: Integer values decoded correctly.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
 
         # Record 0: unscaled=12345, scale=0 -> "12345"
         assert df["value"][0] == "12345"
@@ -1289,7 +1289,7 @@ class TestBigDecimalType:
 
         Validates Requirement 8.3, 8.4: Currency values decoded correctly.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
 
         # Record 2: unscaled=12345, scale=2 -> "123.45"
         assert df["value"][2] == "123.45"
@@ -1302,7 +1302,7 @@ class TestBigDecimalType:
 
         Validates Requirement 8.3, 8.4: High precision values decoded correctly.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
 
         # Record 4: unscaled=123456789012345, scale=10 -> "12345.6789012345"
         assert df["value"][4] == "12345.6789012345"
@@ -1315,7 +1315,7 @@ class TestBigDecimalType:
 
         Validates Requirement 8.3, 8.4: Values like 0.005 decoded correctly.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
 
         # Record 6: unscaled=5, scale=3 -> "0.005"
         assert df["value"][6] == "0.005"
@@ -1328,7 +1328,7 @@ class TestBigDecimalType:
 
         Validates Requirement 8.4: String representation is valid decimal.
         """
-        df = jetliner.scan(big_decimal_avro_file).collect()
+        df = jetliner.scan_avro(big_decimal_avro_file).collect()
 
         for i in range(df.height):
             value_str = df["value"][i]
@@ -1373,7 +1373,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df["value"][0] == "0"
         finally:
             Path(temp_path).unlink(missing_ok=True)
@@ -1403,7 +1403,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df["value"][0] == "0.00"
             assert df["value"][1] == "0.00000"
         finally:
@@ -1434,7 +1434,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             # Verify values are parseable and have correct scale
             val0 = Decimal(df["value"][0])
             val1 = Decimal(df["value"][1])
@@ -1469,7 +1469,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             # Verify values are parseable
             val0 = Decimal(df["value"][0])
             val1 = Decimal(df["value"][1])
@@ -1504,7 +1504,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             val0 = Decimal(df["value"][0])
             val1 = Decimal(df["value"][1])
             assert val0 == Decimal("-" + "1" + "0" * 20)
@@ -1539,7 +1539,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df["value"][0] == "1"
             assert df["value"][1] == "0.1"
             assert df["value"][2] == "0.00001"
@@ -1577,7 +1577,7 @@ class TestBigDecimalEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             # Verify values are parseable and correct
             val0 = Decimal(df["value"][0])
             val1 = Decimal(df["value"][1])
@@ -1663,14 +1663,14 @@ class TestUnknownLogicalTypes:
 
     def test_read_unknown_logical_types_file(self, unknown_logical_type_avro_file):
         """Test that files with unknown logical types can be read without errors."""
-        df = jetliner.scan(unknown_logical_type_avro_file).collect()
+        df = jetliner.scan_avro(unknown_logical_type_avro_file).collect()
         assert df.height == 3
 
     def test_unknown_string_logical_type_treated_as_string(
         self, unknown_logical_type_avro_file
     ):
         """Test unknown logical type on string base is treated as string."""
-        df = jetliner.scan(unknown_logical_type_avro_file).collect()
+        df = jetliner.scan_avro(unknown_logical_type_avro_file).collect()
 
         # Should be String dtype (base type)
         assert df["custom_string"].dtype == pl.String
@@ -1684,7 +1684,7 @@ class TestUnknownLogicalTypes:
         self, unknown_logical_type_avro_file
     ):
         """Test unknown logical type on int base is treated as int."""
-        df = jetliner.scan(unknown_logical_type_avro_file).collect()
+        df = jetliner.scan_avro(unknown_logical_type_avro_file).collect()
 
         # Should be Int32 dtype (base type for Avro int)
         assert df["custom_int"].dtype == pl.Int32
@@ -1698,7 +1698,7 @@ class TestUnknownLogicalTypes:
         self, unknown_logical_type_avro_file
     ):
         """Test unknown logical type on long base is treated as long."""
-        df = jetliner.scan(unknown_logical_type_avro_file).collect()
+        df = jetliner.scan_avro(unknown_logical_type_avro_file).collect()
 
         # Should be Int64 dtype (base type for Avro long)
         assert df["custom_long"].dtype == pl.Int64
@@ -1712,7 +1712,7 @@ class TestUnknownLogicalTypes:
         self, unknown_logical_type_avro_file
     ):
         """Test unknown logical type on bytes base is treated as bytes."""
-        df = jetliner.scan(unknown_logical_type_avro_file).collect()
+        df = jetliner.scan_avro(unknown_logical_type_avro_file).collect()
 
         # Should be Binary dtype (base type for Avro bytes)
         assert df["custom_bytes"].dtype == pl.Binary
@@ -1796,7 +1796,7 @@ class TestUnknownFixedLogicalType:
 
     def test_read_unknown_fixed_logical_type(self, unknown_fixed_logical_type_avro_file):
         """Test that unknown logical type on fixed is treated as binary."""
-        df = jetliner.scan(unknown_fixed_logical_type_avro_file).collect()
+        df = jetliner.scan_avro(unknown_fixed_logical_type_avro_file).collect()
         assert df.height == 3
 
         # Should be Binary dtype (base type for fixed)

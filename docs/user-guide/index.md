@@ -4,14 +4,15 @@ This guide covers common workflows and best practices for using Jetliner in your
 
 ## Overview
 
-Jetliner provides two APIs for reading Avro files:
+Jetliner provides three APIs for reading Avro files:
 
-| API      | Returns   | Best For                             |
-| -------- | --------- | ------------------------------------ |
-| `scan()` | LazyFrame | Query optimization, most use cases   |
-| `open()` | Iterator  | Streaming control, progress tracking |
+| API           | Returns   | Best For                             |
+| ------------- | --------- | ------------------------------------ |
+| `scan_avro()` | LazyFrame | Query optimization, most use cases   |
+| `read_avro()` | DataFrame | Eager loading with column selection  |
+| `open()`      | Iterator  | Streaming control, progress tracking |
 
-Both APIs share the same high-performance Rust core and support local files and S3.
+All APIs share the same high-performance Rust core and support local files and S3.
 
 ## Topics
 
@@ -44,7 +45,10 @@ Supported compression codecs and their trade-offs.
 import jetliner
 
 # LazyFrame API (recommended)
-df = jetliner.scan("data.avro").collect()
+df = jetliner.scan_avro("data.avro").collect()
+
+# DataFrame API with column selection
+df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
 
 # Iterator API
 with jetliner.open("data.avro") as reader:
@@ -56,12 +60,12 @@ with jetliner.open("data.avro") as reader:
 
 ```python
 # With default credentials
-df = jetliner.scan("s3://bucket/file.avro").collect()
+df = jetliner.scan_avro("s3://bucket/file.avro").collect()
 
 # With explicit credentials
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "s3://bucket/file.avro",
-    storage_options={"endpoint_url": "http://localhost:9000"}
+    storage_options={"endpoint": "http://localhost:9000"}
 ).collect()
 ```
 
@@ -72,7 +76,7 @@ import polars as pl
 
 # Only reads needed columns, filters during read, stops early
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .select(["col1", "col2"])
     .filter(pl.col("col1") > 100)
     .head(1000)
@@ -80,12 +84,28 @@ result = (
 )
 ```
 
+### Multi-File Reading
+
+```python
+# Glob pattern
+df = jetliner.read_avro("data/*.avro")
+
+# Explicit list
+df = jetliner.read_avro(["file1.avro", "file2.avro"])
+
+# With row index continuity
+df = jetliner.read_avro("data/*.avro", row_index_name="idx")
+
+# With file path tracking
+df = jetliner.read_avro("data/*.avro", include_file_paths="source_file")
+```
+
 ### Error Handling
 
 ```python
 # Skip bad records (default)
-df = jetliner.scan("data.avro", strict=False).collect()
+df = jetliner.scan_avro("data.avro", ignore_errors=True).collect()
 
 # Fail on first error
-df = jetliner.scan("data.avro", strict=True).collect()
+df = jetliner.scan_avro("data.avro", ignore_errors=False).collect()
 ```

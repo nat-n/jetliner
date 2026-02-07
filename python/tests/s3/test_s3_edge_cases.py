@@ -88,16 +88,16 @@ class TestLargeFileHandling:
         s3_uri = mock_s3_minio.upload_file(str(local_path), "weather-large.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Read from S3
-        s3_df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
+        s3_df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
 
         # Read from local for comparison
-        local_df = jetliner.scan(str(local_path)).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         # Verify identical results
         assert s3_df.shape == local_df.shape
@@ -118,7 +118,7 @@ class TestLargeFileHandling:
         s3_uri = mock_s3_minio.upload_file(str(local_path), "weather-large-iter.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -148,7 +148,7 @@ class TestLargeFileHandling:
         are handled correctly when read from S3.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -162,8 +162,8 @@ class TestLargeFileHandling:
                 str(local_path), f"weather-{codec}.avro"
             )
 
-            s3_df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-            local_df = jetliner.scan(str(local_path)).collect()
+            s3_df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+            local_df = jetliner.scan_avro(str(local_path)).collect()
 
             # Each codec should produce identical results to local
             assert s3_df.equals(local_df), f"Mismatch for codec: {codec}"
@@ -200,13 +200,13 @@ class TestSpecialCharactersInKeys:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -226,13 +226,13 @@ class TestSpecialCharactersInKeys:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -248,13 +248,13 @@ class TestSpecialCharactersInKeys:
         s3_uri = mock_s3_minio.upload_file(str(local_path), nested_key)
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -272,13 +272,13 @@ class TestSpecialCharactersInKeys:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -312,13 +312,13 @@ class TestSpecialCharactersInKeys:
         s3_uri = mock_s3_minio.upload_file(str(local_path), key)
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df), f"Mismatch for key: {key}"
 
@@ -358,13 +358,13 @@ class TestEdgeCaseFiles:
         s3_uri = mock_s3_minio.upload_bytes(avro_bytes, "single-record.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        s3_df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        s3_df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert s3_df.height == 1
         assert s3_df.equals(local_df)
@@ -406,13 +406,13 @@ class TestEdgeCaseFiles:
         s3_uri = mock_s3_minio.upload_bytes(avro_bytes, "nullable.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        s3_df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        s3_df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert s3_df.height == 4
         assert s3_df.equals(local_df)
@@ -427,20 +427,22 @@ class TestEdgeCaseFiles:
         minio_container,
         get_test_data_path,
     ):
-        """Test reading Avro file with no-fields record from S3."""
+        """Test that reading Avro file with no-fields record raises SchemaError.
+
+        Zero-field records are valid Avro but cannot be represented as Polars
+        DataFrames, which require at least one column.
+        """
         local_path = get_test_data_path("fastavro/no-fields.avro")
         s3_uri = mock_s3_minio.upload_file(str(local_path), "no-fields.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        s3_df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
-
-        assert s3_df.equals(local_df)
+        with pytest.raises(pl.exceptions.ComputeError, match="zero fields"):
+            jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
 
 
 # =============================================================================
@@ -467,7 +469,7 @@ class TestRangeRequestEdgeCases:
         s3_uri = mock_s3_minio.upload_file(str(local_path), "weather-small-batch.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -504,7 +506,7 @@ class TestRangeRequestEdgeCases:
         s3_uri = mock_s3_minio.upload_file(str(local_path), "weather-head-test.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -512,11 +514,11 @@ class TestRangeRequestEdgeCases:
         # Test various head sizes
         for n in [1, 5, 10, 50, 100, 500]:
             s3_df = (
-                jetliner.scan(s3_uri, storage_options=storage_options)
+                jetliner.scan_avro(s3_uri, storage_options=storage_options)
                 .head(n)
                 .collect()
             )
-            local_df = jetliner.scan(str(local_path)).head(n).collect()
+            local_df = jetliner.scan_avro(str(local_path)).head(n).collect()
 
             assert s3_df.equals(local_df), f"Mismatch at head({n})"
 
@@ -544,13 +546,13 @@ class TestS3UriEdgeCases:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -568,13 +570,13 @@ class TestS3UriEdgeCases:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -597,13 +599,13 @@ class TestS3UriEdgeCases:
         s3_uri = mock_s3_minio.upload_file(str(local_path), long_key)
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -620,13 +622,13 @@ class TestS3UriEdgeCases:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)
 
@@ -644,12 +646,12 @@ class TestS3UriEdgeCases:
         )
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
-        local_df = jetliner.scan(str(local_path)).collect()
+        df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
         assert df.equals(local_df)

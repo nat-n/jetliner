@@ -46,20 +46,20 @@ class TestConfigurationOptions:
         # Verify total rows are the same
         assert small_total_rows == large_total_rows == 10000, "Total rows should be 10000 regardless of batch size"
 
-    def test_strict_mode_default(self, temp_avro_file):
-        """Test that strict mode is disabled by default (skip mode)."""
+    def test_default_mode(self, temp_avro_file):
+        """Test that default mode works for valid files."""
         total_rows = 0
         with jetliner.open(temp_avro_file) as reader:
             for df in reader:
                 total_rows += df.height
 
         # Should read all records without error
-        assert total_rows > 0, "Should read records in default (skip) mode"
+        assert total_rows > 0, "Should read records in default mode"
 
     def test_strict_mode_enabled(self, temp_avro_file):
-        """Test that strict mode can be enabled."""
+        """Test that strict mode (ignore_errors=False) can be enabled."""
         total_rows = 0
-        with jetliner.open(temp_avro_file, strict=True) as reader:
+        with jetliner.open(temp_avro_file, ignore_errors=False) as reader:
             for df in reader:
                 total_rows += df.height
 
@@ -107,3 +107,59 @@ class TestConfigurationOptions:
         small_total = sum(df.height for df in small_chunk_dfs)
         large_total = sum(df.height for df in large_chunk_dfs)
         assert small_total == large_total, "Chunk size should not affect data"
+
+
+class TestMaxBlockSize:
+    """Tests for max_block_size decompression bomb protection."""
+
+    def test_max_block_size_accepted(self, temp_avro_file):
+        """Test that max_block_size parameter is accepted."""
+        # Large limit - should work normally
+        with jetliner.open(temp_avro_file, max_block_size=512 * 1024 * 1024) as reader:
+            dfs = list(reader)
+            assert len(dfs) > 0, "Should read data with max_block_size set"
+
+    def test_max_block_size_none_disables_limit(self, temp_avro_file):
+        """Test that max_block_size=None disables the limit."""
+        with jetliner.open(temp_avro_file, max_block_size=None) as reader:
+            dfs = list(reader)
+            assert len(dfs) > 0, "Should read data with no block size limit"
+
+    def test_max_block_size_rejects_oversized_blocks(self, get_test_data_path):
+        """Test that a very small max_block_size rejects normal blocks.
+
+        Use deflate-compressed file to test the streaming codec path.
+        """
+        import pytest
+        from jetliner.exceptions import CodecError
+
+        # Use a deflate-compressed file - the decompressed blocks should exceed 100 bytes
+        path = get_test_data_path("apache-avro/weather-deflate.avro")
+
+        # Very small limit should reject the decompressed blocks
+        with pytest.raises(CodecError) as exc_info:
+            with jetliner.open(path, max_block_size=100) as reader:
+                list(reader)
+
+        assert "exceeds limit" in str(exc_info.value).lower()
+
+    def test_max_block_size_with_ignore_errors_skips_blocks(self, get_test_data_path):
+        """Test that max_block_size + ignore_errors skips oversized blocks."""
+        path = get_test_data_path("apache-avro/weather-deflate.avro")
+
+        # With ignore_errors=True, should skip oversized blocks instead of raising
+        with jetliner.open(path, max_block_size=100, ignore_errors=True) as reader:
+            # Should complete without error, possibly with no data
+            # (all blocks might be skipped if they all exceed 100 bytes)
+            _ = list(reader)
+
+    def test_scan_avro_max_block_size_accepted(self, temp_avro_file):
+        """Test that scan_avro accepts max_block_size parameter."""
+        lf = jetliner.scan_avro(temp_avro_file, max_block_size=512 * 1024 * 1024)
+        df = lf.collect()
+        assert df.height > 0, "Should read data via scan_avro with max_block_size"
+
+    def test_read_avro_max_block_size_accepted(self, temp_avro_file):
+        """Test that read_avro accepts max_block_size parameter."""
+        df = jetliner.read_avro(temp_avro_file, max_block_size=512 * 1024 * 1024)
+        assert df.height > 0, "Should read data via read_avro with max_block_size"

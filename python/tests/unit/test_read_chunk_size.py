@@ -28,11 +28,11 @@ class TestReadChunkSizeParameter:
             assert len(dfs) > 0
 
     def test_scan_accepts_read_chunk_size(self, get_test_data_path):
-        """Test that scan() accepts read_chunk_size parameter."""
+        """Test that scan_avro() accepts read_chunk_size parameter."""
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Should not raise - parameter is accepted
-        df = jetliner.scan(path, read_chunk_size=1024 * 1024).collect()
+        df = jetliner.scan_avro(path, read_chunk_size=1024 * 1024).collect()
         assert df.height > 0
 
     def test_open_default_chunk_size(self, get_test_data_path):
@@ -45,10 +45,10 @@ class TestReadChunkSizeParameter:
             assert len(dfs) > 0
 
     def test_scan_default_chunk_size(self, get_test_data_path):
-        """Test that scan() works with default (None) chunk size."""
+        """Test that scan_avro() works with default (None) chunk size."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
         assert df.height > 0
 
     def test_small_chunk_size_works(self, get_test_data_path):
@@ -89,11 +89,11 @@ class TestReadChunkSizeParameter:
         assert df_small.equals(df_large)
 
     def test_scan_chunk_size_does_not_affect_data(self, get_test_data_path):
-        """Test that different chunk sizes produce identical data via scan()."""
+        """Test that different chunk sizes produce identical data via scan_avro()."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        df_small = jetliner.scan(path, read_chunk_size=4096).collect()
-        df_large = jetliner.scan(path, read_chunk_size=4 * 1024 * 1024).collect()
+        df_small = jetliner.scan_avro(path, read_chunk_size=4096).collect()
+        df_large = jetliner.scan_avro(path, read_chunk_size=4 * 1024 * 1024).collect()
 
         assert df_small.shape == df_large.shape
         assert df_small.equals(df_large)
@@ -125,8 +125,8 @@ class TestReadChunkSizeWithMultiBlock:
         path = get_test_data_path("large/weather-large.avro")
 
         # Read with different chunk sizes
-        df_small = jetliner.scan(path, read_chunk_size=8192).collect()
-        df_large = jetliner.scan(path, read_chunk_size=8 * 1024 * 1024).collect()
+        df_small = jetliner.scan_avro(path, read_chunk_size=8192).collect()
+        df_large = jetliner.scan_avro(path, read_chunk_size=8 * 1024 * 1024).collect()
 
         assert df_small.shape == df_large.shape
         assert df_small.equals(df_large)

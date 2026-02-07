@@ -14,6 +14,7 @@ Requirements tested:
 
 
 import polars as pl
+import pytest
 
 import jetliner
 
@@ -27,6 +28,10 @@ class TestFastavroEdgeCases:
     as important for robust Avro reading.
     """
 
+    @pytest.mark.xfail(
+        reason="Zero-field records cannot be converted to DataFrames (Polars requires at least one column)",
+        raises=jetliner.SchemaError,
+    )
     def test_read_no_fields_record(self, get_test_data_path):
         """
         Test reading record with no fields.

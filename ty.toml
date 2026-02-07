@@ -1,0 +1,39 @@
+# ty configuration for Jetliner
+# https://docs.astral.sh/ty/configuration/
+
+[environment]
+python-version = "3.11"
+
+[src]
+# Include python source directories
+include = ["python/", "benches/python/", "scripts/"]
+
+[analysis]
+# Ignore unresolved imports for the native Rust extension module (.jetliner)
+# and third-party libraries without type stubs
+allowed-unresolved-imports = [
+  "jetliner.jetliner", # Compiled Rust extension
+]
+
+[rules]
+# Ignore unresolved-import errors globally since the Rust extension can't be resolved
+unresolved-import = "ignore"
+
+# Relax rules for test files - they often have dynamic types from fixtures
+[[overrides]]
+include = ["python/tests/**"]
+[overrides.rules]
+invalid-argument-type = "ignore"
+unknown-argument = "ignore"
+not-subscriptable = "ignore"
+unresolved-attribute = "ignore"
+possibly-missing-attribute = "ignore"
+invalid-await = "ignore"
+
+# Relax rules for benchmark files
+[[overrides]]
+include = ["benches/python/**"]
+[overrides.rules]
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+unresolved-attribute = "ignore"

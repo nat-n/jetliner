@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -18,7 +19,9 @@ import pytest
 from moto import mock_aws
 
 if TYPE_CHECKING:
-    from mypy_boto3_s3 import S3Client
+    from typing import Any
+
+    S3Client = Any  # boto3 S3 client type
 
 
 # =============================================================================
@@ -73,7 +76,7 @@ TEST_BUCKET_NAME = "jetliner-test-bucket"
 
 
 @pytest.fixture
-def mock_s3_moto() -> MockS3Context:
+def mock_s3_moto() -> Generator[MockS3Context, None, None]:
     """Fast in-process S3 mock using moto.
 
     Creates a mock S3 environment with a test bucket. The mock intercepts
@@ -144,7 +147,7 @@ def minio_container():
 
 
 @pytest.fixture
-def mock_s3_minio(minio_container) -> MockS3Context:
+def mock_s3_minio(minio_container) -> Generator[MockS3Context, None, None]:
     """MinIO-backed S3 mock with per-test bucket isolation.
 
     Creates a unique bucket for each test to ensure isolation.

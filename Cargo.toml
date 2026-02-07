@@ -27,6 +27,7 @@ tokio = { version = "1", features = [
   "fs",
   "io-util",
   "sync",
+  "macros",
 ] }
 bytes = "1"
 thiserror = "2.0"
@@ -54,6 +55,7 @@ crc32fast = "1"
 # S3 support
 aws-sdk-s3 = "1"
 aws-config = "1"
+aws-smithy-types = "1"
 
 # Python bindings
 pyo3 = { version = "0.26", features = ["auto-initialize"] }
@@ -71,10 +73,19 @@ serde_json = "1"
 # Base64 encoding for binary data in JSON
 base64 = "0.22"
 
+# Glob pattern matching for file paths
+glob = "0.3"
+globset = "0.4"
+
+# Logging/tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [dev-dependencies]
 proptest = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
+ctor = "0.2"
 
 [[bench]]
 name = "read_throughput"

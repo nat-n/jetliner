@@ -61,7 +61,7 @@ class TestStreamingBehavior:
         path = get_test_data_path("large/weather-large.avro")
 
         # Bulk read
-        bulk_df = jetliner.scan(path).collect()
+        bulk_df = jetliner.scan_avro(path).collect()
 
         # Streaming read with small batches
         with jetliner.open(path, batch_size=500) as reader:

@@ -100,26 +100,110 @@ class TestComplexRecursiveStructures:
             ], f"Unexpected children type: {df['children'].dtype}"
 
     def test_tree_with_scan_api(self, get_test_data_path):
-        """Test scan() API with recursive tree structure."""
+        """Test scan_avro() API with recursive tree structure."""
         path = get_test_data_path("fastavro/tree-recursive.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         assert df.height > 0
         assert "value" in df.columns
         assert "left" in df.columns
         assert "right" in df.columns
 
-    def test_tree_projection(self, get_test_data_path):
-        """Test projection on recursive structure."""
+    def test_tree_projection_non_recursive_field(self, get_test_data_path):
+        """Test projecting only non-recursive fields (skips recursive fields)."""
         path = get_test_data_path("fastavro/tree-recursive.avro")
 
-        # Should be able to project specific fields
-        df = jetliner.scan(path).select(["value"]).collect()
+        # Project only the non-recursive 'value' field
+        # This requires skipping the recursive 'left' and 'right' fields
+        df = jetliner.scan_avro(path).select(["value"]).collect()
 
         assert df.width == 1
         assert "value" in df.columns
         assert "left" not in df.columns
+        assert "right" not in df.columns
+        assert df.height > 0
+
+    def test_tree_projection_recursive_field_only(self, get_test_data_path):
+        """Test projecting only recursive fields (skips non-recursive fields).
+
+        This is the inverse of the typical case - we want the recursive
+        fields and skip the simple 'value' field.
+        """
+        path = get_test_data_path("fastavro/tree-recursive.avro")
+
+        df = jetliner.scan_avro(path).select(["left", "right"]).collect()
+
+        assert df.width == 2
+        assert "left" in df.columns
+        assert "right" in df.columns
+        assert "value" not in df.columns
+        assert df["left"].dtype == pl.Utf8
+        assert df["right"].dtype == pl.Utf8
+
+    def test_tree_projection_single_recursive_field(self, get_test_data_path):
+        """Test projecting a single recursive field.
+
+        This tests skipping both a non-recursive field AND another recursive field.
+        """
+        path = get_test_data_path("fastavro/tree-recursive.avro")
+
+        df = jetliner.scan_avro(path).select(["left"]).collect()
+
+        assert df.width == 1
+        assert "left" in df.columns
+        assert "right" not in df.columns
+        assert "value" not in df.columns
+
+    def test_tree_projection_with_open_api(self, get_test_data_path):
+        """Test projection on recursive structure using open() API."""
+        path = get_test_data_path("fastavro/tree-recursive.avro")
+
+        with jetliner.open(path, projected_columns=["value"]) as reader:
+            dfs = list(reader)
+            df = pl.concat(dfs)
+
+            assert df.width == 1
+            assert "value" in df.columns
+            assert "left" not in df.columns
+
+    def test_tree_projection_recursive_with_open_api(self, get_test_data_path):
+        """Test projecting recursive fields using open() API."""
+        path = get_test_data_path("fastavro/tree-recursive.avro")
+
+        with jetliner.open(path, projected_columns=["left"]) as reader:
+            dfs = list(reader)
+            df = pl.concat(dfs)
+
+            assert df.width == 1
+            assert "left" in df.columns
+            assert df["left"].dtype == pl.Utf8
+
+    def test_nary_tree_projection(self, get_test_data_path):
+        """Test projection on n-ary tree with array of recursive children.
+
+        The graph-recursive schema has: id, value, children (array of self-refs).
+        This tests skipping the recursive array field.
+        """
+        path = get_test_data_path("fastavro/graph-recursive.avro")
+
+        # Project only non-recursive fields, skip the recursive 'children' array
+        df = jetliner.scan_avro(path).select(["id", "value"]).collect()
+
+        assert df.width == 2
+        assert "id" in df.columns
+        assert "value" in df.columns
+        assert "children" not in df.columns
+
+    def test_nary_tree_projection_recursive_only(self, get_test_data_path):
+        """Test projecting only the recursive array field from n-ary tree."""
+        path = get_test_data_path("fastavro/graph-recursive.avro")
+
+        df = jetliner.scan_avro(path).select(["children"]).collect()
+
+        assert df.width == 1
+        assert "children" in df.columns
+        assert df["children"].dtype == pl.List(pl.Utf8)
 
     def test_deeply_nested_recursive(self, get_test_data_path):
         """Test that deeply nested recursive structures are handled correctly.
@@ -129,7 +213,7 @@ class TestComplexRecursiveStructures:
         """
         path = get_test_data_path("fastavro/graph-recursive.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Should successfully read deeply nested structure
         assert df.height > 0

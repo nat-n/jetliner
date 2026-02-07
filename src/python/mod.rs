@@ -5,8 +5,7 @@
 //!
 //! # Classes
 //! - `AvroReader`: User-facing class for the `open()` API with context manager support
-//! - `AvroReaderCore`: Internal class used by both `open()` and `scan()` APIs
-//! - `ReadError`: Structured error information for skip mode reading
+//! - `BadBlockError`: Structured error information for skip mode reading
 //!
 //! # Exception Types
 //! Custom exception classes for specific error conditions:
@@ -18,9 +17,17 @@
 //! - `SourceError`: Data source errors
 //!
 //! # Functions
-//! - `parse_avro_schema`: Extract Polars schema from an Avro file for IO plugin integration
+//! - `scan_avro`: Scan Avro files returning a LazyFrame
+//! - `read_avro`: Read Avro files returning a DataFrame
+//! - `read_avro_schema`: Extract Polars schema from an Avro file
+//! - `open`: Open an Avro file for streaming iteration
 //!
 //! # Requirements
+//! - 1.1: Expose `scan_avro()` function that returns `pl.LazyFrame`
+//! - 1.2: Expose `read_avro()` function that returns `pl.DataFrame`
+//! - 1.3: Expose `read_avro_schema()` function that returns `pl.Schema`
+//! - 2.1-2.3: FileSource support (str, Path, Sequence)
+//! - 3.2-3.3: Column selection support (names, indices)
 //! - 6.1: Implement Python iterator protocol (__iter__, __next__)
 //! - 6.2: Properly release resources when iteration completes
 //! - 6.4: Raise appropriate Python exceptions with descriptive messages
@@ -32,10 +39,21 @@
 //! - 7.4: Provide summary of skipped errors
 //! - 7.7: Include sufficient detail to diagnose issues
 //! - 9.3: Expose parsed schema for inspection
+//! - 15.1-15.6: Python exception metadata
 
+pub mod api;
+pub mod errors;
 mod reader;
+pub mod types;
 
-pub use reader::{open, parse_avro_schema, AvroReader, AvroReaderCore, PyReadError};
+pub use reader::{open, AvroReader, MultiAvroReader, PyBadBlockError};
 
-// Re-export exception types for module registration
-pub use reader::{CodecError, DecodeError, JetlinerError, ParseError, SchemaError, SourceError};
+// Note: Exception types (JetlinerError, DecodeError, etc.) are now defined
+// in Python (jetliner.exceptions). The errors module provides mapping functions
+// to create these exceptions from Rust errors.
+
+// Re-export new API functions
+pub use api::{_resolve_avro_sources, read_avro, read_avro_schema, scan_avro};
+
+// Re-export types
+pub use types::{PyColumnSelection, PyFileSource};

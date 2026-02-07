@@ -19,7 +19,7 @@ class TestPredicatePushdown:
 
     def test_filter_equality(self, temp_avro_file):
         """Test filtering with equality predicate."""
-        df = jetliner.scan(temp_avro_file).filter(pl.col("id") == 3).collect()
+        df = jetliner.scan_avro(temp_avro_file).filter(pl.col("id") == 3).collect()
 
         assert df.height == 1
         assert df["id"].to_list() == [3]
@@ -27,14 +27,14 @@ class TestPredicatePushdown:
 
     def test_filter_comparison(self, temp_avro_file):
         """Test filtering with comparison predicate."""
-        df = jetliner.scan(temp_avro_file).filter(pl.col("id") > 3).collect()
+        df = jetliner.scan_avro(temp_avro_file).filter(pl.col("id") > 3).collect()
 
         assert df.height == 2
         assert df["id"].to_list() == [4, 5]
 
     def test_filter_string(self, temp_avro_file):
         """Test filtering on string column."""
-        df = jetliner.scan(temp_avro_file).filter(pl.col("name") == "Alice").collect()
+        df = jetliner.scan_avro(temp_avro_file).filter(pl.col("name") == "Alice").collect()
 
         assert df.height == 1
         assert df["name"].to_list() == ["Alice"]
@@ -42,7 +42,7 @@ class TestPredicatePushdown:
     def test_filter_combined_with_select(self, temp_avro_file):
         """Test combining filter with select."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter(pl.col("id") > 2)
             .select("name")
             .collect()
@@ -62,7 +62,7 @@ class TestComplexPredicates:
     def test_filter_and_predicate(self, temp_avro_file):
         """Test filtering with AND predicate (multiple conditions)."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter((pl.col("id") > 2) & (pl.col("id") < 5))
             .collect()
         )
@@ -74,7 +74,7 @@ class TestComplexPredicates:
     def test_filter_or_predicate(self, temp_avro_file):
         """Test filtering with OR predicate."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter((pl.col("id") == 1) | (pl.col("id") == 5))
             .collect()
         )
@@ -86,7 +86,7 @@ class TestComplexPredicates:
     def test_filter_not_predicate(self, temp_avro_file):
         """Test filtering with NOT predicate."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter(~(pl.col("id") == 3))
             .collect()
         )
@@ -98,7 +98,7 @@ class TestComplexPredicates:
     def test_filter_complex_combination(self, temp_avro_file):
         """Test filtering with complex combination of AND, OR, NOT."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter(((pl.col("id") > 2) & (pl.col("id") < 5)) | (pl.col("name") == "Alice"))
             .collect()
         )
@@ -113,7 +113,7 @@ class TestComplexPredicates:
     def test_filter_string_contains(self, temp_avro_file):
         """Test filtering with string contains predicate."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter(pl.col("name").str.contains("a"))
             .collect()
         )
@@ -126,7 +126,7 @@ class TestComplexPredicates:
     def test_filter_in_list(self, temp_avro_file):
         """Test filtering with IN list predicate."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter(pl.col("id").is_in([1, 3, 5]))
             .collect()
         )
@@ -138,7 +138,7 @@ class TestComplexPredicates:
     def test_filter_between(self, temp_avro_file):
         """Test filtering with BETWEEN predicate."""
         df = (
-            jetliner.scan(temp_avro_file)
+            jetliner.scan_avro(temp_avro_file)
             .filter(pl.col("id").is_between(2, 4))
             .collect()
         )
@@ -181,7 +181,7 @@ class TestNullHandlingInPredicates:
 
         # Filter for null values
         df = (
-            jetliner.scan(str(avro_path))
+            jetliner.scan_avro(str(avro_path))
             .filter(pl.col("value").is_null())
             .collect()
         )
@@ -216,7 +216,7 @@ class TestNullHandlingInPredicates:
 
         # Filter for non-null values
         df = (
-            jetliner.scan(str(avro_path))
+            jetliner.scan_avro(str(avro_path))
             .filter(pl.col("value").is_not_null())
             .collect()
         )
@@ -251,7 +251,7 @@ class TestNullHandlingInPredicates:
 
         # Filter for non-null values with id > 2
         df = (
-            jetliner.scan(str(avro_path))
+            jetliner.scan_avro(str(avro_path))
             .filter((pl.col("value").is_not_null()) & (pl.col("id") > 2))
             .collect()
         )

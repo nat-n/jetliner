@@ -65,7 +65,7 @@ impl AvroHeader {
     pub fn parse(bytes: &[u8]) -> Result<Self, ReaderError> {
         if bytes.len() < MIN_HEADER_SIZE {
             return Err(ReaderError::Parse {
-                offset: 0,
+                file_offset: 0,
                 message: format!(
                     "Header too short: expected at least {} bytes, got {}",
                     MIN_HEADER_SIZE,
@@ -106,7 +106,7 @@ impl AvroHeader {
     fn parse_magic(cursor: &mut &[u8], offset: &mut u64) -> Result<[u8; 4], ReaderError> {
         if cursor.len() < 4 {
             return Err(ReaderError::Parse {
-                offset: *offset,
+                file_offset: *offset,
                 message: "Not enough bytes for magic".to_string(),
             });
         }
@@ -137,7 +137,7 @@ impl AvroHeader {
         loop {
             // Read block count (can be negative)
             let count = decode_varint_signed(cursor, offset).map_err(|e| ReaderError::Parse {
-                offset: *offset,
+                file_offset: *offset,
                 message: format!("Failed to decode metadata block count: {}", e),
             })?;
 
@@ -151,7 +151,7 @@ impl AvroHeader {
                 // Read and discard block size
                 let _block_size =
                     decode_varint_signed(cursor, offset).map_err(|e| ReaderError::Parse {
-                        offset: *offset,
+                        file_offset: *offset,
                         message: format!("Failed to decode metadata block size: {}", e),
                     })?;
                 (-count) as usize
@@ -162,12 +162,12 @@ impl AvroHeader {
             // Read key-value pairs
             for _ in 0..actual_count {
                 let key = decode_string(cursor, offset).map_err(|e| ReaderError::Parse {
-                    offset: *offset,
+                    file_offset: *offset,
                     message: format!("Failed to decode metadata key: {}", e),
                 })?;
 
                 let value = decode_bytes(cursor, offset).map_err(|e| ReaderError::Parse {
-                    offset: *offset,
+                    file_offset: *offset,
                     message: format!("Failed to decode metadata value for key '{}': {}", key, e),
                 })?;
 
@@ -182,7 +182,7 @@ impl AvroHeader {
     fn parse_sync_marker(cursor: &mut &[u8], offset: &mut u64) -> Result<[u8; 16], ReaderError> {
         if cursor.len() < 16 {
             return Err(ReaderError::Parse {
-                offset: *offset,
+                file_offset: *offset,
                 message: format!(
                     "Not enough bytes for sync marker: expected 16, got {}",
                     cursor.len()
@@ -203,12 +203,12 @@ impl AvroHeader {
         let schema_bytes = metadata
             .get("avro.schema")
             .ok_or_else(|| ReaderError::Parse {
-                offset: 0,
+                file_offset: 0,
                 message: "Missing 'avro.schema' in metadata".to_string(),
             })?;
 
         let schema_json = std::str::from_utf8(schema_bytes).map_err(|e| ReaderError::Parse {
-            offset: 0,
+            file_offset: 0,
             message: format!("Schema is not valid UTF-8: {}", e),
         })?;
 
@@ -221,7 +221,7 @@ impl AvroHeader {
             Some(codec_bytes) => {
                 let codec_name =
                     std::str::from_utf8(codec_bytes).map_err(|e| ReaderError::Parse {
-                        offset: 0,
+                        file_offset: 0,
                         message: format!("Codec name is not valid UTF-8: {}", e),
                     })?;
                 Codec::from_name(codec_name).map_err(ReaderError::Codec)

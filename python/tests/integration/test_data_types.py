@@ -25,7 +25,7 @@ class TestDataTypeValidation:
         - temp: int -> pl.Int32
         """
         path = get_test_data_path("apache-avro/weather.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # station should be string (Utf8)
         assert df["station"].dtype == pl.Utf8, f"station should be Utf8, got {df['station'].dtype}"
@@ -42,7 +42,7 @@ class TestDataTypeValidation:
         Verifies specific known values from the weather.avro file.
         """
         path = get_test_data_path("apache-avro/weather.avro")
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Verify exact record count
         assert df.height == 5, f"Expected 5 records, got {df.height}"
@@ -111,7 +111,7 @@ class TestArrayMultipleBlocks:
             fastavro.writer(f, schema, records)
 
         # Read with jetliner
-        df = jetliner.scan(str(avro_path)).collect()
+        df = jetliner.scan_avro(str(avro_path)).collect()
 
         # Verify record count
         assert df.height == 5
@@ -165,7 +165,7 @@ class TestArrayMultipleBlocks:
             fastavro.writer(f, schema, records)
 
         # Read with jetliner
-        df = jetliner.scan(str(avro_path)).collect()
+        df = jetliner.scan_avro(str(avro_path)).collect()
 
         # Verify record count
         assert df.height == 4

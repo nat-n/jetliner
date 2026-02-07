@@ -44,10 +44,10 @@ class TestMultiBlockRecordCount:
         assert total_rows == 10000, f"Expected 10000 records, got {total_rows}"
 
     def test_total_record_count_scan_api(self, get_test_data_path):
-        """Test that scan() API reads all records from multi-block file."""
+        """Test that scan_avro() API reads all records from multi-block file."""
         path = get_test_data_path("large/weather-large.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         assert df.height == 10000, f"Expected 10000 records, got {df.height}"
 
@@ -62,7 +62,7 @@ class TestMultiBlockRecordCount:
             fastavro_count = sum(1 for _ in fastavro.reader(f))
 
         # Count with jetliner
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         assert (
             df.height == fastavro_count
@@ -72,7 +72,7 @@ class TestMultiBlockRecordCount:
         """Test that data values are correct across all blocks."""
         path = get_test_data_path("large/weather-large.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Verify schema columns exist
         assert "station" in df.columns
@@ -176,11 +176,11 @@ class TestBatchSizeAcrossBlocks:
         assert small_batch_df.equals(large_batch_df), "Data order should be preserved"
 
     def test_batch_size_with_scan_api(self, get_test_data_path):
-        """Test that scan() API respects batch_size hint."""
+        """Test that scan_avro() API respects batch_size hint."""
         path = get_test_data_path("large/weather-large.avro")
 
-        # scan() uses batch_size internally via the source generator
-        df = jetliner.scan(path).collect()
+        # scan_avro() uses batch_size internally via the source generator
+        df = jetliner.scan_avro(path).collect()
 
         # Should read all records regardless of internal batching
         assert df.height == 10000
@@ -203,17 +203,17 @@ class TestSyncMarkerValidation:
         path = get_test_data_path("large/weather-large.avro")
 
         # Should read without errors
-        with jetliner.open(path, strict=True) as reader:
+        with jetliner.open(path, ignore_errors=False) as reader:
             dfs = list(reader)
             total = sum(df.height for df in dfs)
 
         assert total == 10000, "Should read all records with valid sync markers"
 
     def test_no_errors_in_skip_mode(self, get_test_data_path):
-        """Test that valid file produces no errors in skip mode."""
+        """Test that valid file produces no errors with ignore_errors=True."""
         path = get_test_data_path("large/weather-large.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             for _ in reader:
                 pass
 
@@ -227,7 +227,7 @@ class TestSyncMarkerValidation:
         # The file has 640 blocks with 10000 records
         # If sync marker validation failed, we'd get fewer records or errors
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # All records should be read
         assert df.height == 10000
@@ -287,10 +287,10 @@ class TestMultiBlockStreaming:
         assert 500 <= rows_read < 1000, f"Expected ~500 rows, got {rows_read}"
 
     def test_scan_head_stops_early(self, get_test_data_path):
-        """Test that scan().head() stops reading early."""
+        """Test that scan_avro().head() stops reading early."""
         path = get_test_data_path("large/weather-large.avro")
 
-        df = jetliner.scan(path).head(100).collect()
+        df = jetliner.scan_avro(path).head(100).collect()
 
         assert df.height == 100, f"Expected 100 rows, got {df.height}"
 
@@ -309,7 +309,7 @@ class TestMultiBlockDataConsistency:
         """Test that first and last records are read correctly."""
         path = get_test_data_path("large/weather-large.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # First record (id=0)
         first = df.head(1)
@@ -324,7 +324,7 @@ class TestMultiBlockDataConsistency:
         """Test that record sequence is preserved across blocks."""
         path = get_test_data_path("large/weather-large.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Time values should be monotonically increasing
         # (each record is 1 hour apart in the generated data)
@@ -337,7 +337,7 @@ class TestMultiBlockDataConsistency:
         """Test that all station prefixes are present in the data."""
         path = get_test_data_path("large/weather-large.avro")
 
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Extract first 4 chars of each station
         prefixes = set(s[:4] for s in df["station"].to_list())
@@ -373,7 +373,7 @@ class TestMultiBlockProjection:
         path = get_test_data_path("large/weather-large.avro")
 
         # Select only station column
-        df = jetliner.scan(path).select(["station"]).collect()
+        df = jetliner.scan_avro(path).select(["station"]).collect()
 
         assert df.width == 1
         assert "station" in df.columns
@@ -385,7 +385,7 @@ class TestMultiBlockProjection:
 
         # Filter for specific station prefix
         df = (
-            jetliner.scan(path)
+            jetliner.scan_avro(path)
             .select(["station", "temp"])
             .filter(pl.col("station").str.starts_with("KORD"))
             .collect()
@@ -416,7 +416,7 @@ def test_various_batch_sizes(batch_size, get_test_data_path):
     assert total == 10000, f"batch_size={batch_size}: expected 10000, got {total}"
 
 
-@pytest.mark.parametrize("api", ["open", "scan"])
+@pytest.mark.parametrize("api", ["open", "scan_avro"])
 def test_both_apis_read_all_blocks(api, get_test_data_path):
     """Test that both APIs read all blocks correctly."""
     path = get_test_data_path("large/weather-large.avro")
@@ -425,6 +425,6 @@ def test_both_apis_read_all_blocks(api, get_test_data_path):
         with jetliner.open(path) as reader:
             df = pl.concat(list(reader))
     else:
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
     assert df.height == 10000

@@ -65,7 +65,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import boto3
 from rich.console import Console
@@ -81,7 +81,7 @@ _minio_container = None
 
 # Ensure benchmark data exists
 sys.path.insert(0, str(Path(__file__).parent))
-from generate_data import BENCH_FILES, ensure_benchmark_files_exist
+from generate_data import BENCH_FILES, ensure_benchmark_files_exist  # noqa: E402
 
 
 # =============================================================================
@@ -111,10 +111,10 @@ def read_jetliner_open(path: Path, columns: list[str] | None = None):
 
 
 def read_jetliner_scan(path: Path, columns: list[str] | None = None):
-    """Read with jetliner.scan() - lazy API, measures full collect performance."""
+    """Read with jetliner.scan_avro() - lazy API, measures full collect performance."""
     import jetliner
 
-    lf = jetliner.scan(str(path))
+    lf = jetliner.scan_avro(str(path))
     if columns:
         lf = lf.select(columns)
     return lf.collect()
@@ -212,10 +212,10 @@ def read_jetliner_open_s3(s3_uri: str, storage_options: dict, columns: list[str]
 
 
 def read_jetliner_scan_s3(s3_uri: str, storage_options: dict, columns: list[str] | None = None):
-    """Read from S3 with jetliner.scan() - lazy API."""
+    """Read from S3 with jetliner.scan_avro() - lazy API."""
     import jetliner
 
-    lf = jetliner.scan(s3_uri, storage_options=storage_options)
+    lf = jetliner.scan_avro(s3_uri, storage_options=storage_options)
     if columns:
         lf = lf.select(columns)
     return lf.collect()
@@ -252,12 +252,12 @@ class MinIOContext:
     access_key: str
     secret_key: str
     bucket: str
-    client: any
+    client: object
 
     def get_storage_options(self) -> dict:
         """Get storage options dict for jetliner."""
         return {
-            "endpoint_url": self.endpoint_url,
+            "endpoint": self.endpoint_url,
             "aws_access_key_id": self.access_key,
             "aws_secret_access_key": self.secret_key,
         }
@@ -360,7 +360,7 @@ SCENARIOS = {
 # =============================================================================
 
 
-def run_timed(func: Callable, *args, **kwargs) -> tuple[any, float]:
+def run_timed(func: Callable, *args, **kwargs) -> tuple[Any, float]:
     """Run function and return result with elapsed time."""
     gc.collect()
     start = time.perf_counter()

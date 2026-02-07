@@ -10,9 +10,9 @@
   <a href="https://jetliner.github.io/jetliner/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
 </p>
 
-A high-performance Polars plugin written in Rust for streaming Avro files into DataFrames with minimal memory overhead and maximal throughput.
+A high-performance a Polars plugin written in Rust with python bindings for fast and memory efficient reading of Avro files into DataFrames.
 
-Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques, and handles all standard Avro codecs (null, snappy, deflate, zstd, bzip2, xz). The Rust core does the heavy lifting while Python bindings via PyO3 make it accessible from your existing Polars workflows.
+Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques, and has (almost) complete support for the Avro spec.
 
 ## Features
 
@@ -29,7 +29,7 @@ This library was created to serve performance critical scenarios around processi
 
 ## Benchmarks
 
-Did I mention it's fast?
+Jetliner is built for speed.
 
 TODO: insert benchmarks plot
 
@@ -51,16 +51,19 @@ uv add jetliner
 
 ### Basic File Reading
 
-Use `scan()` to read an Avro file into a Polars LazyFrame:
+Use `scan_avro()` to read an Avro file into a Polars LazyFrame:
 
 ```python
 import jetliner
 
 # Read a local file
-df = jetliner.scan("data.avro").collect()
+df = jetliner.scan_avro("data.avro").collect()
 
 # Read from S3
-df = jetliner.scan("s3://my-bucket/data.avro").collect()
+df = jetliner.scan_avro("s3://my-bucket/data.avro").collect()
+
+# Or use read_avro() for eager loading with column selection
+df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
 ```
 
 ### Streaming with open()
@@ -94,10 +97,10 @@ Jetliner reads from S3 using default AWS credentials (environment variables, IAM
 import jetliner
 
 # Uses AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY from environment
-df = jetliner.scan("s3://my-bucket/data.avro").collect()
+df = jetliner.scan_avro("s3://my-bucket/data.avro").collect()
 
 # Or pass credentials explicitly
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "s3://my-bucket/data.avro",
     storage_options={
         "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
@@ -107,10 +110,10 @@ df = jetliner.scan(
 ).collect()
 
 # S3-compatible services (MinIO, LocalStack, R2)
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "s3://my-bucket/data.avro",
     storage_options={
-        "endpoint_url": "http://localhost:9000",
+        "endpoint": "http://localhost:9000",
         "aws_access_key_id": "minioadmin",
         "aws_secret_access_key": "minioadmin",
     }
@@ -119,7 +122,7 @@ df = jetliner.scan(
 
 ### Query Optimization
 
-The `scan()` API enables Polars query optimizations — projection pushdown, predicate pushdown, and early stopping:
+The `scan_avro()` API enables Polars query optimizations — projection pushdown, predicate pushdown, and early stopping:
 
 ```python
 import jetliner
@@ -129,7 +132,7 @@ import polars as pl
 # Filters during read, not after (predicate pushdown)
 # Stops reading after 1000 rows (early stopping)
 result = (
-    jetliner.scan("s3://bucket/large_file.avro")
+    jetliner.scan_avro("s3://bucket/large_file.avro")
     .select(["user_id", "amount", "status"])
     .filter(pl.col("status") == "active")
     .filter(pl.col("amount") > 100)
@@ -138,14 +141,14 @@ result = (
 )
 ```
 
-### scan() vs open()
+### scan_avro() vs read_avro() vs open()
 
-| Feature            | `scan()`                                | `open()`                            |
-| ------------------ | --------------------------------------- | ----------------------------------- |
-| Returns            | LazyFrame                               | Iterator of DataFrames              |
-| Query optimization | ✅ Projection, predicate, early stopping | ❌ Manual                            |
-| Batch control      | Automatic                               | Full control                        |
-| Best for           | Most queries                            | Custom streaming, progress tracking |
+| Feature            | `scan_avro()`                           | `read_avro()`              | `open()`                            |
+| ------------------ | --------------------------------------- | -------------------------- | ----------------------------------- |
+| Returns            | LazyFrame                               | DataFrame                  | Iterator of DataFrames              |
+| Query optimization | ✅ Projection, predicate, early stopping | ✅ Column selection         | ❌ Manual                            |
+| Batch control      | Automatic                               | Automatic                  | Full control                        |
+| Best for           | Most queries                            | Eager loading with columns | Custom streaming, progress tracking |
 
 ## Development
 
@@ -204,6 +207,10 @@ Jetliner support primitive top level schemas (int, long, string, bytes) which ar
 
 - **Arrays as top-level schema**: Not yet supported (Polars list builder constraints)
 - **Maps as top-level schema**: Not yet supported (struct handling in list builder)
+
+### Empty Schemas
+
+An avro schema may consist of a Record with zero fields. Since Polars cannot represent a DataFrame with zero columns, such avro files are no compatible with Jetliner.
 
 ## Trivia
 

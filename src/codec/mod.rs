@@ -139,6 +139,64 @@ impl Codec {
             )),
         }
     }
+
+    /// Decompress data with an optional size limit.
+    ///
+    /// This method protects against decompression bombs by enforcing a maximum
+    /// decompressed size. For snappy, the size is checked BEFORE decompression
+    /// (zero overhead since snappy stores the decompressed length in its header).
+    /// For other codecs, decompression is limited using `Read::take()`.
+    ///
+    /// # Arguments
+    /// * `data` - The compressed data
+    /// * `limit` - Maximum decompressed size in bytes. None = unlimited.
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - The decompressed data
+    /// * `Err(CodecError::OversizedOutput)` - If decompressed size exceeds limit
+    /// * `Err(CodecError)` - If decompression fails
+    pub fn decompress_with_limit(
+        &self,
+        data: &[u8],
+        limit: Option<usize>,
+    ) -> Result<Vec<u8>, CodecError> {
+        match self {
+            // Null codec: no check here - by this point data is already in memory.
+            // For null codec, there's no compression amplification (file size = data size),
+            // so decompression bomb protection isn't meaningful.
+            Codec::Null => Ok(data.to_vec()),
+            #[cfg(feature = "snappy")]
+            Codec::Snappy => decompress_snappy_with_limit(data, limit),
+            #[cfg(not(feature = "snappy"))]
+            Codec::Snappy => Err(CodecError::UnsupportedCodec(
+                "Snappy codec not enabled. Enable the 'snappy' feature.".to_string(),
+            )),
+            #[cfg(feature = "deflate")]
+            Codec::Deflate => decompress_deflate_with_limit(data, limit),
+            #[cfg(not(feature = "deflate"))]
+            Codec::Deflate => Err(CodecError::UnsupportedCodec(
+                "Deflate codec not enabled. Enable the 'deflate' feature.".to_string(),
+            )),
+            #[cfg(feature = "zstd")]
+            Codec::Zstd => decompress_zstd_with_limit(data, limit),
+            #[cfg(not(feature = "zstd"))]
+            Codec::Zstd => Err(CodecError::UnsupportedCodec(
+                "Zstd codec not enabled. Enable the 'zstd' feature.".to_string(),
+            )),
+            #[cfg(feature = "bzip2")]
+            Codec::Bzip2 => decompress_bzip2_with_limit(data, limit),
+            #[cfg(not(feature = "bzip2"))]
+            Codec::Bzip2 => Err(CodecError::UnsupportedCodec(
+                "Bzip2 codec not enabled. Enable the 'bzip2' feature.".to_string(),
+            )),
+            #[cfg(feature = "xz")]
+            Codec::Xz => decompress_xz_with_limit(data, limit),
+            #[cfg(not(feature = "xz"))]
+            Codec::Xz => Err(CodecError::UnsupportedCodec(
+                "Xz codec not enabled. Enable the 'xz' feature.".to_string(),
+            )),
+        }
+    }
 }
 
 /// Decompress snappy data with Avro framing.
@@ -284,6 +342,229 @@ fn decompress_xz(data: &[u8]) -> Result<Vec<u8>, CodecError> {
     decoder
         .read_to_end(&mut decompressed)
         .map_err(|e| CodecError::DecompressionError(format!("Xz decompression failed: {}", e)))?;
+
+    Ok(decompressed)
+}
+
+// =============================================================================
+// Decompression with size limit - protects against decompression bombs
+// =============================================================================
+
+/// Decompress snappy data with Avro framing, with an optional size limit.
+///
+/// Snappy stores the decompressed length in its header, so we can check the size
+/// BEFORE decompressing - this provides zero-overhead protection against bombs.
+#[cfg(feature = "snappy")]
+fn decompress_snappy_with_limit(data: &[u8], limit: Option<usize>) -> Result<Vec<u8>, CodecError> {
+    const CRC_SIZE: usize = 4;
+
+    if data.len() < CRC_SIZE {
+        return Err(CodecError::DecompressionError(
+            "Snappy data too short: missing CRC checksum".to_string(),
+        ));
+    }
+
+    let compressed_data = &data[..data.len() - CRC_SIZE];
+    let crc_bytes = &data[data.len() - CRC_SIZE..];
+    let expected_crc = u32::from_be_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
+
+    // Handle empty compressed data
+    if compressed_data.is_empty() {
+        let actual_crc = crc32fast::hash(&[]);
+        if actual_crc != expected_crc {
+            return Err(CodecError::DecompressionError(format!(
+                "Snappy CRC32 checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
+                expected_crc, actual_crc
+            )));
+        }
+        return Ok(Vec::new());
+    }
+
+    // Check decompressed size BEFORE decompressing (snappy stores it in header)
+    let decompressed_len = snap::raw::decompress_len(compressed_data)
+        .map_err(|e| CodecError::DecompressionError(format!("Snappy header invalid: {}", e)))?;
+
+    if let Some(max) = limit {
+        if decompressed_len > max {
+            return Err(CodecError::OversizedOutput {
+                size: Some(decompressed_len), // Snappy stores exact size in header
+                limit: max,
+            });
+        }
+    }
+
+    // Now decompress (we know it's within limit)
+    let mut decoder = SnappyDecoder::new();
+    let decompressed = decoder.decompress_vec(compressed_data).map_err(|e| {
+        CodecError::DecompressionError(format!("Snappy decompression failed: {}", e))
+    })?;
+
+    // Validate CRC32 checksum
+    let actual_crc = crc32fast::hash(&decompressed);
+    if actual_crc != expected_crc {
+        return Err(CodecError::DecompressionError(format!(
+            "Snappy CRC32 checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
+            expected_crc, actual_crc
+        )));
+    }
+
+    Ok(decompressed)
+}
+
+/// Decompress deflate data with an optional size limit.
+///
+/// Uses `Read::take()` to limit bytes read during decompression.
+#[cfg(feature = "deflate")]
+fn decompress_deflate_with_limit(data: &[u8], limit: Option<usize>) -> Result<Vec<u8>, CodecError> {
+    use std::io::Read;
+
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut decoder = DeflateDecoder::new(data);
+    let mut decompressed = Vec::new();
+
+    match limit {
+        Some(max) => {
+            // Use take() to limit bytes read - this prevents allocating huge buffers
+            (&mut decoder)
+                .take(max as u64 + 1)
+                .read_to_end(&mut decompressed)
+                .map_err(|e| {
+                    CodecError::DecompressionError(format!("Deflate decompression failed: {}", e))
+                })?;
+
+            if decompressed.len() > max {
+                return Err(CodecError::OversizedOutput {
+                    size: None, // Streaming codec - actual size unknown
+                    limit: max,
+                });
+            }
+        }
+        None => {
+            decoder.read_to_end(&mut decompressed).map_err(|e| {
+                CodecError::DecompressionError(format!("Deflate decompression failed: {}", e))
+            })?;
+        }
+    }
+
+    Ok(decompressed)
+}
+
+/// Decompress zstd data with an optional size limit.
+#[cfg(feature = "zstd")]
+fn decompress_zstd_with_limit(data: &[u8], limit: Option<usize>) -> Result<Vec<u8>, CodecError> {
+    use std::io::Read;
+
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut decoder = zstd::Decoder::new(data).map_err(|e| {
+        CodecError::DecompressionError(format!("Zstd decoder initialization failed: {}", e))
+    })?;
+
+    let mut decompressed = Vec::new();
+
+    match limit {
+        Some(max) => {
+            (&mut decoder)
+                .take(max as u64 + 1)
+                .read_to_end(&mut decompressed)
+                .map_err(|e| {
+                    CodecError::DecompressionError(format!("Zstd decompression failed: {}", e))
+                })?;
+
+            if decompressed.len() > max {
+                return Err(CodecError::OversizedOutput {
+                    size: None, // Streaming codec - actual size unknown
+                    limit: max,
+                });
+            }
+        }
+        None => {
+            decoder.read_to_end(&mut decompressed).map_err(|e| {
+                CodecError::DecompressionError(format!("Zstd decompression failed: {}", e))
+            })?;
+        }
+    }
+
+    Ok(decompressed)
+}
+
+/// Decompress bzip2 data with an optional size limit.
+#[cfg(feature = "bzip2")]
+fn decompress_bzip2_with_limit(data: &[u8], limit: Option<usize>) -> Result<Vec<u8>, CodecError> {
+    use std::io::Read;
+
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut decoder = BzDecoder::new(data);
+    let mut decompressed = Vec::new();
+
+    match limit {
+        Some(max) => {
+            (&mut decoder)
+                .take(max as u64 + 1)
+                .read_to_end(&mut decompressed)
+                .map_err(|e| {
+                    CodecError::DecompressionError(format!("Bzip2 decompression failed: {}", e))
+                })?;
+
+            if decompressed.len() > max {
+                return Err(CodecError::OversizedOutput {
+                    size: None, // Streaming codec - actual size unknown
+                    limit: max,
+                });
+            }
+        }
+        None => {
+            decoder.read_to_end(&mut decompressed).map_err(|e| {
+                CodecError::DecompressionError(format!("Bzip2 decompression failed: {}", e))
+            })?;
+        }
+    }
+
+    Ok(decompressed)
+}
+
+/// Decompress xz data with an optional size limit.
+#[cfg(feature = "xz")]
+fn decompress_xz_with_limit(data: &[u8], limit: Option<usize>) -> Result<Vec<u8>, CodecError> {
+    use std::io::Read;
+
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut decoder = XzDecoder::new(data);
+    let mut decompressed = Vec::new();
+
+    match limit {
+        Some(max) => {
+            (&mut decoder)
+                .take(max as u64 + 1)
+                .read_to_end(&mut decompressed)
+                .map_err(|e| {
+                    CodecError::DecompressionError(format!("Xz decompression failed: {}", e))
+                })?;
+
+            if decompressed.len() > max {
+                return Err(CodecError::OversizedOutput {
+                    size: None, // Streaming codec - actual size unknown
+                    limit: max,
+                });
+            }
+        }
+        None => {
+            decoder.read_to_end(&mut decompressed).map_err(|e| {
+                CodecError::DecompressionError(format!("Xz decompression failed: {}", e))
+            })?;
+        }
+    }
 
     Ok(decompressed)
 }
@@ -946,6 +1227,238 @@ mod tests {
 
                 let result = Codec::Xz.decompress(&compressed).unwrap();
                 assert_eq!(result, original, "Failed for compression level {}", level);
+            }
+        }
+    }
+
+    // =========================================================================
+    // Decompression size limit tests (TDD - write tests first)
+    // =========================================================================
+
+    mod size_limit_tests {
+        use super::*;
+
+        // Note: Null codec does NOT check size limits at decompression time.
+        // Protection for null codec happens earlier when reading the block (checking
+        // the block size header before reading block data into memory).
+        // These tests verify null codec just passes through regardless of limit.
+
+        #[test]
+        fn test_null_codec_passes_through_regardless_of_limit() {
+            let data = vec![0u8; 10 * 1024]; // 10KB
+            let limit = Some(1024); // 1KB limit - ignored by null codec
+
+            // Null codec doesn't check - protection happens at block read level
+            let result = Codec::Null.decompress_with_limit(&data, limit);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().len(), 10 * 1024);
+        }
+
+        #[test]
+        fn test_null_codec_with_no_limit() {
+            let data = vec![0u8; 100 * 1024]; // 100KB
+            let result = Codec::Null.decompress_with_limit(&data, None);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().len(), 100 * 1024);
+        }
+
+        #[cfg(feature = "snappy")]
+        mod snappy_limit_tests {
+            use super::*;
+
+            /// Helper to create Avro-framed snappy data (compressed + 4-byte CRC32)
+            fn create_avro_snappy_data(uncompressed: &[u8]) -> Vec<u8> {
+                use snap::raw::Encoder;
+
+                let mut encoder = Encoder::new();
+                let compressed = encoder.compress_vec(uncompressed).unwrap();
+
+                // Compute CRC32 of uncompressed data (big-endian)
+                let crc = crc32fast::hash(uncompressed);
+
+                let mut result = compressed;
+                result.extend_from_slice(&crc.to_be_bytes());
+                result
+            }
+
+            #[test]
+            fn test_snappy_rejects_oversized_output() {
+                // 10KB of zeros compresses well
+                let data = vec![0u8; 10 * 1024];
+                let compressed = create_avro_snappy_data(&data);
+
+                // Limit to 1KB - should reject
+                let limit = Some(1024);
+                let result = Codec::Snappy.decompress_with_limit(&compressed, limit);
+
+                assert!(matches!(result, Err(CodecError::OversizedOutput { .. })));
+            }
+
+            #[test]
+            fn test_snappy_accepts_under_limit() {
+                let data = vec![0u8; 1024]; // 1KB
+                let compressed = create_avro_snappy_data(&data);
+
+                let limit = Some(10 * 1024); // 10KB limit
+                let result = Codec::Snappy.decompress_with_limit(&compressed, limit);
+
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().len(), 1024);
+            }
+
+            #[test]
+            fn test_snappy_no_limit_allows_any_size() {
+                let data = vec![0u8; 100 * 1024]; // 100KB
+                let compressed = create_avro_snappy_data(&data);
+
+                let result = Codec::Snappy.decompress_with_limit(&compressed, None);
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().len(), 100 * 1024);
+            }
+        }
+
+        #[cfg(feature = "deflate")]
+        mod deflate_limit_tests {
+            use super::*;
+            use flate2::write::DeflateEncoder;
+            use flate2::Compression;
+            use std::io::Write;
+
+            fn create_deflate_data(uncompressed: &[u8]) -> Vec<u8> {
+                let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(uncompressed).unwrap();
+                encoder.finish().unwrap()
+            }
+
+            #[test]
+            fn test_deflate_rejects_oversized_output() {
+                let data = vec![0u8; 10 * 1024]; // 10KB
+                let compressed = create_deflate_data(&data);
+
+                let limit = Some(1024); // 1KB limit
+                let result = Codec::Deflate.decompress_with_limit(&compressed, limit);
+
+                assert!(matches!(result, Err(CodecError::OversizedOutput { .. })));
+            }
+
+            #[test]
+            fn test_deflate_accepts_under_limit() {
+                let data = vec![0u8; 1024]; // 1KB
+                let compressed = create_deflate_data(&data);
+
+                let limit = Some(10 * 1024); // 10KB limit
+                let result = Codec::Deflate.decompress_with_limit(&compressed, limit);
+
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().len(), 1024);
+            }
+        }
+
+        #[cfg(feature = "zstd")]
+        mod zstd_limit_tests {
+            use super::*;
+            use std::io::Write;
+
+            fn create_zstd_data(uncompressed: &[u8]) -> Vec<u8> {
+                let mut encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+                encoder.write_all(uncompressed).unwrap();
+                encoder.finish().unwrap()
+            }
+
+            #[test]
+            fn test_zstd_rejects_oversized_output() {
+                let data = vec![0u8; 10 * 1024]; // 10KB
+                let compressed = create_zstd_data(&data);
+
+                let limit = Some(1024); // 1KB limit
+                let result = Codec::Zstd.decompress_with_limit(&compressed, limit);
+
+                assert!(matches!(result, Err(CodecError::OversizedOutput { .. })));
+            }
+
+            #[test]
+            fn test_zstd_accepts_under_limit() {
+                let data = vec![0u8; 1024]; // 1KB
+                let compressed = create_zstd_data(&data);
+
+                let limit = Some(10 * 1024); // 10KB limit
+                let result = Codec::Zstd.decompress_with_limit(&compressed, limit);
+
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().len(), 1024);
+            }
+        }
+
+        #[cfg(feature = "bzip2")]
+        mod bzip2_limit_tests {
+            use super::*;
+            use bzip2::write::BzEncoder;
+            use bzip2::Compression;
+            use std::io::Write;
+
+            fn create_bzip2_data(uncompressed: &[u8]) -> Vec<u8> {
+                let mut encoder = BzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(uncompressed).unwrap();
+                encoder.finish().unwrap()
+            }
+
+            #[test]
+            fn test_bzip2_rejects_oversized_output() {
+                let data = vec![0u8; 10 * 1024]; // 10KB
+                let compressed = create_bzip2_data(&data);
+
+                let limit = Some(1024); // 1KB limit
+                let result = Codec::Bzip2.decompress_with_limit(&compressed, limit);
+
+                assert!(matches!(result, Err(CodecError::OversizedOutput { .. })));
+            }
+
+            #[test]
+            fn test_bzip2_accepts_under_limit() {
+                let data = vec![0u8; 1024]; // 1KB
+                let compressed = create_bzip2_data(&data);
+
+                let limit = Some(10 * 1024); // 10KB limit
+                let result = Codec::Bzip2.decompress_with_limit(&compressed, limit);
+
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().len(), 1024);
+            }
+        }
+
+        #[cfg(feature = "xz")]
+        mod xz_limit_tests {
+            use super::*;
+            use std::io::Write;
+            use xz2::write::XzEncoder;
+
+            fn create_xz_data(uncompressed: &[u8]) -> Vec<u8> {
+                let mut encoder = XzEncoder::new(Vec::new(), 6);
+                encoder.write_all(uncompressed).unwrap();
+                encoder.finish().unwrap()
+            }
+
+            #[test]
+            fn test_xz_rejects_oversized_output() {
+                let data = vec![0u8; 10 * 1024]; // 10KB
+                let compressed = create_xz_data(&data);
+
+                let limit = Some(1024); // 1KB limit
+                let result = Codec::Xz.decompress_with_limit(&compressed, limit);
+
+                assert!(matches!(result, Err(CodecError::OversizedOutput { .. })));
+            }
+
+            #[test]
+            fn test_xz_accepts_under_limit() {
+                let data = vec![0u8; 1024]; // 1KB
+                let compressed = create_xz_data(&data);
+
+                let limit = Some(10 * 1024); // 10KB limit
+                let result = Codec::Xz.decompress_with_limit(&compressed, limit);
+
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().len(), 1024);
             }
         }
     }

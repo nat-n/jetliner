@@ -4,17 +4,15 @@
 //! into Polars DataFrames:
 //!
 //! - `AvroReader`: User-facing class for the `open()` API with context manager support
-//! - `AvroReaderCore`: Internal class used by both `open()` and `scan()` APIs
 //! - `parse_avro_schema`: Function to extract Polars schema from an Avro file
 //!
 //! # Exception Types
-//! Custom exception classes for specific error conditions:
-//! - `JetlinerError`: Base exception for all Jetliner errors
-//! - `ParseError`: Errors during Avro file parsing (invalid magic bytes, malformed headers)
-//! - `SchemaError`: Schema-related errors (invalid schema, incompatible schemas)
-//! - `CodecError`: Compression/decompression errors
-//! - `DecodeError`: Record decoding errors (type mismatches, invalid data)
-//! - `SourceError`: Data source errors (S3, filesystem)
+//! Structured exception classes with metadata attributes are defined in `errors.rs`:
+//! - `ParseError`: Errors during Avro file parsing (with `offset`, `message`)
+//! - `SchemaError`: Schema-related errors (with `message`, `schema_context`)
+//! - `CodecError`: Compression/decompression errors (with `codec`, `message`)
+//! - `DecodeError`: Record decoding errors (with `block_index`, `record_index`, `offset`, `message`)
+//! - `SourceError`: Data source errors (with `path`, `message`)
 //!
 //! # Requirements
 //! - 6.1: Implement Python iterator protocol (__iter__, __next__)
@@ -22,82 +20,32 @@
 //! - 6.4: Raise appropriate Python exceptions with descriptive messages
 //! - 6.5: Include context about block and record position in errors
 //! - 6.6: Support context manager protocol for resource cleanup
-//! - 6a.2: Support projection pushdown via projected_columns parameter (AvroReaderCore only)
+//! - 6a.2: Support projection pushdown via projected_columns parameter
 //! - 6a.5: Expose Avro schema as Polars schema for query planning
 //! - 9.3: Expose parsed schema for inspection
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use pyo3::{create_exception, exceptions::PyException};
 use pyo3_polars::PyDataFrame;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::convert::{avro_to_arrow_schema, ErrorMode};
-use crate::error::{
-    CodecError as RustCodecError, ReadError, ReadErrorKind, ReaderError,
-    SchemaError as RustSchemaError, SourceError as RustSourceError,
-};
-use crate::reader::{AvroHeader, AvroStreamReader, BufferConfig, ReadBufferConfig, ReaderConfig};
-use crate::schema::AvroSchema;
+use crate::api::multi_source::{AvroMultiStreamReader, MultiSourceConfig};
+use crate::api::sources::ResolvedSources;
+use crate::convert::ErrorMode;
+use crate::error::{BadBlockError, BadBlockErrorKind, ReaderError};
+use crate::python::errors::map_reader_error_acquire_gil;
+use crate::python::types::PyPathLike;
+use crate::reader::{AvroStreamReader, BufferConfig, ReadBufferConfig, ReaderConfig};
 use crate::source::{BoxedSource, LocalSource, S3Config, S3Source};
 
 // =============================================================================
-// Custom Python Exception Types
-// =============================================================================
-// These exceptions provide specific error handling for different failure modes.
-// Requirements: 6.4, 6.5
-
-// Base exception for all Jetliner errors
-create_exception!(
-    jetliner,
-    JetlinerError,
-    PyException,
-    "Base exception for all Jetliner errors."
-);
-
-// Parse errors - invalid Avro file format
-create_exception!(jetliner, ParseError, JetlinerError, "Error parsing Avro file format (invalid magic bytes, malformed headers, invalid sync markers).");
-
-// Schema errors - schema validation and compatibility issues
-create_exception!(
-    jetliner,
-    SchemaError,
-    JetlinerError,
-    "Error with Avro schema (invalid schema, unsupported types, incompatible schemas)."
-);
-
-// Codec errors - compression/decompression failures
-create_exception!(
-    jetliner,
-    CodecError,
-    JetlinerError,
-    "Error with compression codec (unsupported codec, decompression failure)."
-);
-
-// Decode errors - record decoding failures
-create_exception!(
-    jetliner,
-    DecodeError,
-    JetlinerError,
-    "Error decoding Avro records (type mismatch, invalid data, unexpected EOF)."
-);
-
-// Source errors - data source access failures
-create_exception!(
-    jetliner,
-    SourceError,
-    JetlinerError,
-    "Error accessing data source (S3 errors, filesystem errors)."
-);
-
-// =============================================================================
-// PyReadError - Structured error exposure for Python
+// PyBadBlockError - Structured error exposure for Python
 // =============================================================================
 // This class exposes recoverable errors that occurred during skip-mode reading.
 // Requirements: 7.3, 7.4, 7.7
 
-/// A structured error that occurred during Avro reading.
+/// A structured error that occurred during Avro block reading.
 ///
 /// In skip mode, errors are accumulated rather than causing immediate failure.
 /// This class provides structured access to error details for inspection
@@ -107,7 +55,7 @@ create_exception!(
 /// * `kind` - The type of error (e.g., "InvalidSyncMarker", "DecompressionFailed")
 /// * `block_index` - The block number where the error occurred
 /// * `record_index` - The record number within the block (if applicable)
-/// * `offset` - The file offset where the error occurred
+/// * `file_offset` - The file offset where the error occurred
 /// * `message` - A human-readable error message
 ///
 /// # Requirements
@@ -127,9 +75,9 @@ create_exception!(
 ///             # Or as dict for logging/serialization
 ///             log_error(err.to_dict())
 /// ```
-#[pyclass(name = "ReadError")]
+#[pyclass(name = "BadBlockError")]
 #[derive(Clone)]
-pub struct PyReadError {
+pub struct PyBadBlockError {
     /// The type of error that occurred
     #[pyo3(get)]
     kind: String,
@@ -141,41 +89,45 @@ pub struct PyReadError {
     record_index: Option<usize>,
     /// File offset where error occurred
     #[pyo3(get)]
-    offset: u64,
+    file_offset: u64,
     /// Human-readable error message
     #[pyo3(get)]
     message: String,
+    /// File path where the error occurred (if known)
+    #[pyo3(get)]
+    filepath: Option<String>,
 }
 
-impl PyReadError {
-    /// Create a PyReadError from a Rust ReadError
-    pub fn from_read_error(err: &ReadError) -> Self {
+impl PyBadBlockError {
+    /// Create a PyBadBlockError from a Rust BadBlockError
+    pub fn from_bad_block_error(err: &BadBlockError) -> Self {
         let kind = match &err.kind {
-            ReadErrorKind::InvalidSyncMarker { .. } => "InvalidSyncMarker".to_string(),
-            ReadErrorKind::DecompressionFailed { codec } => {
+            BadBlockErrorKind::InvalidSyncMarker { .. } => "InvalidSyncMarker".to_string(),
+            BadBlockErrorKind::DecompressionFailed { codec } => {
                 format!("DecompressionFailed({})", codec)
             }
-            ReadErrorKind::BlockParseFailed => "BlockParseFailed".to_string(),
-            ReadErrorKind::RecordDecodeFailed => "RecordDecodeFailed".to_string(),
-            ReadErrorKind::SchemaViolation => "SchemaViolation".to_string(),
+            BadBlockErrorKind::BlockParseFailed => "BlockParseFailed".to_string(),
+            BadBlockErrorKind::RecordDecodeFailed => "RecordDecodeFailed".to_string(),
+            BadBlockErrorKind::SchemaViolation => "SchemaViolation".to_string(),
         };
 
         Self {
             kind,
             block_index: err.block_index,
             record_index: err.record_index,
-            offset: err.offset,
+            file_offset: err.file_offset,
             message: err.message.clone(),
+            filepath: err.file_path.clone(),
         }
     }
 }
 
 #[pymethods]
-impl PyReadError {
+impl PyBadBlockError {
     /// Convert the error to a Python dictionary.
     ///
     /// # Returns
-    /// A dict with keys: kind, block_index, record_index, offset, message
+    /// A dict with keys: kind, block_index, record_index, file_offset, message
     ///
     /// # Example
     /// ```python
@@ -188,138 +140,151 @@ impl PyReadError {
         dict.set_item("kind", &self.kind)?;
         dict.set_item("block_index", self.block_index)?;
         dict.set_item("record_index", self.record_index)?;
-        dict.set_item("offset", self.offset)?;
+        dict.set_item("file_offset", self.file_offset)?;
         dict.set_item("message", &self.message)?;
+        dict.set_item("filepath", &self.filepath)?;
         Ok(dict)
     }
 
     /// Return a string representation of the error.
     fn __repr__(&self) -> String {
+        let filepath_part = self
+            .filepath
+            .as_ref()
+            .map(|p| format!(", filepath='{}'", p))
+            .unwrap_or_default();
         match self.record_index {
             Some(rec) => format!(
-                "ReadError(kind='{}', block_index={}, record_index={}, offset={}, message='{}')",
-                self.kind, self.block_index, rec, self.offset, self.message
+                "BadBlockError(kind='{}', block_index={}, record_index={}, file_offset={}, message='{}'{})",
+                self.kind, self.block_index, rec, self.file_offset, self.message, filepath_part
             ),
             None => format!(
-                "ReadError(kind='{}', block_index={}, offset={}, message='{}')",
-                self.kind, self.block_index, self.offset, self.message
+                "BadBlockError(kind='{}', block_index={}, file_offset={}, message='{}'{})",
+                self.kind, self.block_index, self.file_offset, self.message, filepath_part
             ),
         }
     }
 
     /// Return a user-friendly string representation.
     fn __str__(&self) -> String {
+        let file_info = self
+            .filepath
+            .as_ref()
+            .map(|p| format!(" in '{}'", p))
+            .unwrap_or_default();
         match self.record_index {
             Some(rec) => format!(
-                "[{}] Block {}, record {} at offset {}: {}",
-                self.kind, self.block_index, rec, self.offset, self.message
+                "[{}]{} Block {}, record {} at file offset {}: {}",
+                self.kind, file_info, self.block_index, rec, self.file_offset, self.message
             ),
             None => format!(
-                "[{}] Block {} at offset {}: {}",
-                self.kind, self.block_index, self.offset, self.message
+                "[{}]{} Block {} at file offset {}: {}",
+                self.kind, file_info, self.block_index, self.file_offset, self.message
             ),
         }
     }
 }
 
-/// Internal Avro reader that handles streaming and projection.
+// =============================================================================
+// MultiAvroReader - Multi-file reader with row_index and file_paths support
+// =============================================================================
+
+/// Multi-file Avro reader for reading from multiple Avro files.
 ///
-/// This is the core reader class used internally by both the `open()` and `scan()` APIs.
-/// It supports:
-/// - Streaming iteration over DataFrames
-/// - Projection pushdown (only read specified columns)
-/// - Configurable batch size and buffer settings
-/// - Error handling modes (strict or skip)
+/// This reader handles:
+/// - Sequential file reading
+/// - Row index continuity across files
+/// - File path injection
+/// - Error accumulation in ignore_errors mode
+/// - n_rows limit across all files
+/// - Both local files and S3 sources
 ///
 /// # Requirements
-/// - 6.1: Implement Python iterator protocol (__iter__, __next__)
-/// - 6.2: Properly release resources when iteration completes
-/// - 6a.2: Support projection pushdown via projected_columns parameter
+/// - 2.7: Read files in sequence
+/// - 4.5: n_rows limit applies to total across all files
+/// - 5.6: Row index is continuous across files
+/// - 12.4: Accumulate errors in ignore_errors mode
 ///
 /// # Example
 /// ```python
-/// from jetliner import AvroReaderCore
+/// from jetliner import MultiAvroReader
 ///
-/// # Basic usage
-/// reader = AvroReaderCore("data.avro")
-/// for df in reader:
-///     print(df.shape)
-///
-/// # With projection
-/// reader = AvroReaderCore(
-///     "data.avro",
-///     projected_columns=["col1", "col2"],
-///     batch_size=50000
+/// # Read from multiple files with row index
+/// reader = MultiAvroReader(
+///     ["file1.avro", "file2.avro"],
+///     row_index_name="idx",
+///     row_index_offset=0,
+///     include_file_paths="source_file"
 /// )
 /// for df in reader:
-///     process(df)
+///     print(f"Batch: {df.shape}")
 /// ```
 #[pyclass]
-pub struct AvroReaderCore {
-    /// The underlying Rust stream reader (wrapped in Arc<Mutex> for safe access)
-    inner: Arc<Mutex<Option<AvroStreamReader<BoxedSource>>>>,
+pub struct MultiAvroReader {
+    /// The underlying multi-source reader (wrapped for sync access)
+    inner: Arc<Mutex<AvroMultiStreamReader>>,
     /// Tokio runtime for async operations
     runtime: tokio::runtime::Runtime,
-    /// Path to the Avro file (for error messages)
-    path: String,
+    /// Paths being read (for error messages)
+    paths: Vec<String>,
     /// Cached schema JSON (set after opening)
     schema_json: String,
-    /// Cached batch size
-    batch_size: usize,
-    /// Accumulated errors from skip mode reading
-    errors: Arc<Mutex<Vec<PyReadError>>>,
 }
 
 #[pymethods]
-impl AvroReaderCore {
-    /// Create a new AvroReaderCore.
+impl MultiAvroReader {
+    /// Create a new MultiAvroReader.
     ///
     /// # Arguments
-    /// * `path` - Path to the Avro file (local path or s3:// URI)
+    /// * `paths` - List of pre-resolved paths to read (glob expansion should be done before)
     /// * `batch_size` - Target number of rows per DataFrame (default: 100,000)
     /// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
     /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
-    /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
-    /// * `projected_columns` - Optional list of column names to read (default: all columns)
-    /// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
-    /// * `read_chunk_size` - Optional read buffer chunk size in bytes. When None, auto-detects:
-    ///   64KB for local files, 4MB for S3. Larger values reduce I/O operations but use more memory.
-    ///   For S3, larger chunks (1-8MB) reduce HTTP round-trips significantly.
+    /// * `ignore_errors` - If True, skip bad records and continue; if False, fail on first error
+    /// * `projected_columns` - Optional list of column names to read
+    /// * `n_rows` - Maximum number of rows to read across all files
+    /// * `row_index_name` - If provided, adds a row index column with this name
+    /// * `row_index_offset` - Starting value for the row index
+    /// * `include_file_paths` - If provided, adds a column with this name containing the source file path
+    /// * `storage_options` - Optional dict for S3 configuration
+    /// * `read_chunk_size` - Optional read buffer chunk size in bytes
     ///
     /// # Returns
-    /// A new AvroReaderCore instance ready for iteration.
-    ///
-    /// # Raises
-    /// * `FileNotFoundError` - If the file does not exist
-    /// * `PermissionError` - If access is denied
-    /// * `RuntimeError` - For other errors (S3, parsing, etc.)
-    ///
-    /// # Requirements
-    /// - 4.8: Accept optional `storage_options` parameter
-    /// - 4.11: `storage_options` takes precedence over environment variables
-    /// - 3.13: Expose read_chunk_size for tuning
+    /// A new MultiAvroReader instance ready for iteration.
     #[new]
     #[pyo3(signature = (
-        path,
+        paths,
         batch_size = 100_000,
         buffer_blocks = 4,
         buffer_bytes = 67_108_864,
-        strict = false,
+        ignore_errors = false,
         projected_columns = None,
+        n_rows = None,
+        row_index_name = None,
+        row_index_offset = 0,
+        include_file_paths = None,
         storage_options = None,
-        read_chunk_size = None
+        read_chunk_size = None,
+        max_block_size = 536_870_912
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        path: String,
+        paths: Vec<String>,
         batch_size: usize,
         buffer_blocks: usize,
         buffer_bytes: usize,
-        strict: bool,
+        ignore_errors: bool,
         projected_columns: Option<Vec<String>>,
+        n_rows: Option<usize>,
+        row_index_name: Option<String>,
+        row_index_offset: u32,
+        include_file_paths: Option<String>,
         storage_options: Option<std::collections::HashMap<String, String>>,
         read_chunk_size: Option<usize>,
+        max_block_size: Option<usize>,
     ) -> PyResult<Self> {
+        let first_path = paths.first().cloned().unwrap_or_default();
+
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -329,149 +294,128 @@ impl AvroReaderCore {
         })?;
 
         // Convert storage_options to S3Config
-        let s3_config = storage_options.map(|opts| parse_storage_options(&opts));
+        let s3_config = storage_options.as_ref().map(S3Config::from_dict);
 
-        // Create source and reader within the runtime
-        let result = runtime.block_on(async {
-            // Create the appropriate source based on path
-            let source = create_source(&path, s3_config).await?;
+        // Resolve sources to get unified schema
+        let sources = runtime.block_on(async {
+            // Create ResolvedSources from the pre-resolved paths
+            // We need to unify schemas since paths are already resolved
+            ResolvedSources::resolve(&paths, false, s3_config.as_ref())
+                .await
+                .map_err(|e| map_reader_error_acquire_gil(&first_path, e))
+        })?;
 
-            // Build reader configuration
-            let buffer_config = BufferConfig::new(buffer_blocks, buffer_bytes);
-            let error_mode = if strict {
-                ErrorMode::Strict
-            } else {
-                ErrorMode::Skip
-            };
+        // Get schema JSON before moving sources
+        let schema_json = sources.schema.to_json();
 
-            // Determine read buffer config based on source type and user override
-            let is_s3 = path.starts_with("s3://");
-            let read_buffer_config = match read_chunk_size {
-                Some(chunk_size) => ReadBufferConfig::with_chunk_size(chunk_size),
-                None if is_s3 => ReadBufferConfig::S3_DEFAULT,
-                None => ReadBufferConfig::LOCAL_DEFAULT,
-            };
+        // Build reader configuration
+        let buffer_config = BufferConfig::new(buffer_blocks, buffer_bytes)
+            .with_max_decompressed_block_size(max_block_size);
+        let error_mode = if ignore_errors {
+            ErrorMode::Skip
+        } else {
+            ErrorMode::Strict
+        };
 
-            let mut config = ReaderConfig::new()
-                .with_batch_size(batch_size)
-                .with_buffer_config(buffer_config)
-                .with_error_mode(error_mode)
-                .with_read_buffer_config(read_buffer_config);
+        // Determine read buffer config based on first path and user override
+        let is_s3 = first_path.starts_with("s3://");
+        let read_buffer_config = match read_chunk_size {
+            Some(chunk_size) => ReadBufferConfig::with_chunk_size(chunk_size),
+            None if is_s3 => ReadBufferConfig::S3_DEFAULT,
+            None => ReadBufferConfig::LOCAL_DEFAULT,
+        };
 
-            // Add projection if specified
-            if let Some(columns) = projected_columns {
-                config = config.with_projection(columns);
-            }
+        let mut reader_config = ReaderConfig::new()
+            .with_batch_size(batch_size)
+            .with_buffer_config(buffer_config)
+            .with_error_mode(error_mode)
+            .with_read_buffer_config(read_buffer_config);
 
-            // Open the reader
-            let reader = AvroStreamReader::open(source, config).await?;
+        // Add projection if specified
+        if let Some(columns) = projected_columns {
+            reader_config = reader_config.with_projection(columns);
+        }
 
-            // Cache the schema JSON
-            let schema_json = reader.schema().to_json();
+        // Build multi-source config
+        let mut config = MultiSourceConfig::new()
+            .with_reader_config(reader_config)
+            .with_ignore_errors(ignore_errors);
 
-            Ok::<_, ReaderError>((reader, schema_json))
-        });
+        if let Some(n) = n_rows {
+            config = config.with_n_rows(n);
+        }
 
-        let (inner, schema_json) = result.map_err(|e| map_reader_error_to_py(&path, e))?;
+        if let Some(ref name) = row_index_name {
+            config = config.with_row_index(name.as_str(), row_index_offset);
+        }
+
+        if let Some(ref name) = include_file_paths {
+            config = config.with_include_file_paths(name.as_str());
+        }
+
+        if let Some(s3_cfg) = s3_config {
+            config = config.with_s3_config(s3_cfg);
+        }
+
+        // Create the multi-source reader
+        let inner = AvroMultiStreamReader::new(sources, config);
 
         Ok(Self {
-            inner: Arc::new(Mutex::new(Some(inner))),
+            inner: Arc::new(Mutex::new(inner)),
             runtime,
-            path,
+            paths,
             schema_json,
-            batch_size,
-            errors: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
     /// Return self as the iterator.
-    ///
-    /// This implements the Python iterator protocol, allowing:
-    /// ```python
-    /// for df in reader:
-    ///     process(df)
-    /// ```
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
     /// Get the next DataFrame batch.
-    ///
-    /// Returns the next batch of records as a Polars DataFrame.
-    /// Raises StopIteration when all records have been read.
-    /// In skip mode, errors are accumulated and available via `errors` property.
-    ///
-    /// # Returns
-    /// A Polars DataFrame containing the next batch of records.
-    ///
-    /// # Raises
-    /// * `StopIteration` - When all records have been read
-    /// * `RuntimeError` - If an error occurs during reading (in strict mode)
     fn __next__<'py>(slf: PyRefMut<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
         let inner = slf.inner.clone();
-        let path = slf.path.clone();
-        let errors_arc = slf.errors.clone();
+        let first_path = slf.paths.first().cloned().unwrap_or_default();
 
-        // Get the next batch using the runtime
         let result = slf.runtime.block_on(async {
             let mut guard = inner.lock().await;
-            let reader = guard
-                .as_mut()
-                .ok_or_else(|| ReaderError::Configuration("Reader has been closed".to_string()))?;
-
-            match reader.next_batch().await {
-                Ok(Some(df)) => Ok((Some(df), None)),
-                Ok(None) => {
-                    // End of iteration - collect errors before releasing the reader
-                    let collected_errors: Vec<PyReadError> = reader
-                        .errors()
-                        .iter()
-                        .map(PyReadError::from_read_error)
-                        .collect();
-                    // Release the reader
-                    *guard = None;
-                    Ok((None, Some(collected_errors)))
-                }
-                Err(e) => Err(e),
-            }
+            guard.next_batch().await
         });
 
-        // Store errors outside the async block to avoid borrow issues
-        if let Ok((None, Some(ref collected_errors))) = result {
-            let errors_to_store = collected_errors.clone();
-            slf.runtime.block_on(async {
-                let mut errors_guard = errors_arc.lock().await;
-                *errors_guard = errors_to_store;
-            });
-        }
-
         match result {
-            Ok((Some(df), _)) => dataframe_to_py_with_enums(py, df),
-            Ok((None, _)) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
-            Err(e) => Err(map_reader_error_to_py(&path, e)),
+            Ok(Some(df)) => dataframe_to_py_with_enums(py, df),
+            Ok(None) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
+            Err(e) => Err(map_reader_error_acquire_gil(&first_path, e)),
         }
     }
 
+    /// Enter the context manager.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Exit the context manager.
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    fn __exit__(
+        &mut self,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_val: Option<&Bound<'_, PyAny>>,
+        _exc_tb: Option<&Bound<'_, PyAny>>,
+    ) -> bool {
+        // AvroMultiStreamReader doesn't need explicit cleanup
+        // Return false to not suppress exceptions
+        false
+    }
+
     /// Get the Avro schema as a JSON string.
-    ///
-    /// # Returns
-    /// The Avro schema as a JSON string.
     #[getter]
     fn schema(&self) -> String {
         self.schema_json.clone()
     }
 
     /// Get the Avro schema as a Python dictionary.
-    ///
-    /// # Returns
-    /// The Avro schema as a Python dict.
-    ///
-    /// # Raises
-    /// * `ValueError` - If the schema JSON cannot be parsed
-    ///
-    /// # Requirements
-    /// - 9.3: Expose parsed schema for inspection
     #[getter]
     fn schema_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let value: serde_json::Value = serde_json::from_str(&self.schema_json).map_err(|e| {
@@ -484,69 +428,17 @@ impl AvroReaderCore {
         json_value_to_py_dict(py, &value)
     }
 
-    /// Check if the reader has finished reading.
-    ///
-    /// # Returns
-    /// True if all records have been read, False otherwise.
-    #[getter]
-    fn is_finished(&self) -> bool {
-        let inner = self.inner.clone();
-        self.runtime.block_on(async {
-            let guard = inner.lock().await;
-            guard.as_ref().map(|r| r.is_finished()).unwrap_or(true)
-        })
-    }
-
-    /// Get the batch size being used.
-    ///
-    /// # Returns
-    /// The target number of rows per DataFrame batch.
-    #[getter]
-    fn batch_size(&self) -> usize {
-        self.batch_size
-    }
-
-    /// Get the number of records currently pending in the builder.
-    ///
-    /// # Returns
-    /// The number of records waiting to be returned in the next batch.
-    #[getter]
-    fn pending_records(&self) -> usize {
-        let inner = self.inner.clone();
-        self.runtime.block_on(async {
-            let guard = inner.lock().await;
-            guard.as_ref().map(|r| r.pending_records()).unwrap_or(0)
-        })
-    }
-
     /// Get accumulated errors from skip mode reading.
-    ///
-    /// In skip mode, errors are accumulated rather than causing immediate failure.
-    /// This property returns all errors that occurred during reading.
-    /// Errors are available after iteration completes.
-    ///
-    /// # Returns
-    /// A list of ReadError objects with details about each error.
-    ///
-    /// # Example
-    /// ```python
-    /// reader = AvroReaderCore("file.avro", strict=False)
-    /// for df in reader:
-    ///     process(df)
-    ///
-    /// for err in reader.errors:
-    ///     print(f"[{err.kind}] Block {err.block_index}: {err.message}")
-    /// ```
-    ///
-    /// # Requirements
-    /// - 7.3: Track error counts and positions
-    /// - 7.4: Provide summary of skipped errors
     #[getter]
     fn errors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let errors_arc = self.errors.clone();
-        let errors = self.runtime.block_on(async {
-            let guard = errors_arc.lock().await;
-            guard.clone()
+        let inner = self.inner.clone();
+        let errors: Vec<PyBadBlockError> = self.runtime.block_on(async {
+            let guard = inner.lock().await;
+            guard
+                .errors()
+                .iter()
+                .map(PyBadBlockError::from_bad_block_error)
+                .collect()
         });
 
         let py_errors: Vec<Py<PyAny>> = errors
@@ -558,67 +450,54 @@ impl AvroReaderCore {
     }
 
     /// Get the count of accumulated errors.
-    ///
-    /// Quick check for whether any errors occurred during reading,
-    /// without needing to iterate through the errors list.
-    ///
-    /// # Returns
-    /// The number of errors that occurred during reading.
-    ///
-    /// # Example
-    /// ```python
-    /// reader = AvroReaderCore("file.avro", strict=False)
-    /// for df in reader:
-    ///     process(df)
-    ///
-    /// if reader.error_count > 0:
-    ///     print(f"Warning: {reader.error_count} errors during read")
-    /// ```
-    ///
-    /// # Requirements
-    /// - 7.3: Track error counts and positions
     #[getter]
     fn error_count(&self) -> usize {
-        let errors_arc = self.errors.clone();
+        let inner = self.inner.clone();
         self.runtime.block_on(async {
-            let guard = errors_arc.lock().await;
-            guard.len()
+            let guard = inner.lock().await;
+            guard.errors().len()
         })
     }
-}
 
-/// Parse Python storage_options dict into Rust S3Config.
-///
-/// Supported keys:
-/// - `endpoint_url`: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-/// - `aws_access_key_id`: AWS access key (overrides environment)
-/// - `aws_secret_access_key`: AWS secret key (overrides environment)
-/// - `region`: AWS region (overrides environment)
-///
-/// # Requirements
-/// - 4.8: Accept optional `storage_options` parameter
-/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
-/// - 4.10: Use provided credentials when specified
-fn parse_storage_options(opts: &std::collections::HashMap<String, String>) -> S3Config {
-    let mut config = S3Config::new();
-
-    if let Some(endpoint_url) = opts.get("endpoint_url") {
-        config = config.with_endpoint_url(endpoint_url);
+    /// Check if the reader has finished reading.
+    #[getter]
+    fn is_finished(&self) -> bool {
+        let inner = self.inner.clone();
+        self.runtime.block_on(async {
+            let guard = inner.lock().await;
+            guard.is_finished()
+        })
     }
 
-    if let Some(access_key_id) = opts.get("aws_access_key_id") {
-        config = config.with_access_key_id(access_key_id);
+    /// Get the number of rows read so far.
+    #[getter]
+    fn rows_read(&self) -> usize {
+        let inner = self.inner.clone();
+        self.runtime.block_on(async {
+            let guard = inner.lock().await;
+            guard.rows_read()
+        })
     }
 
-    if let Some(secret_access_key) = opts.get("aws_secret_access_key") {
-        config = config.with_secret_access_key(secret_access_key);
+    /// Get the total number of source files.
+    #[getter]
+    fn total_sources(&self) -> usize {
+        let inner = self.inner.clone();
+        self.runtime.block_on(async {
+            let guard = inner.lock().await;
+            guard.total_sources()
+        })
     }
 
-    if let Some(region) = opts.get("region") {
-        config = config.with_region(region);
+    /// Get the current source index (0-based).
+    #[getter]
+    fn current_source_index(&self) -> usize {
+        let inner = self.inner.clone();
+        self.runtime.block_on(async {
+            let guard = inner.lock().await;
+            guard.current_source_index()
+        })
     }
-
-    config
 }
 
 /// Create a StreamSource from a path string.
@@ -633,7 +512,7 @@ fn parse_storage_options(opts: &std::collections::HashMap<String, String>) -> S3
 ///
 /// # Requirements
 /// - 4.8: Accept optional `storage_options` parameter
-/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+/// - 4.9: Connect to custom endpoint when `endpoint` is provided
 /// - 4.10: Use provided credentials when specified
 /// - 4.11: `storage_options` takes precedence over environment variables
 async fn create_source(path: &str, config: Option<S3Config>) -> Result<BoxedSource, ReaderError> {
@@ -738,135 +617,6 @@ fn dataframe_to_py_with_enums<'py>(
     py_df.call_method1("with_columns", (cast_exprs,))
 }
 
-/// Map ReaderError to appropriate Python exception.
-///
-/// This function maps Rust error types to custom Python exceptions,
-/// providing descriptive error messages with context about the error location.
-///
-/// # Requirements
-/// - 6.4: Raise appropriate Python exceptions with descriptive messages
-/// - 6.5: Include context about block and record position in errors
-fn map_reader_error_to_py(path: &str, err: ReaderError) -> PyErr {
-    match &err {
-        // Source errors - map to SourceError or standard Python exceptions for common cases
-        ReaderError::Source(source_err) => match source_err {
-            RustSourceError::NotFound(_) => PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
-                format!("File not found: {}", path),
-            ),
-            RustSourceError::PermissionDenied(msg) => {
-                PyErr::new::<pyo3::exceptions::PyPermissionError, _>(format!(
-                    "Permission denied for '{}': {}",
-                    path, msg
-                ))
-            }
-            RustSourceError::AuthenticationFailed(msg) => {
-                PyErr::new::<pyo3::exceptions::PyPermissionError, _>(format!(
-                    "Authentication failed for '{}': {}",
-                    path, msg
-                ))
-            }
-            RustSourceError::S3Error(msg) => {
-                SourceError::new_err(format!("S3 error reading '{}': {}", path, msg))
-            }
-            RustSourceError::FileSystemError(msg) => {
-                SourceError::new_err(format!("Filesystem error reading '{}': {}", path, msg))
-            }
-            RustSourceError::Io(io_err) => {
-                SourceError::new_err(format!("I/O error reading '{}': {}", path, io_err))
-            }
-        },
-
-        // Schema errors - map to SchemaError
-        ReaderError::Schema(schema_err) => match schema_err {
-            RustSchemaError::InvalidSchema(msg) => {
-                SchemaError::new_err(format!("Invalid schema in '{}': {}", path, msg))
-            }
-            RustSchemaError::UnsupportedType(type_name) => SchemaError::new_err(format!(
-                "Unsupported Avro type in '{}': {}",
-                path, type_name
-            )),
-            RustSchemaError::ParseError(msg) => {
-                SchemaError::new_err(format!("Schema parse error in '{}': {}", path, msg))
-            }
-            RustSchemaError::IncompatibleSchemas(msg) => {
-                SchemaError::new_err(format!("Incompatible schemas in '{}': {}", path, msg))
-            }
-        },
-
-        // Parse errors - invalid file format
-        ReaderError::Parse { offset, message } => ParseError::new_err(format!(
-            "Parse error in '{}' at offset {}: {}",
-            path, offset, message
-        )),
-
-        // Invalid magic bytes - file is not a valid Avro file
-        ReaderError::InvalidMagic(magic) => ParseError::new_err(format!(
-            "Invalid Avro file '{}': expected magic bytes 'Obj\\x01', found {:?}",
-            path, magic
-        )),
-
-        // Invalid sync marker - block boundary corruption
-        ReaderError::InvalidSyncMarker {
-            block_index,
-            offset,
-            expected,
-            actual,
-        } => ParseError::new_err(format!(
-            "Invalid sync marker in '{}' at block {}, offset {}: expected {}, got {}",
-            path,
-            block_index,
-            offset,
-            format_sync_marker(expected),
-            format_sync_marker(actual)
-        )),
-
-        // Decode errors - record decoding failures with block/record context
-        ReaderError::Decode {
-            block_index,
-            record_index,
-            message,
-        } => DecodeError::new_err(format!(
-            "Decode error in '{}' at block {}, record {}: {}",
-            path, block_index, record_index, message
-        )),
-
-        // Codec errors - compression/decompression failures
-        ReaderError::Codec(codec_err) => match codec_err {
-            RustCodecError::UnsupportedCodec(codec_name) => CodecError::new_err(format!(
-                "Unsupported codec '{}' in file '{}'",
-                codec_name, path
-            )),
-            RustCodecError::CompressionError(msg) => {
-                CodecError::new_err(format!("Compression error in '{}': {}", path, msg))
-            }
-            RustCodecError::DecompressionError(msg) => {
-                CodecError::new_err(format!("Decompression error in '{}': {}", path, msg))
-            }
-        },
-
-        // Configuration errors
-        ReaderError::Configuration(msg) => {
-            JetlinerError::new_err(format!("Configuration error: {}", msg))
-        }
-
-        // Builder errors
-        ReaderError::Builder(msg) => {
-            DecodeError::new_err(format!("DataFrame builder error in '{}': {}", path, msg))
-        }
-    }
-}
-
-/// Format a 16-byte sync marker as a hex string for error messages.
-fn format_sync_marker(marker: &[u8; 16]) -> String {
-    format!(
-        "0x{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-        marker[0], marker[1], marker[2], marker[3],
-        marker[4], marker[5], marker[6], marker[7],
-        marker[8], marker[9], marker[10], marker[11],
-        marker[12], marker[13], marker[14], marker[15]
-    )
-}
-
 /// Convert a serde_json::Value to a Python object.
 ///
 /// This recursively converts JSON values to their Python equivalents:
@@ -935,266 +685,13 @@ fn json_value_to_py_dict<'py>(
     }
 }
 
-/// Parse an Avro file and return its schema as a Polars Schema.
-///
-/// This function opens an Avro file, reads only the header to extract the schema,
-/// and converts it to a Polars Schema suitable for use with `register_io_source`.
-///
-/// # Arguments
-/// * `path` - Path to the Avro file (local path or s3:// URI)
-/// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
-///
-/// # Returns
-/// A Polars Schema (as a Python dict mapping column names to dtypes)
-///
-/// # Raises
-/// * `FileNotFoundError` - If the file does not exist
-/// * `PermissionError` - If access is denied
-/// * `ValueError` - If the file is not a valid Avro file or schema conversion fails
-/// * `RuntimeError` - For other errors
-///
-/// # Example
-/// ```python
-/// import jetliner
-/// import polars as pl
-///
-/// # Get schema for IO plugin
-/// schema = jetliner.parse_avro_schema("data.avro")
-///
-/// # Get schema from S3-compatible service
-/// schema = jetliner.parse_avro_schema(
-///     "s3://bucket/data.avro",
-///     storage_options={
-///         "endpoint_url": "http://localhost:9000",
-///         "aws_access_key_id": "minioadmin",
-///         "aws_secret_access_key": "minioadmin",
-///     }
-/// )
-///
-/// # Use with register_io_source
-/// lf = pl.LazyFrame.register_io_source(
-///     io_source=my_generator,
-///     schema=schema,
-/// )
-/// ```
-///
-/// # Requirements
-/// - 4.8: Accept optional `storage_options` parameter
-/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
-/// - 4.10: Use provided credentials when specified
-/// - 6a.5: Expose Avro schema as Polars schema for query planning
-/// - 9.3: Expose parsed schema for inspection
-#[pyfunction]
-#[pyo3(signature = (path, storage_options = None))]
-pub fn parse_avro_schema(
-    py: Python<'_>,
-    path: String,
-    storage_options: Option<std::collections::HashMap<String, String>>,
-) -> PyResult<Py<PyAny>> {
-    // Create a tokio runtime for async operations
-    let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "Failed to create async runtime: {}",
-            e
-        ))
-    })?;
-
-    // Convert storage_options to S3Config
-    let s3_config = storage_options.map(|opts| parse_storage_options(&opts));
-
-    // Read the header and extract schema
-    let result = runtime.block_on(async {
-        // Create the appropriate source based on path
-        let source = create_source(&path, s3_config).await?;
-
-        // Read enough bytes for the header (typically < 4KB, but allow more for large schemas)
-        let header_bytes = source
-            .read_range(0, 64 * 1024)
-            .await
-            .map_err(ReaderError::Source)?;
-
-        // Parse the header to get the Avro schema
-        let header = AvroHeader::parse(&header_bytes)?;
-
-        // Validate top-level schema type is supported
-        if !header.schema.is_record() {
-            match &header.schema {
-                AvroSchema::Array(_) => {
-                    return Err(ReaderError::Schema(RustSchemaError::UnsupportedType(
-                        "Array as top-level schema is not yet supported. \
-                        Arrays at the top level cause Polars list builder errors. \
-                        Workaround: Wrap your array in a record type with a field, \
-                        or use primitive types (int, string, bytes) which are fully supported."
-                            .to_string(),
-                    )));
-                }
-                AvroSchema::Map(_) => {
-                    return Err(ReaderError::Schema(RustSchemaError::UnsupportedType(
-                        "Map as top-level schema is not yet supported. \
-                        Maps at the top level cause Polars struct builder errors. \
-                        Workaround: Wrap your map in a record type with a field, \
-                        or use primitive types (int, string, bytes) which are fully supported."
-                            .to_string(),
-                    )));
-                }
-                _ => {} // Other non-record types (primitives) are OK
-            }
-        }
-
-        // Convert Avro schema to Polars schema
-        let polars_schema = avro_to_arrow_schema(&header.schema).map_err(ReaderError::Schema)?;
-
-        Ok::<_, ReaderError>(polars_schema)
-    });
-
-    let polars_schema = result.map_err(|e| map_reader_error_to_py(&path, e))?;
-
-    // Convert to Python schema manually to avoid pyo3-polars serialization issues
-    // with certain types like Enum with FrozenCategories
-    schema_to_py(py, &polars_schema)
-}
-
-/// Convert a Polars Schema to a Python polars.Schema object.
-///
-/// This function manually constructs the Python schema by calling the polars
-/// module directly, avoiding pyo3-polars' PySchema which has issues with
-/// certain DataTypes like Enum with FrozenCategories.
-fn schema_to_py(py: Python<'_>, schema: &polars::prelude::Schema) -> PyResult<Py<PyAny>> {
-    let polars_mod = py.import("polars")?;
-
-    // Build a dict of field_name -> DataType
-    let py_dict = pyo3::types::PyDict::new(py);
-
-    for (name, dtype) in schema.iter() {
-        let py_dtype = dtype_to_py(py, &polars_mod, dtype)?;
-        py_dict.set_item(name.as_str(), py_dtype)?;
-    }
-
-    // Create polars.Schema from the dict
-    let schema_class = polars_mod.getattr("Schema")?;
-    let py_schema = schema_class.call1((py_dict,))?;
-
-    Ok(py_schema.into())
-}
-
-/// Convert a Polars DataType to a Python polars DataType object.
-///
-/// This handles all DataTypes including complex ones like Enum, List, Struct, etc.
-#[allow(clippy::only_used_in_recursion)]
-fn dtype_to_py<'py>(
-    py: Python<'py>,
-    polars_mod: &Bound<'py, pyo3::types::PyModule>,
-    dtype: &polars::prelude::DataType,
-) -> PyResult<Bound<'py, PyAny>> {
-    use polars::prelude::DataType;
-
-    match dtype {
-        // Simple types - just get the class attribute
-        DataType::Null => polars_mod.getattr("Null"),
-        DataType::Boolean => polars_mod.getattr("Boolean"),
-        DataType::Int8 => polars_mod.getattr("Int8"),
-        DataType::Int16 => polars_mod.getattr("Int16"),
-        DataType::Int32 => polars_mod.getattr("Int32"),
-        DataType::Int64 => polars_mod.getattr("Int64"),
-        DataType::UInt8 => polars_mod.getattr("UInt8"),
-        DataType::UInt16 => polars_mod.getattr("UInt16"),
-        DataType::UInt32 => polars_mod.getattr("UInt32"),
-        DataType::UInt64 => polars_mod.getattr("UInt64"),
-        DataType::Float32 => polars_mod.getattr("Float32"),
-        DataType::Float64 => polars_mod.getattr("Float64"),
-        DataType::String => polars_mod.getattr("String"),
-        DataType::Binary => polars_mod.getattr("Binary"),
-        DataType::Date => polars_mod.getattr("Date"),
-        DataType::Time => polars_mod.getattr("Time"),
-
-        // Datetime with optional timezone
-        DataType::Datetime(time_unit, tz) => {
-            let tu_str = match time_unit {
-                polars::prelude::TimeUnit::Nanoseconds => "ns",
-                polars::prelude::TimeUnit::Microseconds => "us",
-                polars::prelude::TimeUnit::Milliseconds => "ms",
-            };
-            let tz_str = tz.as_ref().map(|t| t.to_string());
-            polars_mod.getattr("Datetime")?.call1((tu_str, tz_str))
-        }
-
-        // Duration
-        DataType::Duration(time_unit) => {
-            let tu_str = match time_unit {
-                polars::prelude::TimeUnit::Nanoseconds => "ns",
-                polars::prelude::TimeUnit::Microseconds => "us",
-                polars::prelude::TimeUnit::Milliseconds => "ms",
-            };
-            polars_mod.getattr("Duration")?.call1((tu_str,))
-        }
-
-        // Decimal
-        DataType::Decimal(precision, scale) => {
-            let precision = *precision as i64;
-            let scale = *scale as i64;
-            polars_mod.getattr("Decimal")?.call1((precision, scale))
-        }
-
-        // List
-        DataType::List(inner) => {
-            let inner_py = dtype_to_py(py, polars_mod, inner)?;
-            polars_mod.getattr("List")?.call1((inner_py,))
-        }
-
-        // Array (fixed-size list)
-        DataType::Array(inner, size) => {
-            let inner_py = dtype_to_py(py, polars_mod, inner)?;
-            polars_mod.getattr("Array")?.call1((inner_py, *size))
-        }
-
-        // Struct
-        DataType::Struct(fields) => {
-            let py_fields: Vec<Bound<'py, PyAny>> = fields
-                .iter()
-                .map(|f| {
-                    let field_dtype = dtype_to_py(py, polars_mod, f.dtype())?;
-                    let field_class = polars_mod.getattr("Field")?;
-                    field_class.call1((f.name().as_str(), field_dtype))
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            polars_mod.getattr("Struct")?.call1((py_fields,))
-        }
-
-        // Enum - create Python Enum with categories from FrozenCategories
-        DataType::Enum(frozen_cats, _) => {
-            // Extract categories from FrozenCategories and create Python Enum
-            let categories: Vec<&str> = frozen_cats.categories().values_iter().collect();
-            let py_categories = pyo3::types::PyList::new(py, &categories)?;
-            polars_mod.getattr("Enum")?.call1((py_categories,))
-        }
-
-        // Categorical
-        DataType::Categorical(_, _) => polars_mod.getattr("Categorical"),
-
-        // Unknown - fallback to String as a safe default
-        DataType::Unknown(_) => polars_mod.getattr("String"),
-
-        // BinaryOffset - use Binary
-        DataType::BinaryOffset => polars_mod.getattr("Binary"),
-
-        // Catch-all for any other types
-        _ => {
-            // For any unhandled types, try to use String as a safe fallback
-            polars_mod.getattr("String")
-        }
-    }
-}
-
 /// User-facing Avro reader for the `open()` API.
 ///
-/// This is the primary class for reading Avro files in Python. It wraps
-/// `AvroReaderCore` and provides:
+/// This is the primary class for reading Avro files in Python. It provides:
 /// - Python iterator protocol (__iter__, __next__)
 /// - Context manager protocol (__enter__, __exit__)
 /// - Schema inspection
-///
-/// Unlike `AvroReaderCore`, this class does not expose projection pushdown,
-/// which is reserved for the `scan()` API's internal use.
+/// - Projection pushdown via projected_columns parameter
 ///
 /// # Requirements
 /// - 6.1: Implement Python iterator protocol (__iter__, __next__)
@@ -1220,7 +717,7 @@ fn dtype_to_py<'py>(
 ///     "data.avro",
 ///     batch_size=50000,
 ///     buffer_blocks=8,
-///     strict=True
+///     ignore_errors=True
 /// ) as reader:
 ///     for df in reader:
 ///         process(df)
@@ -1238,7 +735,7 @@ pub struct AvroReader {
     /// Cached batch size
     batch_size: usize,
     /// Accumulated errors from skip mode reading
-    errors: Arc<Mutex<Vec<PyReadError>>>,
+    errors: Arc<Mutex<Vec<PyBadBlockError>>>,
 }
 
 #[pymethods]
@@ -1250,8 +747,9 @@ impl AvroReader {
     /// * `batch_size` - Target number of rows per DataFrame (default: 100,000)
     /// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
     /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
-    /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
-    /// * `storage_options` - Optional dict for S3 configuration (endpoint_url, credentials, region)
+    /// * `ignore_errors` - If True, skip bad records and continue; if False, fail on first error (default: False)
+    /// * `projected_columns` - Optional list of column names to read (default: all columns)
+    /// * `storage_options` - Optional dict for S3 configuration (endpoint, credentials, region)
     /// * `read_chunk_size` - Optional read buffer chunk size in bytes. When None, auto-detects:
     ///   64KB for local files, 4MB for S3. Larger values reduce I/O operations but use more memory.
     ///   For S3, larger chunks (1-8MB) reduce HTTP round-trips significantly.
@@ -1276,14 +774,14 @@ impl AvroReader {
     /// reader = jetliner.AvroReader(
     ///     "file.avro",
     ///     batch_size=50000,
-    ///     strict=True
+    ///     ignore_errors=True
     /// )
     ///
     /// # S3-compatible services (MinIO, LocalStack, R2)
     /// reader = jetliner.AvroReader(
     ///     "s3://bucket/key.avro",
     ///     storage_options={
-    ///         "endpoint_url": "http://localhost:9000",
+    ///         "endpoint": "http://localhost:9000",
     ///         "aws_access_key_id": "minioadmin",
     ///         "aws_secret_access_key": "minioadmin",
     ///     }
@@ -1306,18 +804,23 @@ impl AvroReader {
         batch_size = 100_000,
         buffer_blocks = 4,
         buffer_bytes = 67_108_864,
-        strict = false,
+        ignore_errors = false,
+        projected_columns = None,
         storage_options = None,
-        read_chunk_size = None
+        read_chunk_size = None,
+        max_block_size = 536_870_912
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         path: String,
         batch_size: usize,
         buffer_blocks: usize,
         buffer_bytes: usize,
-        strict: bool,
+        ignore_errors: bool,
+        projected_columns: Option<Vec<String>>,
         storage_options: Option<std::collections::HashMap<String, String>>,
         read_chunk_size: Option<usize>,
+        max_block_size: Option<usize>,
     ) -> PyResult<Self> {
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -1328,7 +831,7 @@ impl AvroReader {
         })?;
 
         // Convert storage_options to S3Config
-        let s3_config = storage_options.map(|opts| parse_storage_options(&opts));
+        let s3_config = storage_options.as_ref().map(S3Config::from_dict);
 
         // Create source and reader within the runtime
         let result = runtime.block_on(async {
@@ -1336,12 +839,23 @@ impl AvroReader {
             let source = create_source(&path, s3_config).await?;
 
             // Build reader configuration (no projection for user-facing API)
-            let buffer_config = BufferConfig::new(buffer_blocks, buffer_bytes);
-            let error_mode = if strict {
-                ErrorMode::Strict
-            } else {
+            let buffer_config = BufferConfig::new(buffer_blocks, buffer_bytes)
+                .with_max_decompressed_block_size(max_block_size);
+            let error_mode = if ignore_errors {
                 ErrorMode::Skip
+            } else {
+                ErrorMode::Strict
             };
+
+            // Add projection if specified
+            let mut config = ReaderConfig::new()
+                .with_batch_size(batch_size)
+                .with_buffer_config(buffer_config)
+                .with_error_mode(error_mode);
+
+            if let Some(columns) = projected_columns {
+                config = config.with_projection(columns);
+            }
 
             // Determine read buffer config based on source type and user override
             let is_s3 = path.starts_with("s3://");
@@ -1351,11 +865,7 @@ impl AvroReader {
                 None => ReadBufferConfig::LOCAL_DEFAULT,
             };
 
-            let config = ReaderConfig::new()
-                .with_batch_size(batch_size)
-                .with_buffer_config(buffer_config)
-                .with_error_mode(error_mode)
-                .with_read_buffer_config(read_buffer_config);
+            let config = config.with_read_buffer_config(read_buffer_config);
 
             // Open the reader
             let reader = AvroStreamReader::open(source, config).await?;
@@ -1366,7 +876,7 @@ impl AvroReader {
             Ok::<_, ReaderError>((reader, schema_json))
         });
 
-        let (inner, schema_json) = result.map_err(|e| map_reader_error_to_py(&path, e))?;
+        let (inner, schema_json) = result.map_err(|e| map_reader_error_acquire_gil(&path, e))?;
 
         Ok(Self {
             inner: Arc::new(Mutex::new(Some(inner))),
@@ -1392,15 +902,15 @@ impl AvroReader {
     /// Get the next DataFrame batch.
     ///
     /// Returns the next batch of records as a Polars DataFrame.
-    /// Raises StopIteration when all records have been read.
+    /// Raises StopIteration when all records have been read or the reader is closed.
     /// In skip mode, errors are accumulated and available via `errors` property.
     ///
     /// # Returns
     /// A Polars DataFrame containing the next batch of records.
     ///
     /// # Raises
-    /// * `StopIteration` - When all records have been read
-    /// * `RuntimeError` - If an error occurs during reading (in strict mode)
+    /// * `StopIteration` - When all records have been read or reader is closed
+    /// * `DecodeError`, `ParseError`, etc. - If an error occurs during reading (in strict mode)
     fn __next__<'py>(slf: PyRefMut<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
         let inner = slf.inner.clone();
@@ -1410,18 +920,28 @@ impl AvroReader {
         // Get the next batch using the runtime
         let result = slf.runtime.block_on(async {
             let mut guard = inner.lock().await;
-            let reader = guard
-                .as_mut()
-                .ok_or_else(|| ReaderError::Configuration("Reader has been closed".to_string()))?;
+
+            // If reader is already closed, return None to signal StopIteration
+            // This allows proper Python iterator behavior where exhausted iterators
+            // simply stop yielding rather than raising errors
+            let reader = match guard.as_mut() {
+                Some(r) => r,
+                None => return Ok((None, None)),
+            };
 
             match reader.next_batch().await {
                 Ok(Some(df)) => Ok((Some(df), None)),
                 Ok(None) => {
                     // End of iteration - collect errors before releasing the reader
-                    let collected_errors: Vec<PyReadError> = reader
+                    // Inject filepath into each error
+                    let collected_errors: Vec<PyBadBlockError> = reader
                         .errors()
                         .iter()
-                        .map(PyReadError::from_read_error)
+                        .map(|e| {
+                            let mut py_err = PyBadBlockError::from_bad_block_error(e);
+                            py_err.filepath = Some(path.clone());
+                            py_err
+                        })
                         .collect();
                     // Release the reader
                     *guard = None;
@@ -1443,7 +963,7 @@ impl AvroReader {
         match result {
             Ok((Some(df), _)) => dataframe_to_py_with_enums(py, df),
             Ok((None, _)) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
-            Err(e) => Err(map_reader_error_to_py(&path, e)),
+            Err(e) => Err(map_reader_error_acquire_gil(&path, e)),
         }
     }
 
@@ -1575,7 +1095,7 @@ impl AvroReader {
     /// Errors are available after iteration completes.
     ///
     /// # Returns
-    /// A list of ReadError objects with details about each error.
+    /// A list of BadBlockError objects with details about each error.
     ///
     /// # Example
     /// ```python
@@ -1646,12 +1166,13 @@ impl AvroReader {
 /// * `path` - Path to the Avro file. Supports:
 ///   - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
 ///   - S3 URIs: `s3://bucket/key.avro`
+///   - pathlib.Path objects
 /// * `batch_size` - Target number of rows per DataFrame (default: 100,000)
 /// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
 /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
 /// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
 /// * `storage_options` - Optional dict for S3 configuration. Supported keys:
-///   - `endpoint_url`: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+///   - `endpoint`: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
 ///   - `aws_access_key_id`: AWS access key (overrides environment)
 ///   - `aws_secret_access_key`: AWS secret key (overrides environment)
 ///   - `region`: AWS region (overrides environment)
@@ -1669,9 +1190,14 @@ impl AvroReader {
 /// # Example
 /// ```python
 /// import jetliner
+/// from pathlib import Path
 ///
 /// # Basic usage - iterate over DataFrames
 /// for df in jetliner.open("data.avro"):
+///     print(df.shape)
+///
+/// # Using pathlib.Path
+/// for df in jetliner.open(Path("data.avro")):
 ///     print(df.shape)
 ///
 /// # With context manager (recommended)
@@ -1693,7 +1219,7 @@ impl AvroReader {
 /// with jetliner.open(
 ///     "s3://bucket/data.avro",
 ///     storage_options={
-///         "endpoint_url": "http://localhost:9000",
+///         "endpoint": "http://localhost:9000",
 ///         "aws_access_key_id": "minioadmin",
 ///         "aws_secret_access_key": "minioadmin",
 ///     }
@@ -1725,6 +1251,7 @@ impl AvroReader {
 /// ```
 ///
 /// # Requirements
+/// - 1.7: Accept `str` or `Path` for the source parameter
 /// - 4.1: Unified interface for S3 and local filesystem access
 /// - 4.2: S3 URI support (s3://bucket/key)
 /// - 4.3: Local filesystem path support
@@ -1737,27 +1264,35 @@ impl AvroReader {
     batch_size = 100_000,
     buffer_blocks = 4,
     buffer_bytes = 67_108_864,
-    strict = false,
+    ignore_errors = false,
+    projected_columns = None,
     storage_options = None,
-    read_chunk_size = None
+    read_chunk_size = None,
+    max_block_size = 536_870_912
 ))]
+#[allow(clippy::too_many_arguments)]
 pub fn open(
-    path: String,
+    path: PyPathLike,
     batch_size: usize,
     buffer_blocks: usize,
     buffer_bytes: usize,
-    strict: bool,
+    ignore_errors: bool,
+    projected_columns: Option<Vec<String>>,
     storage_options: Option<std::collections::HashMap<String, String>>,
     read_chunk_size: Option<usize>,
+    max_block_size: Option<usize>,
 ) -> PyResult<AvroReader> {
+    let path_str = path.into_path();
     AvroReader::new(
-        path,
+        path_str,
         batch_size,
         buffer_blocks,
         buffer_bytes,
-        strict,
+        ignore_errors,
+        projected_columns,
         storage_options,
         read_chunk_size,
+        max_block_size,
     )
 }
 

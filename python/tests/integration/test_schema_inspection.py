@@ -5,7 +5,7 @@ Tests cover:
 - Schema property access from real files
 - Schema JSON string format
 - Schema dictionary parsing
-- parse_avro_schema() function with real files
+- read_avro_schema() function with real files
 """
 
 import jetliner
@@ -44,11 +44,11 @@ class TestSchemaInspection:
             assert "time" in field_names
             assert "temp" in field_names
 
-    def test_parse_avro_schema_function(self, get_test_data_path):
-        """Test parse_avro_schema() function with real file."""
+    def test_read_avro_schema_function(self, get_test_data_path):
+        """Test read_avro_schema() function with real file."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        polars_schema = jetliner.parse_avro_schema(path)
+        polars_schema = jetliner.read_avro_schema(path)
 
         # Should return a Polars schema dict
         assert "station" in polars_schema

@@ -3,6 +3,7 @@
 //! This library provides streaming Avro data into Polars DataFrames,
 //! supporting both S3 and local filesystem sources.
 
+pub mod api;
 pub mod codec;
 pub mod convert;
 pub mod error;
@@ -18,7 +19,8 @@ pub use convert::{
     DataFrameBuilder, ErrorMode,
 };
 pub use error::{
-    CodecError, DecodeError, ReadError, ReadErrorKind, ReaderError, SchemaError, SourceError,
+    BadBlockError, BadBlockErrorKind, CodecError, DecodeError, ReaderError, SchemaError,
+    SourceError,
 };
 pub use reader::{
     decode_boolean, decode_bytes, decode_bytes_ref, decode_double, decode_float, decode_int,
@@ -27,7 +29,7 @@ pub use reader::{
 };
 pub use reader::{
     AvroBlock, AvroHeader, AvroStreamReader, BlockReader, DecompressedBlock, FullRecordDecoder,
-    ProjectedRecordDecoder, ReaderConfig, RecordDecode, RecordDecoder,
+    ProjectedRecordDecoder, ReadBufferConfig, ReaderConfig, RecordDecode, RecordDecoder,
 };
 pub use schema::{
     apply_promotion, check_compatibility, decode_record_with_resolution, json_to_avro_value,
@@ -39,19 +41,26 @@ pub use schema::{
 pub use source::{BoxedSource, LocalSource, S3Source, StreamSource};
 
 // Re-export Python bindings
-pub use python::{open, parse_avro_schema, AvroReader, AvroReaderCore, PyReadError};
-// Re-export Python exception types
-pub use python::{
-    CodecError as PyCodecError, DecodeError as PyDecodeError, JetlinerError as PyJetlinerError,
-    ParseError as PyParseError, SchemaError as PySchemaError, SourceError as PySourceError,
-};
+pub use python::{open, AvroReader, MultiAvroReader, PyBadBlockError};
+// Re-export new Python API functions
+pub use python::api::_resolve_avro_sources;
+pub use python::{read_avro, read_avro_schema, scan_avro};
+// Note: Exception types are now defined in Python (jetliner.exceptions)
+// and imported by Rust when raising errors. No Rust re-exports needed.
 
 // PyO3 module registration
 use pyo3::prelude::*;
+use tracing_subscriber::EnvFilter;
 
 /// Python module for Jetliner
 ///
 /// This is the main entry point for the Python bindings.
+///
+/// # Functions
+/// - `scan_avro`: Scan Avro files returning a LazyFrame
+/// - `read_avro`: Read Avro files returning a DataFrame
+/// - `read_avro_schema`: Extract Polars schema from an Avro file
+/// - `open`: Open an Avro file for streaming iteration
 ///
 /// # Exception Types
 /// The module provides custom exception types for specific error conditions:
@@ -63,33 +72,55 @@ use pyo3::prelude::*;
 /// - `SourceError`: Data source errors (S3, filesystem)
 ///
 /// # Requirements
+/// - 1.1: Expose `scan_avro()` function that returns `pl.LazyFrame`
+/// - 1.2: Expose `read_avro()` function that returns `pl.DataFrame`
+/// - 1.3: Expose `read_avro_schema()` function that returns `pl.Schema`
+/// - 1.4: Remove old `scan()` function (replaced by `scan_avro()`)
+/// - 1.5: Remove old `parse_avro_schema()` function (replaced by `read_avro_schema()`)
 /// - 6.4: Raise appropriate Python exceptions with descriptive messages
 /// - 6.5: Include context about block and record position in errors
 #[pymodule]
 fn jetliner(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Initialize tracing subscriber for debug logging
+    // Controlled via JETLINER_LOG env var (e.g., JETLINER_LOG=debug)
+    // Logs go to stderr to avoid interfering with Python stdout
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_env("JETLINER_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .try_init();
+
     // Register classes
     m.add_class::<AvroReader>()?;
-    m.add_class::<AvroReaderCore>()?;
-    m.add_class::<PyReadError>()?;
+    m.add_class::<MultiAvroReader>()?;
+    m.add_class::<PyBadBlockError>()?;
 
-    // Register functions
+    // Note: Exception classes (JetlinerError, DecodeError, ParseError, etc.)
+    // are defined in Python (jetliner.exceptions) and re-exported via __init__.py.
+    // Rust code imports them when raising errors.
+
+    // Register new API functions
+    m.add_function(wrap_pyfunction!(python::api::scan_avro, m)?)?;
+    m.add_function(wrap_pyfunction!(python::api::read_avro, m)?)?;
+    m.add_function(wrap_pyfunction!(python::api::read_avro_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(python::api::_resolve_avro_sources, m)?)?;
+
+    // Register open function for streaming iteration
     m.add_function(wrap_pyfunction!(open, m)?)?;
-    m.add_function(wrap_pyfunction!(parse_avro_schema, m)?)?;
-
-    // Register exception types
-    // These allow Python code to catch specific error types:
-    //   try:
-    //       reader = jetliner.open("file.avro")
-    //   except jetliner.ParseError as e:
-    //       print(f"Invalid Avro file: {e}")
-    //   except jetliner.SchemaError as e:
-    //       print(f"Schema problem: {e}")
-    m.add("JetlinerError", m.py().get_type::<PyJetlinerError>())?;
-    m.add("ParseError", m.py().get_type::<PyParseError>())?;
-    m.add("SchemaError", m.py().get_type::<PySchemaError>())?;
-    m.add("CodecError", m.py().get_type::<PyCodecError>())?;
-    m.add("DecodeError", m.py().get_type::<PyDecodeError>())?;
-    m.add("SourceError", m.py().get_type::<PySourceError>())?;
 
     Ok(())
+}
+
+// Initialize tracing for Rust tests
+// Controlled via RUST_LOG env var (e.g., RUST_LOG=debug cargo test)
+#[cfg(test)]
+#[ctor::ctor]
+fn init_test_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
+        .with_test_writer()
+        .try_init();
 }

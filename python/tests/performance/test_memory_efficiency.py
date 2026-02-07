@@ -211,10 +211,10 @@ class TestMemoryEfficiency:
 
         # Read with early stopping
         limit = 100
-        df_limited = jetliner.scan(path).head(limit).collect()
+        df_limited = jetliner.scan_avro(path).head(limit).collect()
 
         # Read all
-        df_all = jetliner.scan(path).collect()
+        df_all = jetliner.scan_avro(path).collect()
 
         # Limited should have exactly the limit
         assert df_limited.height == limit, (
@@ -237,10 +237,10 @@ class TestMemoryEfficiency:
         path = get_test_data_path("large/weather-large.avro")
 
         # Read all columns
-        df_all = jetliner.scan(path).collect()
+        df_all = jetliner.scan_avro(path).collect()
 
         # Read single column
-        df_one = jetliner.scan(path).select(["station"]).collect()
+        df_one = jetliner.scan_avro(path).select(["station"]).collect()
 
         # Same number of rows
         assert df_all.height == df_one.height, (

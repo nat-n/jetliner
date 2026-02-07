@@ -1,13 +1,27 @@
 //! S3 source implementation
 //!
 //! Provides async S3 access for reading Avro files from Amazon S3.
+//!
+//! # Requirements
+//! - 8.4: The `max_retries` key controls retry count for transient S3 failures (default: 2)
+//! - 8.5: Retryable errors include: connection timeouts, 5xx responses, throttling (429)
+//! - 8.6: The reader uses exponential backoff between retries
+//! - 8.7: Storage options take precedence over environment variables
+//! - 8.8: Retry logic is implemented in Rust
+
+use std::collections::HashMap;
+use tracing::{debug, info};
 
 use async_trait::async_trait;
+use aws_config::retry::RetryConfig;
 use aws_sdk_s3::Client;
 use bytes::Bytes;
 
 use super::traits::StreamSource;
 use crate::error::SourceError;
+
+/// Default number of retry attempts for transient S3 failures.
+pub const DEFAULT_MAX_RETRIES: usize = 2;
 
 /// Configuration options for S3 connections.
 ///
@@ -15,20 +29,41 @@ use crate::error::SourceError;
 /// enabling connections to S3-compatible services like MinIO,
 /// LocalStack, or Cloudflare R2.
 ///
+/// # Key Names
+/// The `endpoint` key is used (not `endpoint_url`) to align with Polars'
+/// `AmazonS3ConfigKey::Endpoint`.
+///
 /// # Requirements
 /// - 4.8: Accept optional `storage_options` parameter
-/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+/// - 4.9: Connect to custom endpoint when `endpoint` is provided
 /// - 4.10: Use provided credentials when specified
-#[derive(Debug, Clone, Default)]
+/// - 8.4: The `max_retries` key controls retry count for transient S3 failures
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S3Config {
-    /// Custom S3 endpoint URL (for MinIO, LocalStack, R2, etc.)
-    pub endpoint_url: Option<String>,
+    /// Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+    ///
+    /// Key: "endpoint" (aligned with Polars `AmazonS3ConfigKey::Endpoint`)
+    pub endpoint: Option<String>,
     /// AWS access key ID (overrides environment)
     pub aws_access_key_id: Option<String>,
     /// AWS secret access key (overrides environment)
     pub aws_secret_access_key: Option<String>,
     /// AWS region (overrides environment)
     pub region: Option<String>,
+    /// Maximum retry attempts for transient failures (default: 2)
+    pub max_retries: usize,
+}
+
+impl Default for S3Config {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            aws_access_key_id: None,
+            aws_secret_access_key: None,
+            region: None,
+            max_retries: DEFAULT_MAX_RETRIES,
+        }
+    }
 }
 
 impl S3Config {
@@ -37,9 +72,30 @@ impl S3Config {
         Self::default()
     }
 
-    /// Set the endpoint URL for S3-compatible services.
-    pub fn with_endpoint_url(mut self, endpoint_url: impl Into<String>) -> Self {
-        self.endpoint_url = Some(endpoint_url.into());
+    /// Parse S3 config from a dictionary (e.g., Python's `storage_options`).
+    ///
+    /// # Supported Keys
+    /// - `endpoint`: Custom S3 endpoint URL
+    /// - `aws_access_key_id`: AWS access key ID
+    /// - `aws_secret_access_key`: AWS secret access key
+    /// - `region`: AWS region
+    /// - `max_retries`: Maximum retry attempts (parsed from string, default: 2)
+    pub fn from_dict(opts: &HashMap<String, String>) -> Self {
+        Self {
+            endpoint: opts.get("endpoint").cloned(),
+            aws_access_key_id: opts.get("aws_access_key_id").cloned(),
+            aws_secret_access_key: opts.get("aws_secret_access_key").cloned(),
+            region: opts.get("region").cloned(),
+            max_retries: opts
+                .get("max_retries")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(DEFAULT_MAX_RETRIES),
+        }
+    }
+
+    /// Set the endpoint for S3-compatible services.
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
         self
     }
 
@@ -61,9 +117,15 @@ impl S3Config {
         self
     }
 
-    /// Check if any configuration is set.
+    /// Set the maximum retry attempts.
+    pub fn with_max_retries(mut self, max_retries: usize) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// Check if any configuration is set (excluding max_retries default).
     pub fn is_empty(&self) -> bool {
-        self.endpoint_url.is_none()
+        self.endpoint.is_none()
             && self.aws_access_key_id.is_none()
             && self.aws_secret_access_key.is_none()
             && self.region.is_none()
@@ -73,7 +135,8 @@ impl S3Config {
 /// A data source for reading from Amazon S3.
 ///
 /// Uses the AWS SDK for S3 access with support for range requests
-/// via the GetObject Range header.
+/// via the GetObject Range header. Retry logic is handled by the
+/// AWS SDK's built-in RetryConfig, configured via `storage_options`.
 ///
 /// # Requirements
 /// - 4.2: Use AWS SDK for S3 data access
@@ -81,10 +144,12 @@ impl S3Config {
 /// - 4.6: Return descriptive error on authentication failure
 /// - 4.7: Return descriptive error if file does not exist
 /// - 4.8: Accept optional `storage_options` parameter
-/// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+/// - 4.9: Connect to custom endpoint when `endpoint` is provided
 /// - 4.10: Use provided credentials when specified
+/// - 8.4: Use `max_retries` from configuration (via SDK RetryConfig)
+/// - 8.6: SDK uses jittered exponential backoff between retries
 pub struct S3Source {
-    /// AWS S3 client
+    /// AWS S3 client (with retry config baked in)
     client: Client,
     /// S3 bucket name
     bucket: String,
@@ -98,7 +163,7 @@ impl S3Source {
     /// Create a new S3Source from an existing client.
     ///
     /// # Arguments
-    /// * `client` - An AWS S3 client
+    /// * `client` - An AWS S3 client (should have retry config already set)
     /// * `bucket` - The S3 bucket name
     /// * `key` - The S3 object key
     ///
@@ -110,7 +175,10 @@ impl S3Source {
     /// Returns `SourceError::AuthenticationFailed` if credentials are invalid.
     /// Returns `SourceError::S3Error` for other S3 errors.
     pub async fn new(client: Client, bucket: String, key: String) -> Result<Self, SourceError> {
+        debug!(bucket = %bucket, key = %key, "Opening S3 object");
+
         // Get object metadata to verify access and cache size
+        // (retry is handled by SDK's RetryConfig)
         let head_result = client
             .head_object()
             .bucket(&bucket)
@@ -120,6 +188,13 @@ impl S3Source {
             .map_err(|e| Self::map_sdk_error(&bucket, &key, e))?;
 
         let object_size = head_result.content_length().unwrap_or(0) as u64;
+
+        info!(
+            bucket = %bucket,
+            key = %key,
+            size_bytes = object_size,
+            "Opened S3 object"
+        );
 
         Ok(Self {
             client,
@@ -162,9 +237,10 @@ impl S3Source {
     ///
     /// # Requirements
     /// - 4.8: Accept optional `storage_options` parameter
-    /// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+    /// - 4.9: Connect to custom endpoint when `endpoint` is provided
     /// - 4.10: Use provided credentials when specified
     /// - 4.11: `storage_options` takes precedence over environment variables
+    /// - 8.4: Use `max_retries` from configuration (via SDK RetryConfig)
     pub async fn open_with_config(
         bucket: String,
         key: String,
@@ -177,7 +253,8 @@ impl S3Source {
     /// Build an S3 client with optional configuration overrides.
     ///
     /// When config is provided, values take precedence over environment variables.
-    async fn build_client(config: Option<S3Config>) -> Result<Client, SourceError> {
+    /// Retry logic is delegated to the AWS SDK's built-in RetryConfig.
+    pub async fn build_client(config: Option<S3Config>) -> Result<Client, SourceError> {
         let config = config.unwrap_or_default();
 
         // Start with default AWS config from environment
@@ -205,11 +282,15 @@ impl S3Source {
 
         let aws_config = aws_config_loader.load().await;
 
-        // Build S3 client config, potentially with custom endpoint
-        let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&aws_config);
+        // Configure SDK retry (max_attempts = max_retries + 1 because SDK counts initial attempt)
+        let retry_config = RetryConfig::standard().with_max_attempts(config.max_retries as u32 + 1);
 
-        if let Some(endpoint_url) = &config.endpoint_url {
-            s3_config_builder = s3_config_builder.endpoint_url(endpoint_url);
+        // Build S3 client config, potentially with custom endpoint
+        let mut s3_config_builder =
+            aws_sdk_s3::config::Builder::from(&aws_config).retry_config(retry_config);
+
+        if let Some(endpoint) = &config.endpoint {
+            s3_config_builder = s3_config_builder.endpoint_url(endpoint);
             // For S3-compatible services, we typically need path-style addressing
             s3_config_builder = s3_config_builder.force_path_style(true);
         }
@@ -271,9 +352,10 @@ impl S3Source {
     ///
     /// # Requirements
     /// - 4.8: Accept optional `storage_options` parameter
-    /// - 4.9: Connect to custom endpoint when `endpoint_url` is provided
+    /// - 4.9: Connect to custom endpoint when `endpoint` is provided
     /// - 4.10: Use provided credentials when specified
     /// - 4.12: Successfully read files from S3-compatible services
+    /// - 8.4: Use `max_retries` from configuration
     pub async fn from_uri_with_config(
         uri: &str,
         config: Option<S3Config>,
@@ -293,7 +375,7 @@ impl S3Source {
     }
 
     /// Map AWS SDK errors to SourceError.
-    fn map_sdk_error<E: std::fmt::Display>(bucket: &str, key: &str, err: E) -> SourceError {
+    pub fn map_sdk_error<E: std::fmt::Display>(bucket: &str, key: &str, err: E) -> SourceError {
         let err_str = err.to_string();
 
         // Check for common error patterns
@@ -332,6 +414,14 @@ impl StreamSource for S3Source {
         let end = (offset + length as u64 - 1).min(self.object_size - 1);
         let range = format!("bytes={}-{}", offset, end);
 
+        debug!(
+            bucket = %self.bucket,
+            key = %self.key,
+            range = %range,
+            "S3 GET range request"
+        );
+
+        // Retry is handled by SDK's RetryConfig
         let response = self
             .client
             .get_object()
@@ -347,7 +437,15 @@ impl StreamSource for S3Source {
                 SourceError::S3Error(format!("Failed to read S3 response body: {}", e))
             })?;
 
-        Ok(body.into_bytes())
+        let bytes = body.into_bytes();
+        debug!(
+            bucket = %self.bucket,
+            key = %self.key,
+            bytes_received = bytes.len(),
+            "S3 GET range completed"
+        );
+
+        Ok(bytes)
     }
 
     async fn size(&self) -> Result<u64, SourceError> {
@@ -362,6 +460,7 @@ impl StreamSource for S3Source {
         // Use open-ended range request
         let range = format!("bytes={}-", offset);
 
+        // Retry is handled by SDK's RetryConfig
         let response = self
             .client
             .get_object()
@@ -438,10 +537,11 @@ mod tests {
     #[test]
     fn test_s3_config_default() {
         let config = S3Config::default();
-        assert!(config.endpoint_url.is_none());
+        assert!(config.endpoint.is_none());
         assert!(config.aws_access_key_id.is_none());
         assert!(config.aws_secret_access_key.is_none());
         assert!(config.region.is_none());
+        assert_eq!(config.max_retries, DEFAULT_MAX_RETRIES);
         assert!(config.is_empty());
     }
 
@@ -449,15 +549,13 @@ mod tests {
     fn test_s3_config_new() {
         let config = S3Config::new();
         assert!(config.is_empty());
+        assert_eq!(config.max_retries, DEFAULT_MAX_RETRIES);
     }
 
     #[test]
-    fn test_s3_config_with_endpoint_url() {
-        let config = S3Config::new().with_endpoint_url("http://localhost:9000");
-        assert_eq!(
-            config.endpoint_url,
-            Some("http://localhost:9000".to_string())
-        );
+    fn test_s3_config_with_endpoint() {
+        let config = S3Config::new().with_endpoint("http://localhost:9000");
+        assert_eq!(config.endpoint, Some("http://localhost:9000".to_string()));
         assert!(!config.is_empty());
     }
 
@@ -486,39 +584,79 @@ mod tests {
     }
 
     #[test]
+    fn test_s3_config_with_max_retries() {
+        let config = S3Config::new().with_max_retries(5);
+        assert_eq!(config.max_retries, 5);
+    }
+
+    #[test]
     fn test_s3_config_builder_chain() {
         let config = S3Config::new()
-            .with_endpoint_url("http://localhost:9000")
+            .with_endpoint("http://localhost:9000")
             .with_access_key_id("minioadmin")
             .with_secret_access_key("minioadmin")
-            .with_region("us-east-1");
+            .with_region("us-east-1")
+            .with_max_retries(5);
 
-        assert_eq!(
-            config.endpoint_url,
-            Some("http://localhost:9000".to_string())
-        );
+        assert_eq!(config.endpoint, Some("http://localhost:9000".to_string()));
         assert_eq!(config.aws_access_key_id, Some("minioadmin".to_string()));
         assert_eq!(config.aws_secret_access_key, Some("minioadmin".to_string()));
         assert_eq!(config.region, Some("us-east-1".to_string()));
+        assert_eq!(config.max_retries, 5);
         assert!(!config.is_empty());
     }
 
     #[test]
     fn test_s3_config_clone() {
         let config = S3Config::new()
-            .with_endpoint_url("http://localhost:9000")
-            .with_access_key_id("test");
+            .with_endpoint("http://localhost:9000")
+            .with_access_key_id("test")
+            .with_max_retries(3);
 
         let cloned = config.clone();
-        assert_eq!(config.endpoint_url, cloned.endpoint_url);
+        assert_eq!(config.endpoint, cloned.endpoint);
         assert_eq!(config.aws_access_key_id, cloned.aws_access_key_id);
+        assert_eq!(config.max_retries, cloned.max_retries);
     }
 
     #[test]
     fn test_s3_config_debug() {
-        let config = S3Config::new().with_endpoint_url("http://localhost:9000");
+        let config = S3Config::new().with_endpoint("http://localhost:9000");
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("S3Config"));
         assert!(debug_str.contains("localhost:9000"));
+    }
+
+    #[test]
+    fn test_s3_config_from_dict() {
+        let mut dict = HashMap::new();
+        dict.insert("endpoint".to_string(), "http://localhost:9000".to_string());
+        dict.insert("aws_access_key_id".to_string(), "minioadmin".to_string());
+        dict.insert("aws_secret_access_key".to_string(), "secret".to_string());
+        dict.insert("region".to_string(), "us-east-1".to_string());
+        dict.insert("max_retries".to_string(), "5".to_string());
+
+        let config = S3Config::from_dict(&dict);
+        assert_eq!(config.endpoint, Some("http://localhost:9000".to_string()));
+        assert_eq!(config.aws_access_key_id, Some("minioadmin".to_string()));
+        assert_eq!(config.aws_secret_access_key, Some("secret".to_string()));
+        assert_eq!(config.region, Some("us-east-1".to_string()));
+        assert_eq!(config.max_retries, 5);
+    }
+
+    #[test]
+    fn test_s3_config_from_dict_empty() {
+        let dict = HashMap::new();
+        let config = S3Config::from_dict(&dict);
+        assert!(config.endpoint.is_none());
+        assert_eq!(config.max_retries, DEFAULT_MAX_RETRIES);
+    }
+
+    #[test]
+    fn test_s3_config_from_dict_invalid_max_retries() {
+        let mut dict = HashMap::new();
+        dict.insert("max_retries".to_string(), "invalid".to_string());
+        let config = S3Config::from_dict(&dict);
+        assert_eq!(config.max_retries, DEFAULT_MAX_RETRIES); // falls back to default
     }
 }

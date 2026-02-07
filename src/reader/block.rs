@@ -10,6 +10,7 @@
 //! and block iteration from a `StreamSource`.
 
 use bytes::Bytes;
+use tracing::debug;
 
 use crate::codec::Codec;
 use crate::error::{DecodeError, ReaderError};
@@ -41,8 +42,8 @@ use super::AvroHeader;
 /// - 3.13: Expose read_chunk_size parameter for user tuning
 ///
 /// # Example
-/// ```ignore
-/// use jetliner::reader::ReadBufferConfig;
+/// ```
+/// use jetliner::ReadBufferConfig;
 ///
 /// // Use defaults for local files
 /// let config = ReadBufferConfig::LOCAL_DEFAULT;
@@ -99,7 +100,8 @@ impl ReadBufferConfig {
     /// * `chunk_size` - Size of each read chunk in bytes
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use jetliner::ReadBufferConfig;
     /// let config = ReadBufferConfig::with_chunk_size(1024 * 1024); // 1MB chunks
     /// ```
     pub fn with_chunk_size(chunk_size: usize) -> Self {
@@ -116,7 +118,8 @@ impl ReadBufferConfig {
     /// * `prefetch_threshold` - Threshold (0.0-1.0) at which to trigger prefetch
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// use jetliner::ReadBufferConfig;
     /// let config = ReadBufferConfig::new(2 * 1024 * 1024, 0.25); // 2MB, 25% threshold
     /// ```
     pub fn new(chunk_size: usize, prefetch_threshold: f32) -> Self {
@@ -211,28 +214,28 @@ impl AvroBlock {
         // Parse record count (signed varint, zigzag encoded)
         let record_count =
             decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
-                offset: file_offset + offset,
+                file_offset: file_offset + offset,
                 message: format!("Failed to decode block record count: {}", e),
             })?;
 
         // Parse compressed size (signed varint, zigzag encoded)
         let compressed_size =
             decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
-                offset: file_offset + offset,
+                file_offset: file_offset + offset,
                 message: format!("Failed to decode block compressed size: {}", e),
             })?;
 
         // Validate sizes
         if record_count < 0 {
             return Err(ReaderError::Parse {
-                offset: file_offset,
+                file_offset,
                 message: format!("Invalid negative record count: {}", record_count),
             });
         }
 
         if compressed_size < 0 {
             return Err(ReaderError::Parse {
-                offset: file_offset + offset,
+                file_offset: file_offset + offset,
                 message: format!("Invalid negative compressed size: {}", compressed_size),
             });
         }
@@ -242,7 +245,7 @@ impl AvroBlock {
         // Check we have enough bytes for data + sync marker
         if cursor.len() < compressed_size_usize + 16 {
             return Err(ReaderError::Parse {
-                offset: file_offset + offset,
+                file_offset: file_offset + offset,
                 message: format!(
                     "Not enough bytes for block data: need {} + 16, have {}",
                     compressed_size_usize,
@@ -264,7 +267,7 @@ impl AvroBlock {
         if &sync_marker != expected_sync {
             return Err(ReaderError::InvalidSyncMarker {
                 block_index,
-                offset: file_offset + offset - 16,
+                file_offset: file_offset + offset - 16,
                 expected: *expected_sync,
                 actual: sync_marker,
             });
@@ -370,9 +373,9 @@ const SYNC_MARKER_SIZE: usize = 16;
 /// - 3.10: Minimize total I/O operations
 ///
 /// # Example
-/// ```ignore
-/// use jetliner::reader::{BlockReader, ReadBufferConfig};
-/// use jetliner::source::LocalSource;
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use jetliner::{BlockReader, ReadBufferConfig, LocalSource, S3Source};
 ///
 /// // Use default config (64KB chunks for local files)
 /// let source = LocalSource::open("data.avro").await?;
@@ -385,6 +388,8 @@ const SYNC_MARKER_SIZE: usize = 16;
 /// while let Some(block) = reader.next_block().await? {
 ///     println!("Block {} has {} records", block.block_index, block.record_count);
 /// }
+/// # Ok(())
+/// # }
 /// ```
 pub struct BlockReader<S: StreamSource> {
     /// The data source to read from
@@ -403,6 +408,15 @@ pub struct BlockReader<S: StreamSource> {
     buffer_file_offset: u64,
     /// Read buffer configuration
     buffer_config: ReadBufferConfig,
+    /// Forward progress marker: the furthest file offset we've fully processed/validated.
+    ///
+    /// This is updated when:
+    /// 1. A block is successfully parsed (set to position after block's sync marker)
+    /// 2. A recovery scan finds a sync marker (set to position after found sync marker)
+    ///
+    /// This ensures that recovery scans always make forward progress - after processing
+    /// or recovering past a region, we never scan that region again.
+    last_successful_block_end: Option<u64>,
 }
 
 impl<S: StreamSource> BlockReader<S> {
@@ -444,13 +458,20 @@ impl<S: StreamSource> BlockReader<S> {
     /// - `ReaderError::Codec` if codec is unknown
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use jetliner::{BlockReader, ReadBufferConfig, LocalSource, S3Source};
+    ///
     /// // For S3 sources, use S3_DEFAULT for better performance
+    /// let s3_source = S3Source::from_uri("s3://bucket/key").await?;
     /// let reader = BlockReader::with_config(s3_source, ReadBufferConfig::S3_DEFAULT).await?;
     ///
     /// // For local files with custom chunk size
+    /// let local_source = LocalSource::open("data.avro").await?;
     /// let config = ReadBufferConfig::with_chunk_size(128 * 1024); // 128KB
     /// let reader = BlockReader::with_config(local_source, config).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn with_config(source: S, config: ReadBufferConfig) -> Result<Self, ReaderError> {
         // Get file size
@@ -482,6 +503,7 @@ impl<S: StreamSource> BlockReader<S> {
             read_buffer: remaining_buffer,
             buffer_file_offset: header_size,
             buffer_config: config,
+            last_successful_block_end: None,
         })
     }
 
@@ -532,6 +554,15 @@ impl<S: StreamSource> BlockReader<S> {
             Ok((block, consumed)) => {
                 // Advance buffer position, retaining unused bytes
                 self.advance_buffer(consumed);
+                // Record position after this block for error recovery
+                self.last_successful_block_end = Some(self.current_offset);
+                debug!(
+                    block_index = block.block_index,
+                    record_count = block.record_count,
+                    compressed_bytes = block.data.len(),
+                    file_offset = block.file_offset,
+                    "Parsed Avro block"
+                );
                 self.block_index += 1;
                 Ok(Some(block))
             }
@@ -642,19 +673,19 @@ impl<S: StreamSource> BlockReader<S> {
 
         let _record_count =
             decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
-                offset: self.current_offset,
+                file_offset: self.current_offset,
                 message: format!("Failed to decode block record count: {}", e),
             })?;
 
         let compressed_size =
             decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
-                offset: self.current_offset + offset,
+                file_offset: self.current_offset + offset,
                 message: format!("Failed to decode block compressed size: {}", e),
             })?;
 
         if compressed_size < 0 {
             return Err(ReaderError::Parse {
-                offset: self.current_offset + offset,
+                file_offset: self.current_offset + offset,
                 message: format!("Invalid negative compressed size: {}", compressed_size),
             });
         }
@@ -666,7 +697,7 @@ impl<S: StreamSource> BlockReader<S> {
         let remaining_in_file = (self.file_size - self.current_offset) as usize;
         if total_needed > remaining_in_file {
             return Err(ReaderError::Parse {
-                offset: self.current_offset,
+                file_offset: self.current_offset,
                 message: format!(
                     "Block size {} exceeds remaining file size {}",
                     total_needed, remaining_in_file
@@ -734,19 +765,19 @@ impl<S: StreamSource> BlockReader<S> {
 
         let _record_count =
             decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
-                offset: self.current_offset,
+                file_offset: self.current_offset,
                 message: format!("Failed to decode block record count: {}", e),
             })?;
 
         let compressed_size =
             decode_varint_signed(&mut cursor, &mut offset).map_err(|e| ReaderError::Parse {
-                offset: self.current_offset + offset,
+                file_offset: self.current_offset + offset,
                 message: format!("Failed to decode block compressed size: {}", e),
             })?;
 
         if compressed_size < 0 {
             return Err(ReaderError::Parse {
-                offset: self.current_offset + offset,
+                file_offset: self.current_offset + offset,
                 message: format!("Invalid negative compressed size: {}", compressed_size),
             });
         }
@@ -757,7 +788,7 @@ impl<S: StreamSource> BlockReader<S> {
 
         if total_needed > remaining_in_file {
             return Err(ReaderError::Parse {
-                offset: self.current_offset,
+                file_offset: self.current_offset,
                 message: format!(
                     "Block size {} exceeds remaining file size {}",
                     total_needed, remaining_in_file
@@ -812,6 +843,18 @@ impl<S: StreamSource> BlockReader<S> {
     /// Check if we've reached the end of the file.
     pub fn is_finished(&self) -> bool {
         self.current_offset >= self.file_size
+    }
+
+    /// Get the forward progress marker: the furthest file offset we've fully processed.
+    ///
+    /// This is used for error recovery - when a block fails to parse or decompress,
+    /// we scan from this position + 1 to find the next sync marker. Because this
+    /// marker is updated after both successful parses AND recovery scans, we're
+    /// guaranteed to make forward progress and never scan the same region twice.
+    ///
+    /// Returns `None` if no blocks have been successfully parsed or recovered yet.
+    pub fn last_successful_position(&self) -> Option<u64> {
+        self.last_successful_block_end
     }
 
     /// Seek to a position in the file and scan for the next sync marker.
@@ -914,11 +957,16 @@ impl<S: StreamSource> BlockReader<S> {
     /// - 7.1: Skip bad blocks and continue to next sync marker
     pub fn advance_past_invalid_sync(&mut self, invalid_sync_offset: u64) {
         // Position after the invalid sync marker (16 bytes)
-        self.current_offset = invalid_sync_offset + SYNC_MARKER_SIZE as u64;
-        self.buffer_file_offset = self.current_offset;
+        let new_offset = invalid_sync_offset + SYNC_MARKER_SIZE as u64;
+        self.current_offset = new_offset;
+        self.buffer_file_offset = new_offset;
         self.block_index += 1;
         // Clear the read buffer since we're jumping to a new position
         self.read_buffer = Bytes::new();
+        // NOTE: We do NOT update last_successful_block_end here.
+        // Optimistic advance is speculative - we don't know if we're at a valid
+        // position. If we later need to fall back to scanning, we want to scan
+        // from the last truly validated position, not from our speculative position.
     }
 
     /// Skip past corrupted data and find the next valid sync marker, starting from a given position.
@@ -981,6 +1029,10 @@ impl<S: StreamSource> BlockReader<S> {
                     let bytes_skipped = marker_offset - start_from;
                     self.current_offset = new_offset;
                     self.buffer_file_offset = new_offset;
+                    // Update forward progress marker: we've now processed/validated
+                    // everything up to this point (even if we couldn't read valid data).
+                    // This ensures the next recovery scan starts from here, not earlier.
+                    self.last_successful_block_end = Some(new_offset);
                     // Increment block index since we're moving to the next block
                     self.block_index += 1;
                     return Ok((true, bytes_skipped));
@@ -2382,6 +2434,153 @@ mod tests {
                 assert_eq!(&block.data[..], small2);
 
                 assert!(reader.next_block().await.unwrap().is_none());
+            });
+        }
+
+        // ====================================================================
+        // last_successful_position Tests
+        // ====================================================================
+        // These tests verify the tracking of successfully parsed block positions
+        // for error recovery.
+
+        #[test]
+        fn test_last_successful_position_none_before_first_read() {
+            // Verify last_successful_position is None before reading any blocks
+            run_async(async {
+                let (file_data, _) =
+                    create_test_avro_file(r#""string""#, None, &[(5, b"block1"), (10, b"block2")]);
+                let source = MockSource::new(file_data);
+
+                let reader = BlockReader::new(source).await.unwrap();
+
+                // Before reading any blocks, position should be None
+                assert!(
+                    reader.last_successful_position().is_none(),
+                    "last_successful_position should be None before first read"
+                );
+            });
+        }
+
+        #[test]
+        fn test_last_successful_position_updated_after_read() {
+            // Verify last_successful_position is updated after each successful block read
+            run_async(async {
+                let (file_data, _) = create_test_avro_file(
+                    r#""string""#,
+                    None,
+                    &[(5, b"block1"), (10, b"block2_longer")],
+                );
+                let source = MockSource::new(file_data);
+
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // Before reading: None
+                assert!(reader.last_successful_position().is_none());
+
+                // Read first block
+                let _block1 = reader.next_block().await.unwrap().unwrap();
+                let pos_after_block1 = reader.last_successful_position();
+                assert!(
+                    pos_after_block1.is_some(),
+                    "Position should be set after reading block 1"
+                );
+                let pos1 = pos_after_block1.unwrap();
+
+                // Read second block
+                let _block2 = reader.next_block().await.unwrap().unwrap();
+                let pos_after_block2 = reader.last_successful_position();
+                assert!(
+                    pos_after_block2.is_some(),
+                    "Position should be set after reading block 2"
+                );
+                let pos2 = pos_after_block2.unwrap();
+
+                // Position should have advanced
+                assert!(
+                    pos2 > pos1,
+                    "Position after block 2 ({}) should be greater than after block 1 ({})",
+                    pos2,
+                    pos1
+                );
+
+                // Position should equal current_offset (which is set after parsing)
+                // Note: last_successful_position is set to current_offset AFTER advance_buffer
+                assert_eq!(
+                    pos2,
+                    reader.current_offset(),
+                    "last_successful_position should equal current_offset after successful read"
+                );
+            });
+        }
+
+        #[test]
+        fn test_last_successful_position_not_updated_on_error() {
+            // Verify last_successful_position is NOT updated when a block parse fails
+            run_async(async {
+                // Create file with valid block followed by block with corrupted sync marker
+                let mut file = Vec::new();
+
+                // Magic bytes
+                file.extend_from_slice(&AVRO_MAGIC);
+
+                // Metadata
+                file.extend_from_slice(&encode_zigzag(1));
+                let schema_key = b"avro.schema";
+                let schema_json = br#""string""#;
+                file.extend_from_slice(&encode_zigzag(schema_key.len() as i64));
+                file.extend_from_slice(schema_key);
+                file.extend_from_slice(&encode_zigzag(schema_json.len() as i64));
+                file.extend_from_slice(schema_json);
+                file.push(0x00);
+
+                // Valid sync marker
+                let sync_marker: [u8; 16] = [
+                    0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A,
+                    0xBC, 0xDE, 0xF0,
+                ];
+                // Corrupted sync marker
+                let bad_sync: [u8; 16] = [0xFF; 16];
+
+                file.extend_from_slice(&sync_marker);
+
+                // Block 1: valid sync marker
+                file.extend_from_slice(&create_test_block(5, b"valid_block", &sync_marker));
+                // Block 2: corrupted sync marker
+                file.extend_from_slice(&create_test_block(10, b"bad_block", &bad_sync));
+
+                let source = MockSource::new(file);
+                let mut reader = BlockReader::new(source).await.unwrap();
+
+                // Read first block successfully
+                let _block1 = reader.next_block().await.unwrap().unwrap();
+                let pos_after_block1 = reader.last_successful_position();
+                assert!(pos_after_block1.is_some());
+                let pos1 = pos_after_block1.unwrap();
+
+                // Attempt to read second block (should fail with InvalidSyncMarker)
+                let result = reader.next_block().await;
+                assert!(
+                    result.is_err(),
+                    "Reading block with corrupted sync should fail"
+                );
+
+                // Verify the error is about sync marker
+                if let Err(e) = result {
+                    assert!(
+                        matches!(e, ReaderError::InvalidSyncMarker { .. }),
+                        "Error should be InvalidSyncMarker, got: {:?}",
+                        e
+                    );
+                }
+
+                // last_successful_position should NOT have changed
+                let pos_after_error = reader.last_successful_position();
+                assert!(pos_after_error.is_some());
+                assert_eq!(
+                    pos_after_error.unwrap(),
+                    pos1,
+                    "last_successful_position should not change after error"
+                );
             });
         }
     }

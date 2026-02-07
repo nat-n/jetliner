@@ -732,8 +732,8 @@ fn schema_type_name(schema: &AvroSchema) -> String {
 /// `Ok(())` if compatible, `Err(SchemaError)` with detailed message if not.
 ///
 /// # Example
-/// ```ignore
-/// use jetliner::schema::{AvroSchema, validate_schema_compatibility};
+/// ```
+/// use jetliner::{AvroSchema, validate_schema_compatibility};
 ///
 /// let writer = AvroSchema::Int;
 /// let reader = AvroSchema::Long;

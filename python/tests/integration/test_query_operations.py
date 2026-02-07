@@ -27,7 +27,7 @@ class TestComprehensiveQueries:
         path = get_test_data_path("apache-avro/weather.avro")
 
         df = (
-            jetliner.scan(path)
+            jetliner.scan_avro(path)
             .select(["station", "temp"])
             .filter(pl.col("temp") > 0)  # Filter for positive temps
             .head(3)
@@ -52,7 +52,7 @@ class TestComprehensiveQueries:
         path = get_test_data_path("apache-avro/weather.avro")
 
         df = (
-            jetliner.scan(path)
+            jetliner.scan_avro(path)
             .filter(pl.col("temp") < 0)
             .collect()
         )
@@ -66,7 +66,7 @@ class TestComprehensiveQueries:
         path = get_test_data_path("apache-avro/weather.avro")
 
         df = (
-            jetliner.scan(path)
+            jetliner.scan_avro(path)
             .group_by("station")
             .agg(pl.col("temp").mean().alias("avg_temp"))
             .collect()
@@ -80,7 +80,7 @@ class TestComprehensiveQueries:
         """Test sorting query on real data."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        df = jetliner.scan(path).sort("temp", descending=True).head(5).collect()
+        df = jetliner.scan_avro(path).sort("temp", descending=True).head(5).collect()
 
         # Should be sorted by temp descending
         temps = df["temp"].to_list()

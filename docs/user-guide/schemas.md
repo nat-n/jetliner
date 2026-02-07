@@ -20,7 +20,7 @@ with jetliner.open("data.avro") as reader:
     print(schema_dict)
 ```
 
-### Using parse_avro_schema()
+### Using read_avro_schema()
 
 Get the Polars schema without reading any data:
 
@@ -28,7 +28,7 @@ Get the Polars schema without reading any data:
 import jetliner
 
 # Returns a Polars schema (dict of column names to types)
-polars_schema = jetliner.parse_avro_schema("data.avro")
+polars_schema = jetliner.read_avro_schema("data.avro")
 print(polars_schema)
 # {'user_id': Int64, 'name': String, 'amount': Float64, ...}
 ```
@@ -42,7 +42,7 @@ Schema inspection works with S3 files:
 ```python
 import jetliner
 
-polars_schema = jetliner.parse_avro_schema(
+polars_schema = jetliner.read_avro_schema(
     "s3://bucket/data.avro",
     storage_options={"region": "us-east-1"}
 )
@@ -92,7 +92,7 @@ Column names mapped to Polars data types:
 ```python
 import jetliner
 
-schema = jetliner.parse_avro_schema("data.avro")
+schema = jetliner.read_avro_schema("data.avro")
 for name, dtype in schema.items():
     print(f"{name}: {dtype}")
 ```
@@ -155,7 +155,7 @@ import jetliner
 
 def validate_schema(path, required_columns):
     """Check that file has required columns."""
-    schema = jetliner.parse_avro_schema(path)
+    schema = jetliner.read_avro_schema(path)
     missing = set(required_columns) - set(schema.keys())
     if missing:
         raise ValueError(f"Missing columns: {missing}")
@@ -173,7 +173,7 @@ import polars as pl
 
 def process_by_schema(path):
     """Process file based on its schema."""
-    schema = jetliner.parse_avro_schema(path)
+    schema = jetliner.read_avro_schema(path)
 
     # Build query based on available columns
     numeric_cols = [
@@ -182,7 +182,7 @@ def process_by_schema(path):
     ]
 
     return (
-        jetliner.scan(path)
+        jetliner.scan_avro(path)
         .select(numeric_cols)
         .collect()
     )
@@ -195,8 +195,8 @@ import jetliner
 
 def schemas_compatible(path1, path2):
     """Check if two files have compatible schemas."""
-    schema1 = jetliner.parse_avro_schema(path1)
-    schema2 = jetliner.parse_avro_schema(path2)
+    schema1 = jetliner.read_avro_schema(path1)
+    schema2 = jetliner.read_avro_schema(path2)
 
     # Check column names match
     if set(schema1.keys()) != set(schema2.keys()):
@@ -227,7 +227,7 @@ Nested records become Polars Structs:
 #   }}
 # ]}
 
-df = jetliner.scan("events.avro").collect()
+df = jetliner.scan_avro("events.avro").collect()
 # Access nested fields
 df.select(pl.col("user").struct.field("name"))
 ```
@@ -240,7 +240,7 @@ Arrays become Polars Lists:
 # Avro schema:
 # {"name": "tags", "type": {"type": "array", "items": "string"}}
 
-df = jetliner.scan("data.avro").collect()
+df = jetliner.scan_avro("data.avro").collect()
 # Explode list column
 df.explode("tags")
 ```
@@ -253,7 +253,7 @@ Maps become Structs with key/value arrays:
 # Avro schema:
 # {"name": "metadata", "type": {"type": "map", "values": "string"}}
 
-df = jetliner.scan("data.avro").collect()
+df = jetliner.scan_avro("data.avro").collect()
 # Access map as struct
 df.select(pl.col("metadata"))
 ```
@@ -269,7 +269,7 @@ Avro supports recursive types (self-referencing records). Since Polars doesn't s
 #   {"name": "children", "type": {"type": "array", "items": "Node"}}
 # ]}
 
-df = jetliner.scan("tree.avro").collect()
+df = jetliner.scan_avro("tree.avro").collect()
 # "children" column contains JSON strings
 # Parse with: df.select(pl.col("children").str.json_decode())
 ```

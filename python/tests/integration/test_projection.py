@@ -18,7 +18,7 @@ class TestProjectionPushdown:
 
     def test_select_single_column(self, temp_avro_file):
         """Test selecting a single column."""
-        df = jetliner.scan(temp_avro_file).select("id").collect()
+        df = jetliner.scan_avro(temp_avro_file).select("id").collect()
 
         assert df.width == 1
         assert "id" in df.columns
@@ -26,7 +26,7 @@ class TestProjectionPushdown:
 
     def test_select_multiple_columns(self, temp_avro_file):
         """Test selecting multiple columns."""
-        df = jetliner.scan(temp_avro_file).select(["id", "name"]).collect()
+        df = jetliner.scan_avro(temp_avro_file).select(["id", "name"]).collect()
 
         assert df.width == 2
         assert "id" in df.columns
@@ -34,7 +34,7 @@ class TestProjectionPushdown:
 
     def test_projection_preserves_data(self, temp_avro_file):
         """Test that projection preserves correct data values."""
-        df = jetliner.scan(temp_avro_file).select("name").collect()
+        df = jetliner.scan_avro(temp_avro_file).select("name").collect()
 
         names = df["name"].to_list()
         assert names == ["Alice", "Bob", "Charlie", "Diana", "Eve"]
@@ -81,7 +81,7 @@ class TestNestedFieldProjection:
             fastavro.writer(f, schema, records)
 
         # Select top-level columns only
-        df = jetliner.scan(str(avro_path)).select(["id", "name"]).collect()
+        df = jetliner.scan_avro(str(avro_path)).select(["id", "name"]).collect()
 
         assert df.width == 2
         assert "id" in df.columns
@@ -123,7 +123,7 @@ class TestNestedFieldProjection:
             fastavro.writer(f, schema, records)
 
         # Select the nested struct column
-        df = jetliner.scan(str(avro_path)).select(["id", "address"]).collect()
+        df = jetliner.scan_avro(str(avro_path)).select(["id", "address"]).collect()
 
         assert df.width == 2
         assert "id" in df.columns
@@ -160,7 +160,7 @@ class TestNestedFieldProjection:
             fastavro.writer(f, schema, records)
 
         # Select only tags array
-        df = jetliner.scan(str(avro_path)).select(["id", "tags"]).collect()
+        df = jetliner.scan_avro(str(avro_path)).select(["id", "tags"]).collect()
 
         assert df.width == 2
         assert "tags" in df.columns
@@ -191,7 +191,7 @@ class TestNestedFieldProjection:
             fastavro.writer(f, schema, records)
 
         # Select only metadata map
-        df = jetliner.scan(str(avro_path)).select(["id", "metadata"]).collect()
+        df = jetliner.scan_avro(str(avro_path)).select(["id", "metadata"]).collect()
 
         assert df.width == 2
         assert "metadata" in df.columns
@@ -218,7 +218,7 @@ class TestNestedFieldProjection:
             fastavro.writer(f, schema, records)
 
         # Select columns in different order
-        df = jetliner.scan(str(avro_path)).select(["c", "a", "b"]).collect()
+        df = jetliner.scan_avro(str(avro_path)).select(["c", "a", "b"]).collect()
 
         assert df.columns == ["c", "a", "b"], f"Expected ['c', 'a', 'b'], got {df.columns}"
         assert df.row(0) == (3, 1, 2)

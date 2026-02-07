@@ -5,7 +5,7 @@ Tests cover:
 - File not found error handling - Requirements 6.4, 6.5
 - Invalid Avro file error handling
 - Exception type hierarchy
-- Custom exception classes
+- Custom exception classes with structured metadata
 """
 
 import os

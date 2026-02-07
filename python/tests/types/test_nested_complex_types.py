@@ -9,7 +9,7 @@ Tests handling of:
 
 These tests verify the fixes for:
 - PanicException when reading arrays/maps in record fields
-- parse_avro_schema() panic on List(Struct{...}) types
+- read_avro_schema() panic on List(Struct{...}) types
 
 Requirements tested:
 - 1.5: Complex type edge cases
@@ -186,7 +186,7 @@ class TestNestedComplexTypes:
 
         This matches the 'address' field in large_complex benchmark.
         """
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         address = first_row["address"][0]
@@ -200,7 +200,7 @@ class TestNestedComplexTypes:
 
         This matches the 'tags' field in large_complex benchmark.
         """
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         # First record (id=0) has 1 tag
         first_row = df.head(1)
@@ -220,7 +220,7 @@ class TestNestedComplexTypes:
 
         This matches the 'metadata' field in large_complex benchmark.
         """
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         metadata = first_row["metadata"][0]
@@ -236,7 +236,7 @@ class TestNestedComplexTypes:
 
         This matches the 'score' field in large_complex benchmark.
         """
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         # Record 0: score is None (0 % 3 == 0)
         assert df["score"][0] is None
@@ -249,7 +249,7 @@ class TestNestedComplexTypes:
 
     def test_array_of_structs(self, nested_complex_avro_file):
         """Test array of structs is read correctly."""
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         array_of_structs = first_row["array_of_structs"][0]
@@ -268,7 +268,7 @@ class TestNestedComplexTypes:
 
     def test_map_of_structs(self, nested_complex_avro_file):
         """Test map of structs is read correctly."""
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         map_of_structs = first_row["map_of_structs"][0]
@@ -288,7 +288,7 @@ class TestNestedComplexTypes:
 
     def test_nested_arrays(self, nested_complex_avro_file):
         """Test nested arrays (array of arrays) is read correctly."""
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         nested_arrays = first_row["nested_arrays"][0]
@@ -302,7 +302,7 @@ class TestNestedComplexTypes:
 
     def test_array_of_maps(self, nested_complex_avro_file):
         """Test array of maps is read correctly."""
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         array_of_maps = first_row["array_of_maps"][0]
@@ -317,7 +317,7 @@ class TestNestedComplexTypes:
 
     def test_map_of_arrays(self, nested_complex_avro_file):
         """Test map of arrays is read correctly."""
-        df = jetliner.scan(nested_complex_avro_file).collect()
+        df = jetliner.scan_avro(nested_complex_avro_file).collect()
 
         first_row = df.head(1)
         map_of_arrays = first_row["map_of_arrays"][0]
@@ -339,15 +339,15 @@ class TestNestedComplexTypes:
 
 
 class TestSchemaSerializationComplexTypes:
-    """Test parse_avro_schema() correctly handles complex types.
+    """Test read_avro_schema() correctly handles complex types.
 
     This tests the fix for pyo3-polars serialization issues with
     List(Struct{...}) types.
     """
 
     def test_parse_schema_array_of_structs(self, nested_complex_avro_file):
-        """Test parse_avro_schema returns correct type for array of structs."""
-        schema = jetliner.parse_avro_schema(nested_complex_avro_file)
+        """Test read_avro_schema returns correct type for array of structs."""
+        schema = jetliner.read_avro_schema(nested_complex_avro_file)
 
         # Should have array_of_structs field
         assert "array_of_structs" in schema
@@ -360,8 +360,8 @@ class TestSchemaSerializationComplexTypes:
         assert inner.base_type() == pl.Struct
 
     def test_parse_schema_map_of_structs(self, nested_complex_avro_file):
-        """Test parse_avro_schema returns correct type for map of structs."""
-        schema = jetliner.parse_avro_schema(nested_complex_avro_file)
+        """Test read_avro_schema returns correct type for map of structs."""
+        schema = jetliner.read_avro_schema(nested_complex_avro_file)
 
         # Should have map_of_structs field
         assert "map_of_structs" in schema
@@ -373,8 +373,8 @@ class TestSchemaSerializationComplexTypes:
         assert inner.base_type() == pl.Struct
 
     def test_parse_schema_nested_arrays(self, nested_complex_avro_file):
-        """Test parse_avro_schema returns correct type for nested arrays."""
-        schema = jetliner.parse_avro_schema(nested_complex_avro_file)
+        """Test read_avro_schema returns correct type for nested arrays."""
+        schema = jetliner.read_avro_schema(nested_complex_avro_file)
 
         assert "nested_arrays" in schema
 
@@ -385,8 +385,8 @@ class TestSchemaSerializationComplexTypes:
         assert inner.base_type() == pl.List
 
     def test_parse_schema_all_fields_present(self, nested_complex_avro_file):
-        """Test parse_avro_schema returns all expected fields."""
-        schema = jetliner.parse_avro_schema(nested_complex_avro_file)
+        """Test read_avro_schema returns all expected fields."""
+        schema = jetliner.read_avro_schema(nested_complex_avro_file)
 
         expected_fields = [
             "id",
@@ -401,10 +401,10 @@ class TestSchemaSerializationComplexTypes:
             assert field in schema, f"Missing field: {field}"
 
     def test_parse_schema_edge_cases_file(self, get_test_data_path):
-        """Test parse_avro_schema works with edge cases file containing arrays/maps."""
+        """Test read_avro_schema works with edge cases file containing arrays/maps."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
 
-        schema = jetliner.parse_avro_schema(path)
+        schema = jetliner.read_avro_schema(path)
 
         # Check array fields
         assert "array_empty" in schema
@@ -427,7 +427,7 @@ class TestComplexTypeProjection:
     def test_project_array_of_structs(self, nested_complex_avro_file):
         """Test projection of array of structs column."""
         df = (
-            jetliner.scan(nested_complex_avro_file)
+            jetliner.scan_avro(nested_complex_avro_file)
             .select(["id", "array_of_structs"])
             .collect()
         )
@@ -439,7 +439,7 @@ class TestComplexTypeProjection:
     def test_project_map_column(self, nested_complex_avro_file):
         """Test projection of map column."""
         df = (
-            jetliner.scan(nested_complex_avro_file)
+            jetliner.scan_avro(nested_complex_avro_file)
             .select(["id", "map_of_structs"])
             .collect()
         )
@@ -451,7 +451,7 @@ class TestComplexTypeProjection:
     def test_project_nested_arrays(self, nested_complex_avro_file):
         """Test projection of nested arrays column."""
         df = (
-            jetliner.scan(nested_complex_avro_file)
+            jetliner.scan_avro(nested_complex_avro_file)
             .select(["id", "nested_arrays"])
             .collect()
         )

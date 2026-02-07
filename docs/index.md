@@ -45,15 +45,18 @@ Here's a minimal example to verify your installation:
 import jetliner
 
 # Read an Avro file into a DataFrame
-df = jetliner.scan("data.avro").collect()
+df = jetliner.scan_avro("data.avro").collect()
 print(df)
+
+# Or use read_avro() for eager loading with column selection
+df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
 ```
 
-## Two APIs: scan() vs open()
+## Three APIs: scan_avro() vs read_avro() vs open()
 
-Jetliner provides two complementary APIs for reading Avro files:
+Jetliner provides three complementary APIs for reading Avro files:
 
-### scan() - LazyFrame with Query Optimization
+### scan_avro() - LazyFrame with Query Optimization
 
 The recommended API for most use cases. Returns a Polars LazyFrame that enables query optimizations:
 
@@ -63,7 +66,7 @@ import polars as pl
 
 # Query with automatic optimization
 result = (
-    jetliner.scan("data.avro")
+    jetliner.scan_avro("data.avro")
     .select(["user_id", "amount"])      # Projection pushdown
     .filter(pl.col("amount") > 100)     # Predicate pushdown
     .head(1000)                         # Early stopping
@@ -77,6 +80,29 @@ result = (
 - Filters data during reading, not after (predicate pushdown)
 - Stops reading once you have enough rows (early stopping)
 - Integrates with Polars streaming engine
+
+### read_avro() - Eager DataFrame Loading
+
+Use when you want to load data directly into a DataFrame with column selection:
+
+```python
+import jetliner
+
+# Load specific columns eagerly
+df = jetliner.read_avro("data.avro", columns=["user_id", "amount"], n_rows=1000)
+
+# Load from multiple files
+df = jetliner.read_avro(["file1.avro", "file2.avro"])
+
+# Load with glob pattern
+df = jetliner.read_avro("data/*.avro")
+```
+
+**Use cases:**
+
+- Quick data loading with column selection
+- When you need a DataFrame immediately
+- Multi-file reading with schema validation
 
 ### open() - Iterator for Streaming Control
 
@@ -103,16 +129,16 @@ with jetliner.open("data.avro") as reader:
 
 ## Reading from S3
 
-Both APIs support reading directly from S3:
+All APIs support reading directly from S3:
 
 ```python
 import jetliner
 
 # Using default AWS credentials (environment variables, IAM role, etc.)
-df = jetliner.scan("s3://bucket/path/to/file.avro").collect()
+df = jetliner.scan_avro("s3://bucket/path/to/file.avro").collect()
 
 # With explicit credentials
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "s3://bucket/path/to/file.avro",
     storage_options={
         "aws_access_key_id": "your-key",
@@ -122,10 +148,10 @@ df = jetliner.scan(
 ).collect()
 
 # S3-compatible services (MinIO, LocalStack, R2)
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "s3://bucket/file.avro",
     storage_options={
-        "endpoint_url": "http://localhost:9000",
+        "endpoint": "http://localhost:9000",
         "aws_access_key_id": "minioadmin",
         "aws_secret_access_key": "minioadmin",
     }
@@ -149,7 +175,7 @@ print(f"Available: {jetliner.__all__}")
 Expected output:
 ```
 Jetliner version: jetliner
-Available: ['open', 'scan', 'parse_avro_schema', 'AvroReader', 'AvroReaderCore', 'JetlinerError', 'ParseError', 'SchemaError', 'CodecError', 'DecodeError', 'SourceError']
+Available: ['scan_avro', 'read_avro', 'read_avro_schema', 'scan', 'open', 'parse_avro_schema', 'AvroReader', 'AvroReaderCore', 'JetlinerError', 'ParseError', 'SchemaError', 'CodecError', 'DecodeError', 'SourceError', 'PyDecodeError', 'PyParseError', 'PySourceError', 'PySchemaError', 'PyCodecError', 'FileSource']
 ```
 
 ## System Requirements

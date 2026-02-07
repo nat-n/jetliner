@@ -17,7 +17,6 @@ Usage:
 """
 
 import random
-import string
 from pathlib import Path
 from typing import Iterator
 

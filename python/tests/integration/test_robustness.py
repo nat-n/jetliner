@@ -25,7 +25,7 @@ class TestEdgeCasesAndRobustness:
         # Read multiple times
         results = []
         for _ in range(3):
-            df = jetliner.scan(path).collect()
+            df = jetliner.scan_avro(path).collect()
             results.append(df)
 
         # All reads should produce identical results
@@ -85,13 +85,9 @@ class TestEdgeCasesAndRobustness:
             # Reader should be finished
             assert reader.is_finished
 
-            # Further iteration should yield nothing or raise an error
-            # The reader raises JetlinerError when closed - this is acceptable behavior
-            try:
-                more_dfs = list(reader)
-                assert len(more_dfs) == 0
-            except (StopIteration, jetliner.JetlinerError):
-                pass  # Both are acceptable behaviors for exhausted reader
+            # Further iteration should yield nothing
+            more_dfs = list(reader)
+            assert len(more_dfs) == 0
 
 
 # =============================================================================
@@ -146,7 +142,7 @@ class TestSyncMarkerInData:
             fastavro.writer(f, schema, records)
 
         # Read with jetliner
-        df = jetliner.scan(str(avro_path)).collect()
+        df = jetliner.scan_avro(str(avro_path)).collect()
 
         # Verify record count
         assert df.height == 6
@@ -190,7 +186,7 @@ class TestSyncMarkerInData:
             fastavro.writer(f, schema, records)
 
         # Read with jetliner
-        df = jetliner.scan(str(avro_path)).collect()
+        df = jetliner.scan_avro(str(avro_path)).collect()
 
         # Verify record count
         assert df.height == 5
@@ -232,7 +228,7 @@ class TestSyncMarkerInData:
             fastavro.writer(f, schema, records)
 
         # Read with jetliner
-        df = jetliner.scan(str(avro_path)).collect()
+        df = jetliner.scan_avro(str(avro_path)).collect()
 
         # Verify record count
         assert df.height == 1000

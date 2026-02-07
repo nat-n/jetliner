@@ -44,7 +44,8 @@ dev = [
   "python-snappy>=0.7.3",
   "rich>=13.0.0",
   "ruff>=0.8.0",
-  "testcontainers[minio]>=4.0",
+  "testcontainers[minio]>=4.14.1",
+  "ty>=0.0.14",
 ]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 
@@ -222,7 +223,7 @@ cmd = "cargo fmt"
 
 [tool.poe.tasks.format-python]
 help = "Format Python code with ruff"
-cmd = "ruff check --fix python/"
+cmd = "ruff check --fix python/ benches/python/ scripts/"
 
 [tool.poe.tasks.style-rust]
 help = "Check Rust code formatting without changes"
@@ -235,7 +236,11 @@ env = { PYO3_PYTHON = "${POE_ROOT}/.venv/bin/python" }
 
 [tool.poe.tasks.lint-python]
 help = "Check Python code formatting without changes"
-cmd = "ruff check python/"
+cmd = "ruff check python/ benches/python/ scripts/"
+
+[tool.poe.tasks.types]
+help = "Check python types"
+cmd = "uvx ty check python/ benches/python/ scripts/"
 
 [tool.poe.tasks.check-rust]
 help = "Run all Rust checks (format, lint, test)"
@@ -243,7 +248,7 @@ sequence = ["style-rust", "lint-rust", "test-rust"]
 
 [tool.poe.tasks.check-python]
 help = "Run all Python checks (lint, test)"
-sequence = ["lint-python", "test-python"]
+sequence = ["types", "lint-python", "test-python"]
 
 [tool.poe.tasks.format]
 help = "Format all code (Rust + Python)"
@@ -257,7 +262,7 @@ sequence = ["check-rust", "check-python"]
 help = "Remove build artifacts"
 sequence = [
   { cmd = "cargo clean" },
-  { script = "poethepoet.scripts:rm('.ruff_cache','.mypy_cache','.pytest_cache','./**/__pycache__','dist',verbosity=environ.get('POE_VERBOSITY'))" },
+  { script = "poethepoet.scripts:rm('.ruff_cache','.pytest_cache','./**/__pycache__','dist',verbosity=environ.get('POE_VERBOSITY'))" },
 ]
 
 [tool.poe.tasks.rustup]

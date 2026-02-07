@@ -1,11 +1,14 @@
 """
-Integration tests for skip mode error recovery with corrupted files.
+Integration tests for ignore_errors=True (skip mode) error recovery with corrupted files.
 
 Tests cover:
 - Recovery from each corruption type (invalid magic, truncated, corrupted sync marker,
   corrupted compressed data, invalid record data, multi-block with one corrupted)
 - Verification that valid data before/after corruption is read
 - Error tracking (error_count, errors list)
+
+Note: The old `strict=False` parameter has been replaced with `ignore_errors=True`.
+The semantics are inverted: strict=False is equivalent to ignore_errors=True.
 
 Requirements tested: 7.1 (skip bad blocks), 7.2 (skip bad records), 7.3 (track errors), 7.4 (error summary)
 """
@@ -17,11 +20,11 @@ import jetliner
 
 
 class TestSkipModeRecovery:
-    """Tests for skip mode error recovery with corrupted files."""
+    """Tests for ignore_errors=True (skip mode) error recovery with corrupted files."""
 
     def test_invalid_magic_fails_even_in_skip_mode(self, get_test_data_path):
         """
-        Test that invalid magic bytes cause failure even in skip mode.
+        Test that invalid magic bytes cause failure even with ignore_errors=True.
 
         Invalid magic bytes mean the file is not a valid Avro file at all,
         so this is a fatal error that cannot be recovered from.
@@ -30,19 +33,19 @@ class TestSkipModeRecovery:
 
         # Invalid magic is a fatal error - cannot recover
         with pytest.raises(jetliner.ParseError):
-            with jetliner.open(path, strict=False) as reader:
+            with jetliner.open(path, ignore_errors=True) as reader:
                 list(reader)
 
     def test_truncated_file_recovery(self, get_test_data_path):
         """
-        Test recovery from truncated file in skip mode.
+        Test recovery from truncated file with ignore_errors=True.
 
         A truncated file should read valid data up to the truncation point.
         The reader should track the error and continue gracefully.
         """
         path = get_test_data_path("corrupted/truncated.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read some data before truncation
@@ -57,7 +60,7 @@ class TestSkipModeRecovery:
 
     def test_corrupted_sync_marker_recovery(self, get_test_data_path):
         """
-        Test recovery from corrupted sync marker in skip mode.
+        Test recovery from corrupted sync marker with ignore_errors=True.
 
         The reader should detect the invalid sync marker, skip to the next
         valid sync marker, and continue reading. Valid data before and after
@@ -65,7 +68,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read some data
@@ -90,14 +93,14 @@ class TestSkipModeRecovery:
 
     def test_corrupted_compressed_data_recovery(self, get_test_data_path):
         """
-        Test recovery from corrupted compressed data in skip mode.
+        Test recovery from corrupted compressed data with ignore_errors=True.
 
         The reader should detect decompression failure, skip the corrupted block,
         and continue reading subsequent blocks.
         """
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             _dfs = list(reader)
 
             # Should have at least one error for decompression failure
@@ -116,14 +119,14 @@ class TestSkipModeRecovery:
 
     def test_invalid_record_data_recovery(self, get_test_data_path):
         """
-        Test recovery from invalid record data in skip mode.
+        Test recovery from invalid record data with ignore_errors=True.
 
         The reader should detect the invalid record data, skip the bad record(s),
         and continue reading. Valid records should be recovered.
         """
         path = get_test_data_path("corrupted/invalid-record-data.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read some data
@@ -145,7 +148,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read data from valid blocks
@@ -171,13 +174,13 @@ class TestSkipModeRecovery:
 
 
 class TestErrorTracking:
-    """Tests for error tracking properties in skip mode."""
+    """Tests for error tracking properties with ignore_errors=True."""
 
     def test_error_properties_structure(self, get_test_data_path):
         """Test that error objects have the expected structure."""
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             list(reader)
 
             if reader.error_count > 0:
@@ -189,19 +192,19 @@ class TestErrorTracking:
                     err, "block_index"
                 ), "Error should have block_index property"
                 assert hasattr(err, "message"), "Error should have message property"
-                assert hasattr(err, "offset"), "Error should have offset property"
+                assert hasattr(err, "file_offset"), "Error should have file_offset property"
 
                 # Check types
                 assert isinstance(err.kind, str), "kind should be a string"
                 assert isinstance(err.block_index, int), "block_index should be an int"
                 assert isinstance(err.message, str), "message should be a string"
-                assert isinstance(err.offset, int), "offset should be an int"
+                assert isinstance(err.file_offset, int), "file_offset should be an int"
 
     def test_error_to_dict_method(self, get_test_data_path):
         """Test that error objects can be converted to dict."""
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             list(reader)
 
             if reader.error_count > 0:
@@ -220,7 +223,7 @@ class TestErrorTracking:
         """Test that error_count matches len(errors)."""
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             list(reader)
 
             assert reader.error_count == len(
@@ -228,10 +231,10 @@ class TestErrorTracking:
             ), "error_count should match len(errors)"
 
     def test_no_errors_on_valid_file(self, get_test_data_path):
-        """Test that valid files produce no errors in skip mode."""
+        """Test that valid files produce no errors with ignore_errors=True."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             assert len(dfs) > 0, "Should read data from valid file"
@@ -246,7 +249,7 @@ class TestDataIntegrityAfterRecovery:
         """Test that recovered data has the correct schema."""
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             if len(dfs) > 0:
@@ -267,7 +270,7 @@ class TestDataIntegrityAfterRecovery:
         """Test that recovered data values are valid (not corrupted)."""
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, strict=False) as reader:
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             if len(dfs) > 0:

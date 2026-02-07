@@ -30,13 +30,13 @@ class TestNonExistentKeyError:
         mock_s3_minio: MockS3Context,
         minio_container,
     ):
-        """Test that scan() raises SourceError for non-existent key.
+        """Test that scan_avro() raises SourceError for non-existent key.
 
         Verifies that attempting to read a non-existent S3 key
         raises SourceError with a descriptive message.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -44,7 +44,7 @@ class TestNonExistentKeyError:
         non_existent_uri = f"s3://{mock_s3_minio.bucket}/does-not-exist.avro"
 
         with pytest.raises(jetliner.SourceError) as exc_info:
-            jetliner.scan(non_existent_uri, storage_options=storage_options).collect()
+            jetliner.scan_avro(non_existent_uri, storage_options=storage_options).collect()
 
         # Verify error message is descriptive - should contain the URI or error indicator
         error_msg = str(exc_info.value).lower()
@@ -67,7 +67,7 @@ class TestNonExistentKeyError:
         raises SourceError with a descriptive message.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -103,13 +103,13 @@ class TestNonExistentBucketError:
         mock_s3_minio: MockS3Context,
         minio_container,
     ):
-        """Test that scan() raises SourceError for non-existent bucket.
+        """Test that scan_avro() raises SourceError for non-existent bucket.
 
         Verifies that attempting to read from a non-existent S3 bucket
         raises SourceError with a descriptive message.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -117,7 +117,7 @@ class TestNonExistentBucketError:
         non_existent_bucket_uri = "s3://non-existent-bucket-xyz123/file.avro"
 
         with pytest.raises(jetliner.SourceError) as exc_info:
-            jetliner.scan(
+            jetliner.scan_avro(
                 non_existent_bucket_uri, storage_options=storage_options
             ).collect()
 
@@ -141,7 +141,7 @@ class TestNonExistentBucketError:
         raises SourceError with a descriptive message.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -171,7 +171,7 @@ class TestInvalidS3UriError:
     """
 
     def test_scan_invalid_s3_uri_missing_bucket(self):
-        """Test that scan() raises error for S3 URI without bucket.
+        """Test that scan_avro() raises error for S3 URI without bucket.
 
         Verifies that malformed S3 URIs without a bucket name
         raise an appropriate error.
@@ -179,10 +179,10 @@ class TestInvalidS3UriError:
         invalid_uri = "s3://"
 
         with pytest.raises((jetliner.SourceError, ValueError)):
-            jetliner.scan(invalid_uri).collect()
+            jetliner.scan_avro(invalid_uri).collect()
 
     def test_scan_invalid_s3_uri_empty_bucket(self):
-        """Test that scan() raises error for S3 URI with empty bucket.
+        """Test that scan_avro() raises error for S3 URI with empty bucket.
 
         Verifies that S3 URIs with empty bucket component
         raise an appropriate error.
@@ -190,7 +190,7 @@ class TestInvalidS3UriError:
         invalid_uri = "s3:///some-key.avro"
 
         with pytest.raises((jetliner.SourceError, ValueError)):
-            jetliner.scan(invalid_uri).collect()
+            jetliner.scan_avro(invalid_uri).collect()
 
     def test_open_invalid_s3_uri_missing_bucket(self):
         """Test that open() raises error for S3 URI without bucket.
@@ -217,7 +217,7 @@ class TestInvalidS3UriError:
                 list(reader)
 
     def test_scan_invalid_s3_uri_malformed_scheme(self):
-        """Test that scan() raises error for malformed S3 scheme.
+        """Test that scan_avro() raises error for malformed S3 scheme.
 
         Verifies that URIs with incorrect S3 scheme format
         raise an appropriate error.
@@ -226,4 +226,130 @@ class TestInvalidS3UriError:
         invalid_uri = "s3//bucket/key.avro"
 
         with pytest.raises((jetliner.SourceError, ValueError, FileNotFoundError)):
-            jetliner.scan(invalid_uri).collect()
+            jetliner.scan_avro(invalid_uri).collect()
+
+
+# =============================================================================
+# read_avro() S3 Error Tests
+# =============================================================================
+
+
+@pytest.mark.container
+class TestReadAvroS3Errors:
+    """Tests for read_avro() S3 error handling.
+
+    These tests ensure read_avro() raises appropriate errors for S3 issues.
+    """
+
+    def test_read_avro_non_existent_key_raises_source_error(
+        self,
+        mock_s3_minio: MockS3Context,
+        minio_container,
+    ):
+        """Test that read_avro() raises SourceError for non-existent S3 key."""
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        non_existent_uri = f"s3://{mock_s3_minio.bucket}/does-not-exist.avro"
+
+        with pytest.raises(jetliner.SourceError) as exc_info:
+            jetliner.read_avro(non_existent_uri, storage_options=storage_options)
+
+        error_msg = str(exc_info.value).lower()
+        assert (
+            "not found" in error_msg
+            or "no such key" in error_msg
+            or "404" in error_msg
+            or "service error" in error_msg
+            or "does-not-exist" in error_msg
+        )
+
+    def test_read_avro_non_existent_bucket_raises_source_error(
+        self,
+        mock_s3_minio: MockS3Context,
+        minio_container,
+    ):
+        """Test that read_avro() raises SourceError for non-existent S3 bucket."""
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        non_existent_bucket_uri = "s3://non-existent-bucket-xyz123/file.avro"
+
+        with pytest.raises(jetliner.SourceError) as exc_info:
+            jetliner.read_avro(non_existent_bucket_uri, storage_options=storage_options)
+
+        error_msg = str(exc_info.value).lower()
+        assert (
+            "bucket" in error_msg
+            or "not found" in error_msg
+            or "no such bucket" in error_msg
+            or "404" in error_msg
+        )
+
+    def test_read_avro_invalid_s3_uri_raises_error(self):
+        """Test that read_avro() raises error for invalid S3 URI."""
+        invalid_uri = "s3://"
+
+        with pytest.raises((jetliner.SourceError, ValueError)):
+            jetliner.read_avro(invalid_uri)
+
+
+# =============================================================================
+# read_avro_schema() S3 Error Tests
+# =============================================================================
+
+
+@pytest.mark.container
+class TestReadAvroSchemaS3Errors:
+    """Tests for read_avro_schema() S3 error handling.
+
+    These tests ensure read_avro_schema() raises appropriate errors for S3 issues.
+    """
+
+    def test_read_avro_schema_non_existent_bucket_raises_source_error(
+        self,
+        mock_s3_minio: MockS3Context,
+        minio_container,
+    ):
+        """Test that read_avro_schema() raises SourceError for non-existent bucket."""
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        non_existent_bucket_uri = "s3://non-existent-bucket-xyz123/file.avro"
+
+        with pytest.raises(Exception) as exc_info:
+            jetliner.read_avro_schema(
+                non_existent_bucket_uri, storage_options=storage_options
+            )
+
+        error_msg = str(exc_info.value).lower()
+        assert (
+            "bucket" in error_msg
+            or "not found" in error_msg
+            or "no such bucket" in error_msg
+            or "404" in error_msg
+            or "s3" in error_msg
+        )
+
+    def test_read_avro_schema_invalid_s3_uri_raises_error(self):
+        """Test that read_avro_schema() raises error for invalid S3 URI."""
+        invalid_uri = "s3://"
+
+        with pytest.raises((jetliner.SourceError, ValueError)):
+            jetliner.read_avro_schema(invalid_uri)
+
+    def test_read_avro_schema_empty_bucket_raises_error(self):
+        """Test that read_avro_schema() raises error for S3 URI with empty bucket."""
+        invalid_uri = "s3:///some-key.avro"
+
+        with pytest.raises((jetliner.SourceError, ValueError)):
+            jetliner.read_avro_schema(invalid_uri)

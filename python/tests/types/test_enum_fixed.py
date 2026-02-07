@@ -122,12 +122,12 @@ class TestEnumType:
 
     def test_read_enum_file(self, enum_avro_file):
         """Test that enum file can be read without errors."""
-        df = jetliner.scan(enum_avro_file).collect()
+        df = jetliner.scan_avro(enum_avro_file).collect()
         assert df.height == 5
 
     def test_enum_dtype(self, enum_avro_file):
         """Test enum is read as Enum type (not Categorical)."""
-        df = jetliner.scan(enum_avro_file).collect()
+        df = jetliner.scan_avro(enum_avro_file).collect()
 
         # Avro enums have fixed categories, so they map to Polars Enum type
         # (Categorical is for when categories are inferred at runtime)
@@ -150,7 +150,7 @@ class TestEnumType:
 
     def test_enum_values(self, enum_avro_file):
         """Test enum values are read correctly."""
-        df = jetliner.scan(enum_avro_file).collect()
+        df = jetliner.scan_avro(enum_avro_file).collect()
 
         # Check status values cycle through
         assert df["status"][0] == "PENDING"
@@ -161,7 +161,7 @@ class TestEnumType:
 
     def test_enum_categories(self, enum_avro_file):
         """Test enum categories are preserved."""
-        df = jetliner.scan(enum_avro_file).collect()
+        df = jetliner.scan_avro(enum_avro_file).collect()
 
         # Get unique categories - for Enum type, use the dtype's categories
         categories = list(df["status"].dtype.categories)
@@ -196,7 +196,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 3
             assert df["only"].dtype == pl.Enum(["SINGLE"])
             assert all(v == "SINGLE" for v in df["only"])
@@ -235,7 +235,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 5
             assert df["many"].dtype == pl.Enum(symbols)
             assert df["many"][0] == "SYM_0"
@@ -274,7 +274,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 10
             assert df["status"].dtype == pl.Enum(symbols)
             assert df["status"][0] == symbols[0]
@@ -363,13 +363,13 @@ class TestEnumEdgeCases:
 
         try:
             # Project only the enum column
-            df = jetliner.scan(temp_path).select(["status"]).collect()
+            df = jetliner.scan_avro(temp_path).select(["status"]).collect()
             assert df.height == 100
             assert df.width == 1
             assert df["status"].dtype == pl.Enum(["X", "Y", "Z"])
 
             # Project enum with other columns
-            df = jetliner.scan(temp_path).select(["id", "status"]).collect()
+            df = jetliner.scan_avro(temp_path).select(["id", "status"]).collect()
             assert df.height == 100
             assert df.width == 2
             assert df["status"].dtype == pl.Enum(["X", "Y", "Z"])
@@ -405,7 +405,7 @@ class TestEnumEdgeCases:
         try:
             # Filter on enum value
             df = (
-                jetliner.scan(temp_path)
+                jetliner.scan_avro(temp_path)
                 .filter(pl.col("status") == "ACTIVE")
                 .collect()
             )
@@ -461,7 +461,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 9
 
             # All three columns should be Enum type with correct categories
@@ -509,7 +509,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 5
 
             # Should be Enum type (nullable)
@@ -554,7 +554,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 5
             assert df["status"].dtype == pl.Enum(["A", "B", "C"])
             assert df["status"].null_count() == 5
@@ -590,7 +590,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 6
             assert df["status"].dtype == pl.Enum(["X", "Y", "Z"])
             assert df["status"].null_count() == 0
@@ -634,7 +634,7 @@ class TestEnumEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 6
             assert df["value"].dtype == pl.Enum(symbols)
             assert df["value"].null_count() == 2
@@ -734,7 +734,7 @@ class TestEnumEdgeCases:
 
         try:
             # Project only the nullable enum column
-            df = jetliner.scan(temp_path).select(["status"]).collect()
+            df = jetliner.scan_avro(temp_path).select(["status"]).collect()
             assert df.height == 3
             assert df.width == 1
             assert df["status"].dtype == pl.Enum(["ON", "OFF"])
@@ -780,7 +780,7 @@ class TestEnumEdgeCases:
         try:
             # Filter for specific value
             df = (
-                jetliner.scan(temp_path)
+                jetliner.scan_avro(temp_path)
                 .filter(pl.col("status") == "ACTIVE")
                 .collect()
             )
@@ -789,7 +789,7 @@ class TestEnumEdgeCases:
 
             # Filter for null values
             df = (
-                jetliner.scan(temp_path)
+                jetliner.scan_avro(temp_path)
                 .filter(pl.col("status").is_null())
                 .collect()
             )
@@ -798,7 +798,7 @@ class TestEnumEdgeCases:
 
             # Filter for non-null values
             df = (
-                jetliner.scan(temp_path)
+                jetliner.scan_avro(temp_path)
                 .filter(pl.col("status").is_not_null())
                 .collect()
             )
@@ -813,12 +813,12 @@ class TestFixedType:
 
     def test_read_fixed_file(self, fixed_avro_file):
         """Test that fixed file can be read without errors."""
-        df = jetliner.scan(fixed_avro_file).collect()
+        df = jetliner.scan_avro(fixed_avro_file).collect()
         assert df.height == 3
 
     def test_fixed_dtype(self, fixed_avro_file):
         """Test fixed is read as Binary type."""
-        df = jetliner.scan(fixed_avro_file).collect()
+        df = jetliner.scan_avro(fixed_avro_file).collect()
 
         # Fixed should be Binary
         assert df["uuid_bytes"].dtype == pl.Binary
@@ -826,7 +826,7 @@ class TestFixedType:
 
     def test_fixed_size_preserved(self, fixed_avro_file):
         """Test fixed-size values have correct length."""
-        df = jetliner.scan(fixed_avro_file).collect()
+        df = jetliner.scan_avro(fixed_avro_file).collect()
 
         # UUID should be 16 bytes
         assert len(df["uuid_bytes"][0]) == 16
@@ -836,7 +836,7 @@ class TestFixedType:
 
     def test_fixed_values(self, fixed_avro_file):
         """Test fixed values are read correctly."""
-        df = jetliner.scan(fixed_avro_file).collect()
+        df = jetliner.scan_avro(fixed_avro_file).collect()
 
         # First record: uuid_bytes should be all zeros
         assert df["uuid_bytes"][0] == bytes([0] * 16)
@@ -868,7 +868,7 @@ class TestFixedEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 5
             assert df["byte"].dtype == pl.Binary
             for i in range(5):
@@ -894,7 +894,7 @@ class TestFixedEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 3
             assert df["data"].dtype == pl.Binary
             for i in range(3):
@@ -928,7 +928,7 @@ class TestFixedEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 5
             assert df["small"].dtype == pl.Binary
             assert df["medium"].dtype == pl.Binary
@@ -963,13 +963,13 @@ class TestFixedEdgeCases:
 
         try:
             # Project only the fixed column
-            df = jetliner.scan(temp_path).select(["hash"]).collect()
+            df = jetliner.scan_avro(temp_path).select(["hash"]).collect()
             assert df.height == 10
             assert df.width == 1
             assert df["hash"].dtype == pl.Binary
 
             # Project fixed with other columns
-            df = jetliner.scan(temp_path).select(["id", "hash"]).collect()
+            df = jetliner.scan_avro(temp_path).select(["id", "hash"]).collect()
             assert df.height == 10
             assert df.width == 2
             assert df["hash"].dtype == pl.Binary
@@ -1032,7 +1032,7 @@ class TestFixedEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 3
 
             # Access nested fixed field
@@ -1069,7 +1069,7 @@ class TestFixedEdgeCases:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 3
             assert df["hash"].dtype == pl.Binary
 
@@ -1173,7 +1173,7 @@ class TestEnumSchemaEvolution:
 
         try:
             # Read without schema evolution - should work with all symbols
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 5
             assert df["status"][3] == "ARCHIVED"
 
@@ -1216,7 +1216,7 @@ class TestEnumSchemaEvolution:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 3
             assert df["status"].dtype == pl.Enum(["PENDING", "ACTIVE", "COMPLETED"])
             assert df["status"][0] == "PENDING"
@@ -1254,7 +1254,7 @@ class TestEnumSchemaEvolution:
             temp_path = f.name
 
         try:
-            df = jetliner.scan(temp_path).collect()
+            df = jetliner.scan_avro(temp_path).collect()
             assert df.height == 2
             # Categories should be in schema order, not alphabetical
             categories = list(df["priority"].dtype.categories)

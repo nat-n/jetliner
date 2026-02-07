@@ -4,77 +4,128 @@
 """
 Jetliner - High-performance Avro streaming reader for Polars DataFrames.
 
-This module provides two complementary APIs for reading Avro files:
+This module provides three complementary APIs for reading Avro files:
 
-1. **scan()** - LazyFrame with Query Optimization (recommended for most use cases)
+1. **scan_avro()** - LazyFrame with Query Optimization (recommended for most use cases)
    - Returns a Polars LazyFrame via register_io_source
    - Enables projection pushdown (only read needed columns)
    - Enables predicate pushdown (filter at source level)
    - Enables early stopping (head(), limit())
    - Integrates with Polars streaming engine
 
-2. **open()** - Iterator for Streaming Control
-   - Returns an iterator yielding DataFrame batches
-   - Full control over batch processing
-   - Useful for custom streaming pipelines, progress tracking, or memory-constrained environments
+2. **read_avro()** - Eager DataFrame Loading
+   - Returns a Polars DataFrame directly
+   - Supports column selection via `columns` parameter
+   - Equivalent to `scan_avro(...).collect()` with eager projection
 
-Both APIs share the same Rust core - the IO plugin just wraps the iterator in a generator
-that Polars can optimize.
+3. **open()** - Iterator for Streaming Control
+   - Returns an AvroReader iterator yielding DataFrame batches
+   - Full control over batch processing
+   - Error inspection via `.errors` and `.error_count` properties
+   - Schema access via `.schema` and `.schema_dict` properties
+   - Useful for custom streaming pipelines, progress tracking, or error handling
+
+Classes:
+    AvroReader: Single-file iterator returned by open()
+    MultiAvroReader: Multi-file iterator (used internally by scan/read)
+    BadBlockError: Structured error information from skip mode reading
+
+Exceptions:
+    All exceptions inherit from JetlinerError and provide structured attributes.
+    See jetliner.exceptions module for details.
 
 Example usage:
     >>> import jetliner
     >>> import polars as pl
     >>>
-    >>> # Using scan() with query optimization
+    >>> # Using scan_avro() with query optimization
     >>> result = (
-    ...     jetliner.scan("data.avro")
+    ...     jetliner.scan_avro("data.avro")
     ...     .select(["col1", "col2"])
     ...     .filter(pl.col("amount") > 100)
     ...     .head(1000)
     ...     .collect()
     ... )
     >>>
-    >>> # Using open() for streaming control
-    >>> with jetliner.open("data.avro") as reader:
+    >>> # Using read_avro() for eager loading with column selection
+    >>> df = jetliner.read_avro("data.avro", columns=["col1", "col2"], n_rows=1000)
+    >>>
+    >>> # Using open() for streaming control with error handling
+    >>> with jetliner.open("data.avro", ignore_errors=True) as reader:
     ...     for df in reader:
     ...         process(df)
+    ...     if reader.error_count > 0:
+    ...         print(f"Skipped {reader.error_count} errors")
 """
 
 from __future__ import annotations
 
-from typing import Iterator
+from pathlib import Path
+from typing import Sequence
 
 import polars as pl
-from polars.io.plugins import register_io_source
 
 from .jetliner import (
-    # Functions
-    open,
-    parse_avro_schema,
+    # New API functions
+    scan_avro as _scan_avro,
+    read_avro as _read_avro,
+    read_avro_schema as _read_avro_schema,
+    # Streaming iterator function
+    open as _open,
+    # Internal functions (underscore prefix, not in __all__)
+    # Used by scan_avro's generated Python code
+    _resolve_avro_sources,  # noqa: F401
     # Classes
     AvroReader,
-    AvroReaderCore,
-    # Exception types
+    MultiAvroReader,
+    BadBlockError,
+)
+
+# Exception types (defined in Python for proper inheritance hierarchy)
+from .exceptions import (
     JetlinerError,
+    DecodeError,
     ParseError,
+    SourceError,
     SchemaError,
     CodecError,
-    DecodeError,
-    SourceError,
+    AuthenticationError,
+    FileNotFoundError,
+    PermissionError,
+    ConfigurationError,
 )
 
 
-def scan(
-    path: str,
+# Type aliases for documentation and type checking
+FileSource = str | Path | Sequence[str] | Sequence[Path]
+"""Type alias for file source parameters.
+
+Accepts:
+- str: A single file path or S3 URI
+- Path: A pathlib.Path object
+- Sequence[str]: Multiple file paths
+- Sequence[Path]: Multiple Path objects
+"""
+
+# Type-annotated wrapper functions for the Rust bindings
+def scan_avro(
+    source: FileSource,
     *,
+    n_rows: int | None = None,
+    row_index_name: str | None = None,
+    row_index_offset: int = 0,
+    glob: bool = True,
+    include_file_paths: str | None = None,
+    ignore_errors: bool = False,
+    storage_options: dict[str, str] | None = None,
     buffer_blocks: int = 4,
     buffer_bytes: int = 64 * 1024 * 1024,
-    strict: bool = False,
-    storage_options: dict[str, str] | None = None,
     read_chunk_size: int | None = None,
+    batch_size: int = 100_000,
+    max_block_size: int | None = 512 * 1024 * 1024,
 ) -> pl.LazyFrame:
     """
-    Scan an Avro file, returning a LazyFrame with query optimization support.
+    Scan Avro file(s), returning a LazyFrame with query optimization support.
 
     This function uses Polars' IO plugin system to enable query optimizations:
     - Projection pushdown: Only read columns that are actually used in the query
@@ -83,200 +134,459 @@ def scan(
 
     Parameters
     ----------
-    path : str
-        Path to Avro file. Supports:
+    source : str | Path | Sequence[str] | Sequence[Path]
+        Path to Avro file(s). Supports:
         - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
         - S3 URIs: `s3://bucket/key.avro`
+        - Glob patterns with standard wildcards:
+          - `*` matches any characters except `/` (e.g., `data/*.avro`)
+          - `**` matches zero or more directories (e.g., `data/**/*.avro`)
+          - `?` matches a single character (e.g., `file?.avro`)
+          - `[...]` matches character ranges (e.g., `data/[0-9]*.avro`)
+          - `{a,b,c}` matches alternatives (e.g., `data/{2023,2024}/*.avro`)
+        - Multiple files: `["file1.avro", "file2.avro"]`
+        When multiple files are provided, schemas must be compatible.
+    n_rows : int | None, default None
+        Maximum number of rows to read across all files. None means read all rows.
+    row_index_name : str | None, default None
+        If provided, adds a row index column with this name as the first column.
+        With multiple files, the index continues across files.
+    row_index_offset : int, default 0
+        Starting value for the row index (only used if row_index_name is set).
+    glob : bool, default True
+        If True, expand glob patterns in the source path. Set to False to treat
+        patterns as literal filenames.
+    include_file_paths : str | None, default None
+        If provided, adds a column with this name containing the source file path
+        for each row. Useful for tracking data provenance with multiple files.
+    ignore_errors : bool, default False
+        If True, skip corrupted blocks/records and continue reading. If False,
+        fail immediately on first error. Errors are not accessible in scan mode.
+    storage_options : dict[str, str] | None, default None
+        Configuration for S3 connections. Supported keys:
+        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - aws_access_key_id: AWS access key (overrides environment)
+        - aws_secret_access_key: AWS secret key (overrides environment)
+        - region: AWS region (overrides environment)
+        Values here take precedence over environment variables.
     buffer_blocks : int, default 4
         Number of blocks to prefetch for better I/O performance.
     buffer_bytes : int, default 64MB
         Maximum bytes to buffer during prefetching.
-    strict : bool, default False
-        If True, fail on first error. If False, skip bad records and continue.
-    storage_options : dict[str, str] | None, default None
-        Configuration for S3 connections. Supported keys:
-        - endpoint_url: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-        - aws_access_key_id: AWS access key (overrides environment)
-        - aws_secret_access_key: AWS secret key (overrides environment)
-        - region: AWS region (overrides environment)
     read_chunk_size : int | None, default None
-        Read buffer chunk size in bytes. When None, auto-detects based on source:
-        - Local files: 64KB (optimal for filesystem I/O)
-        - S3: 4MB (reduces HTTP round-trips)
+        Read buffer chunk size in bytes. If None, auto-detects based on source:
+        64KB for local files, 4MB for S3. Larger values reduce I/O operations
+        but use more memory.
+    batch_size : int, default 100,000
+        Minimum rows per DataFrame batch. Rows accumulate until this threshold
+        is reached, then yield. Batches may exceed this since blocks are processed
+        whole. Final batch may be smaller if fewer rows remain.
+    max_block_size : int | None, default 512MB
+        Maximum decompressed block size in bytes. Blocks that would decompress
+        to more than this limit are rejected. Set to None to disable the limit.
+        Default: 512MB (536870912 bytes).
 
-        Tuning guidance:
-        - For S3 with many small blocks, increase to 4-8MB to reduce HTTP requests
-        - For local files with large blocks, the default 64KB is usually optimal
-        - Larger values use more memory but reduce I/O operations
+        This protects against decompression bombs - maliciously crafted files
+        where a small compressed block expands to consume excessive memory.
 
     Returns
     -------
     pl.LazyFrame
         A LazyFrame that can be used with Polars query operations.
 
-    Raises
-    ------
-    FileNotFoundError
-        If the file does not exist.
-    PermissionError
-        If access is denied.
-    jetliner.ParseError
-        If the file is not a valid Avro file.
-    jetliner.SchemaError
-        If the schema is invalid or cannot be converted.
-    jetliner.SourceError
-        For S3 or filesystem errors.
+    Examples
+    --------
+    >>> import jetliner
+    >>> import polars as pl
+    >>>
+    >>> # Basic scan
+    >>> lf = jetliner.scan_avro("data.avro")
+    >>>
+    >>> # With query optimization
+    >>> result = (
+    ...     jetliner.scan_avro("data/*.avro")
+    ...     .select(["col1", "col2"])
+    ...     .filter(pl.col("amount") > 100)
+    ...     .head(1000)
+    ...     .collect()
+    ... )
+    >>>
+    >>> # Multiple files with row tracking
+    >>> result = (
+    ...     jetliner.scan_avro(
+    ...         ["file1.avro", "file2.avro"],
+    ...         row_index_name="idx",
+    ...         include_file_paths="source"
+    ...     )
+    ...     .collect()
+    ... )
+    >>>
+    >>> # S3 with custom endpoint (MinIO, LocalStack, R2)
+    >>> lf = jetliner.scan_avro(
+    ...     "s3://bucket/data.avro",
+    ...     storage_options={
+    ...         "endpoint": "http://localhost:9000",
+    ...         "aws_access_key_id": "minioadmin",
+    ...         "aws_secret_access_key": "minioadmin",
+    ...     }
+    ... )
+    """
+    return _scan_avro(
+        source,
+        n_rows=n_rows,
+        row_index_name=row_index_name,
+        row_index_offset=row_index_offset,
+        glob=glob,
+        include_file_paths=include_file_paths,
+        ignore_errors=ignore_errors,
+        storage_options=storage_options,
+        buffer_blocks=buffer_blocks,
+        buffer_bytes=buffer_bytes,
+        read_chunk_size=read_chunk_size,
+        batch_size=batch_size,
+        max_block_size=max_block_size,
+    )
+
+
+def read_avro(
+    source: FileSource,
+    *,
+    columns: Sequence[str] | Sequence[int] | None = None,
+    n_rows: int | None = None,
+    row_index_name: str | None = None,
+    row_index_offset: int = 0,
+    glob: bool = True,
+    include_file_paths: str | None = None,
+    ignore_errors: bool = False,
+    storage_options: dict[str, str] | None = None,
+    buffer_blocks: int = 4,
+    buffer_bytes: int = 64 * 1024 * 1024,
+    read_chunk_size: int | None = None,
+    batch_size: int = 100_000,
+    max_block_size: int | None = 512 * 1024 * 1024,
+) -> pl.DataFrame:
+    """
+    Read Avro file(s), returning a DataFrame.
+
+    Eagerly reads data into memory. For large files or when you need query
+    optimization, use `scan_avro()` instead.
+
+    Parameters
+    ----------
+    source : str | Path | Sequence[str] | Sequence[Path]
+        Path to Avro file(s). Supports:
+        - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
+        - S3 URIs: `s3://bucket/key.avro`
+        - Glob patterns with standard wildcards:
+          - `*` matches any characters except `/` (e.g., `data/*.avro`)
+          - `**` matches zero or more directories (e.g., `data/**/*.avro`)
+          - `?` matches a single character (e.g., `file?.avro`)
+          - `[...]` matches character ranges (e.g., `data/[0-9]*.avro`)
+          - `{a,b,c}` matches alternatives (e.g., `data/{2023,2024}/*.avro`)
+        - Multiple files: `["file1.avro", "file2.avro"]`
+        When multiple files are provided, schemas must be compatible.
+    columns : Sequence[str] | Sequence[int] | None, default None
+        Columns to read. Projection happens during decoding for efficiency. Can be:
+        - List of column names: `["col1", "col2"]`
+        - List of column indices (0-based): `[0, 2, 5]`
+        - None to read all columns
+    n_rows : int | None, default None
+        Maximum number of rows to read across all files. None means read all rows.
+    row_index_name : str | None, default None
+        If provided, adds a row index column with this name as the first column.
+        With multiple files, the index continues across files.
+    row_index_offset : int, default 0
+        Starting value for the row index (only used if row_index_name is set).
+    glob : bool, default True
+        If True, expand glob patterns in the source path. Set to False to treat
+        patterns as literal filenames.
+    include_file_paths : str | None, default None
+        If provided, adds a column with this name containing the source file path
+        for each row. Useful for tracking data provenance with multiple files.
+    ignore_errors : bool, default False
+        If True, skip corrupted blocks/records and continue reading. If False,
+        fail immediately on first error. Errors are not accessible in read mode.
+    storage_options : dict[str, str] | None, default None
+        Configuration for S3 connections. Supported keys:
+        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - aws_access_key_id: AWS access key (overrides environment)
+        - aws_secret_access_key: AWS secret key (overrides environment)
+        - region: AWS region (overrides environment)
+        Values here take precedence over environment variables.
+    buffer_blocks : int, default 4
+        Number of blocks to prefetch for better I/O performance.
+    buffer_bytes : int, default 64MB
+        Maximum bytes to buffer during prefetching.
+    read_chunk_size : int | None, default None
+        Read buffer chunk size in bytes. If None, auto-detects based on source:
+        64KB for local files, 4MB for S3. Larger values reduce I/O operations
+        but use more memory.
+    batch_size : int, default 100,000
+        Minimum rows per DataFrame batch. Rows accumulate until this threshold
+        is reached, then yield. Batches may exceed this since blocks are processed
+        whole. Final batch may be smaller if fewer rows remain.
+    max_block_size : int | None, default 512MB
+        Maximum decompressed block size in bytes. Blocks that would decompress
+        to more than this limit are rejected. Set to None to disable the limit.
+        Default: 512MB (536870912 bytes).
+
+        This protects against decompression bombs - maliciously crafted files
+        where a small compressed block expands to consume excessive memory.
+
+    Returns
+    -------
+    pl.DataFrame
+        A DataFrame containing the Avro data.
 
     Examples
     --------
-    Basic scan - returns LazyFrame:
-
-    >>> lf = jetliner.scan("data.avro")
-    >>> lf = jetliner.scan("s3://bucket/file.avro")
-
-    Query with projection pushdown - only reads col1, col2 from disk:
-
-    >>> result = (
-    ...     jetliner.scan("file.avro")
-    ...     .select(["col1", "col2"])
-    ...     .collect()
+    >>> import jetliner
+    >>>
+    >>> # Read all columns
+    >>> df = jetliner.read_avro("data.avro")
+    >>>
+    >>> # Read specific columns by name
+    >>> df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
+    >>>
+    >>> # Read specific columns by index
+    >>> df = jetliner.read_avro("data.avro", columns=[0, 2, 5])
+    >>>
+    >>> # Read with row limit
+    >>> df = jetliner.read_avro("data.avro", n_rows=1000)
+    >>>
+    >>> # Multiple files with row tracking
+    >>> df = jetliner.read_avro(
+    ...     ["file1.avro", "file2.avro"],
+    ...     row_index_name="idx",
+    ...     include_file_paths="source"
     ... )
-
-    Query with predicate pushdown - filters during read, not after:
-
-    >>> result = (
-    ...     jetliner.scan("file.avro")
-    ...     .filter(pl.col("status") == "active")
-    ...     .filter(pl.col("amount") > 100)
-    ...     .collect()
-    ... )
-
-    Early stopping - stops reading after 1000 rows:
-
-    >>> result = jetliner.scan("file.avro").head(1000).collect()
-
-    S3-compatible services (MinIO, LocalStack, R2):
-
-    >>> result = (
-    ...     jetliner.scan(
-    ...         "s3://bucket/file.avro",
-    ...         storage_options={
-    ...             "endpoint_url": "http://localhost:9000",
-    ...             "aws_access_key_id": "minioadmin",
-    ...             "aws_secret_access_key": "minioadmin",
-    ...         }
-    ...     )
-    ...     .collect()
-    ... )
-
-    Custom read chunk size for S3 optimization:
-
-    >>> result = (
-    ...     jetliner.scan(
-    ...         "s3://bucket/file.avro",
-    ...         read_chunk_size=8 * 1024 * 1024  # 8MB chunks
-    ...     )
-    ...     .collect()
-    ... )
-
-    Full query optimization example:
-
-    >>> result = (
-    ...     jetliner.scan("s3://bucket/large_file.avro")
-    ...     .select(["user_id", "amount", "timestamp"])
-    ...     .filter(pl.col("amount") > 0)
-    ...     .group_by("user_id")
-    ...     .agg(pl.col("amount").sum())
-    ...     .head(100)
-    ...     .collect()
-    ... )
-
-    Notes
-    -----
-    The scan() function is recommended for most use cases because it enables
-    Polars query optimizations. Use open() instead when you need:
-    - Fine-grained control over batch processing
-    - Progress tracking during iteration
-    - Custom memory management
     """
-    # Parse schema to get Polars schema (calls into Rust)
-    # This reads only the header to extract the schema
-    polars_schema = parse_avro_schema(path, storage_options=storage_options)
+    return _read_avro(
+        source,
+        columns=columns,
+        n_rows=n_rows,
+        row_index_name=row_index_name,
+        row_index_offset=row_index_offset,
+        glob=glob,
+        include_file_paths=include_file_paths,
+        ignore_errors=ignore_errors,
+        storage_options=storage_options,
+        buffer_blocks=buffer_blocks,
+        buffer_bytes=buffer_bytes,
+        read_chunk_size=read_chunk_size,
+        batch_size=batch_size,
+        max_block_size=max_block_size,
+    )
 
-    def source_generator(
-        with_columns: list[str] | None,
-        predicate: pl.Expr | None,
-        n_rows: int | None,
-        batch_size: int | None,
-    ) -> Iterator[pl.DataFrame]:
-        """
-        Generator that yields DataFrames, respecting pushdown hints.
 
-        This generator is called by Polars' IO plugin system with optimization hints:
-        - with_columns: List of column names to read (projection pushdown)
-        - predicate: Filter expression to apply (predicate pushdown)
-        - n_rows: Maximum number of rows to return (early stopping)
-        - batch_size: Suggested batch size from query engine
-        """
-        # Use provided batch_size or default to 100,000
-        effective_batch_size = batch_size if batch_size is not None else 100_000
+def read_avro_schema(
+    source: FileSource,
+    *,
+    storage_options: dict[str, str] | None = None,
+) -> pl.Schema:
+    """
+    Read the schema from an Avro file without reading data.
 
-        # Create Rust reader with projection info
-        # The projected_columns parameter enables builder-level filtering
-        # so we only allocate memory for the columns we need
-        reader = AvroReaderCore(
-            path,
-            batch_size=effective_batch_size,
-            buffer_blocks=buffer_blocks,
-            buffer_bytes=buffer_bytes,
-            strict=strict,
-            projected_columns=with_columns,  # Pass projection to Rust
-            storage_options=storage_options,  # Pass storage_options to Rust
-            read_chunk_size=read_chunk_size,  # Pass read_chunk_size to Rust
-        )
+    Returns the Polars schema that would result from reading the file.
+    Avro types are mapped to Polars types (e.g., Avro records become Structs,
+    Avro arrays become Lists, Avro enums become Categorical).
 
-        rows_yielded = 0
+    Parameters
+    ----------
+    source : str | Path | Sequence[str] | Sequence[Path]
+        Path to Avro file. If multiple files are provided, reads schema from
+        the first file only.
+    storage_options : dict[str, str] | None, default None
+        Configuration for S3 connections. Supported keys:
+        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - aws_access_key_id: AWS access key (overrides environment)
+        - aws_secret_access_key: AWS secret key (overrides environment)
+        - region: AWS region (overrides environment)
+        Values here take precedence over environment variables.
 
-        for df in reader:
-            # Apply predicate pushdown (filter at Python level)
-            # This filters each batch as it's read, reducing memory usage
-            if predicate is not None:
-                df = df.filter(predicate)
+    Returns
+    -------
+    pl.Schema
+        The Polars schema corresponding to the Avro file's schema.
 
-            # Handle early stopping
-            if n_rows is not None:
-                remaining = n_rows - rows_yielded
-                if remaining <= 0:
-                    break
-                if df.height > remaining:
-                    df = df.head(remaining)
+    Examples
+    --------
+    >>> import jetliner
+    >>>
+    >>> # Read schema from local file
+    >>> schema = jetliner.read_avro_schema("data.avro")
+    >>> print(schema)
+    >>>
+    >>> # Read schema from S3
+    >>> schema = jetliner.read_avro_schema(
+    ...     "s3://bucket/data.avro",
+    ...     storage_options={"region": "us-west-2"}
+    ... )
+    >>> print(schema.names())  # Column names
+    >>> print(schema.dtypes())  # Column types
+    """
+    return _read_avro_schema(source, storage_options=storage_options)
 
-            rows_yielded += df.height
-            yield df
 
-            # Stop if we've hit the row limit
-            if n_rows is not None and rows_yielded >= n_rows:
-                break
+def open(
+    path: str | Path,
+    *,
+    batch_size: int = 100_000,
+    buffer_blocks: int = 4,
+    buffer_bytes: int = 64 * 1024 * 1024,
+    ignore_errors: bool = False,
+    projected_columns: Sequence[str] | None = None,
+    storage_options: dict[str, str] | None = None,
+    read_chunk_size: int | None = None,
+    max_block_size: int | None = 512 * 1024 * 1024,
+) -> AvroReader:
+    """
+    Open an Avro file for streaming iteration over DataFrame batches.
 
-    return register_io_source(
-        io_source=source_generator,
-        schema=polars_schema,
+    Returns an iterator that yields DataFrame batches. Use this when you need
+    fine-grained control over batch processing, progress tracking, or error
+    inspection. For most use cases, `scan_avro()` is recommended instead.
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to Avro file. Supports:
+        - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
+        - S3 URIs: `s3://bucket/key.avro`
+        - pathlib.Path objects
+        Note: Unlike scan_avro/read_avro, this does not support multiple files
+        or glob patterns. Use MultiAvroReader for multi-file iteration.
+    batch_size : int, default 100,000
+        Minimum rows per DataFrame batch. Rows accumulate until this threshold
+        is reached, then yield. Batches may exceed this since blocks are processed
+        whole. Final batch may be smaller if fewer rows remain.
+    buffer_blocks : int, default 4
+        Number of blocks to prefetch asynchronously for better I/O performance.
+    buffer_bytes : int, default 64MB
+        Maximum bytes to buffer during prefetching. Prefetching stops when this
+        limit is reached.
+    ignore_errors : bool, default False
+        Error handling mode:
+        - False (strict): Fail immediately on first error
+        - True (skip): Skip corrupted blocks/records and continue reading
+        In skip mode, errors are accumulated and accessible via `.errors` and
+        `.error_count` properties after iteration completes.
+    projected_columns : Sequence[str] | None, default None
+        List of column names to read. Projection happens during decoding for
+        efficiency. None reads all columns.
+    storage_options : dict[str, str] | None, default None
+        Configuration for S3 connections. Supported keys:
+        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - aws_access_key_id: AWS access key (overrides environment)
+        - aws_secret_access_key: AWS secret key (overrides environment)
+        - region: AWS region (overrides environment)
+        Values here take precedence over environment variables.
+    read_chunk_size : int | None, default None
+        Read buffer chunk size in bytes. If None, auto-detects based on source:
+        64KB for local files, 4MB for S3. Larger values (e.g., 8MB for S3)
+        reduce I/O operations but use more memory.
+    max_block_size : int | None, default 512MB
+        Maximum decompressed block size in bytes. Blocks that would decompress
+        to more than this limit are rejected. Set to None to disable the limit.
+        Default: 512MB (536870912 bytes).
+
+        This protects against decompression bombs - maliciously crafted files
+        where a small compressed block expands to consume excessive memory.
+
+    Returns
+    -------
+    AvroReader
+        An iterator yielding DataFrame batches. Supports context manager protocol
+        for automatic resource cleanup.
+
+    Examples
+    --------
+    >>> import jetliner
+    >>> from pathlib import Path
+    >>>
+    >>> # Basic iteration
+    >>> for df in jetliner.open("data.avro"):
+    ...     print(f"Batch: {df.shape}")
+    >>>
+    >>> # With context manager (recommended)
+    >>> with jetliner.open("data.avro") as reader:
+    ...     for df in reader:
+    ...         process(df)
+    >>>
+    >>> # Using pathlib.Path
+    >>> with jetliner.open(Path("data.avro")) as reader:
+    ...     for df in reader:
+    ...         process(df)
+    >>>
+    >>> # With projection
+    >>> with jetliner.open("data.avro", projected_columns=["col1", "col2"]) as reader:
+    ...     for df in reader:
+    ...         process(df)
+    >>>
+    >>> # Error handling in skip mode
+    >>> with jetliner.open("data.avro", ignore_errors=True) as reader:
+    ...     for df in reader:
+    ...         process(df)
+    ...
+    ...     # Inspect errors after iteration
+    ...     if reader.error_count > 0:
+    ...         print(f"Skipped {reader.error_count} errors")
+    ...         for err in reader.errors:
+    ...             print(f"[{err.kind}] Block {err.block_index}: {err.message}")
+    >>>
+    >>> # Access schema
+    >>> with jetliner.open("data.avro") as reader:
+    ...     print(reader.schema)  # JSON string
+    ...     print(reader.schema_dict)  # Python dict
+    ...     for df in reader:
+    ...         process(df)
+    >>>
+    >>> # S3 with custom endpoint
+    >>> with jetliner.open(
+    ...     "s3://bucket/data.avro",
+    ...     storage_options={
+    ...         "endpoint": "http://localhost:9000",
+    ...         "aws_access_key_id": "minioadmin",
+    ...         "aws_secret_access_key": "minioadmin",
+    ...     }
+    ... ) as reader:
+    ...     for df in reader:
+    ...         process(df)
+    """
+    return _open(
+        path,
+        batch_size=batch_size,
+        buffer_blocks=buffer_blocks,
+        buffer_bytes=buffer_bytes,
+        ignore_errors=ignore_errors,
+        projected_columns=projected_columns,
+        storage_options=storage_options,
+        read_chunk_size=read_chunk_size,
+        max_block_size=max_block_size,
     )
 
 
 __all__ = [
-    # Functions
+    # API functions
+    "scan_avro",
+    "read_avro",
+    "read_avro_schema",
     "open",
-    "scan",
-    "parse_avro_schema",
     # Classes
     "AvroReader",
-    "AvroReaderCore",
-    # Exception types
+    "MultiAvroReader",
+    "BadBlockError",
+    # Exception types (hierarchy: JetlinerError -> specific errors)
     "JetlinerError",
+    "DecodeError",
     "ParseError",
+    "SourceError",
     "SchemaError",
     "CodecError",
-    "DecodeError",
-    "SourceError",
+    "AuthenticationError",
+    "FileNotFoundError",
+    "PermissionError",
+    "ConfigurationError",
+    # Type aliases
+    "FileSource",
 ]

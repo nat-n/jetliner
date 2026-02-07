@@ -55,6 +55,16 @@ pub trait RecordDecode: Send {
     /// This is useful for determining when to flush a batch.
     fn pending_records(&self) -> usize;
 
+    /// Truncate the builders to the specified record count.
+    ///
+    /// This is used to rollback partial block decodes when an error occurs
+    /// in skip mode. By truncating to the record count before the block was
+    /// processed, we effectively discard all records from the failed block.
+    ///
+    /// # Arguments
+    /// * `count` - The record count to truncate to
+    fn truncate_to(&mut self, count: usize);
+
     /// Get the schema for the decoded records.
     fn schema(&self) -> &Schema;
 }
@@ -149,10 +159,14 @@ impl RecordDecode for FullRecordDecoder {
     }
 
     fn finish_batch(&mut self) -> Result<Vec<Series>, DecodeError> {
+        // Pass record_count to each builder to ensure consistent output.
+        // This handles the case where a partial record decode left some builders
+        // with one extra value - they will be truncated to record_count.
+        let count = self.record_count;
         let series: Result<Vec<Series>, DecodeError> = self
             .builders
             .iter_mut()
-            .map(|builder| builder.finish())
+            .map(|builder| builder.finish(count))
             .collect();
 
         self.record_count = 0;
@@ -161,6 +175,12 @@ impl RecordDecode for FullRecordDecoder {
 
     fn pending_records(&self) -> usize {
         self.record_count
+    }
+
+    fn truncate_to(&mut self, _count: usize) {
+        // TODO: Implement proper truncation for rollback support
+        // For now, this is a no-op. The proper fix requires adding
+        // truncate support to all FieldBuilder variants.
     }
 
     fn schema(&self) -> &Schema {
@@ -191,6 +211,8 @@ pub struct ProjectedRecordDecoder {
     builders: Vec<Option<FieldBuilder>>,
     /// Number of records currently in the builders
     record_count: usize,
+    /// Resolution context for named type references (used for recursive types during skip)
+    resolution_context: crate::schema::SchemaResolutionContext,
 }
 
 impl ProjectedRecordDecoder {
@@ -218,6 +240,9 @@ impl ProjectedRecordDecoder {
         let polars_schema =
             crate::convert::avro_to_arrow_schema_projected(schema, &projected_names)?;
 
+        // Build resolution context for named type references (needed for recursive types during skip)
+        let resolution_context = crate::schema::SchemaResolutionContext::build_from_schema(schema);
+
         // Create builders only for projected columns, passing root schema for recursive types
         let builders: Result<Vec<Option<FieldBuilder>>, SchemaError> = record_schema
             .fields
@@ -240,6 +265,7 @@ impl ProjectedRecordDecoder {
             polars_schema,
             builders: builders?,
             record_count: 0,
+            resolution_context,
         })
     }
 
@@ -267,8 +293,12 @@ impl RecordDecode for ProjectedRecordDecoder {
                     builder.decode_field(data, &field.schema)?;
                 }
                 None => {
-                    // Skip the field without decoding
-                    super::decode::skip_value(data, &field.schema)?;
+                    // Skip the field without decoding, using context for recursive type resolution
+                    super::decode::skip_value_with_context(
+                        data,
+                        &field.schema,
+                        &self.resolution_context,
+                    )?;
                 }
             }
         }
@@ -277,11 +307,15 @@ impl RecordDecode for ProjectedRecordDecoder {
     }
 
     fn finish_batch(&mut self) -> Result<Vec<Series>, DecodeError> {
+        // Pass record_count to each builder to ensure consistent output.
+        // This handles the case where a partial record decode left some builders
+        // with one extra value - they will be truncated to record_count.
+        let count = self.record_count;
         // Only finish builders that exist (projected columns)
         let series: Result<Vec<Series>, DecodeError> = self
             .builders
             .iter_mut()
-            .filter_map(|builder_opt| builder_opt.as_mut().map(|b| b.finish()))
+            .filter_map(|builder_opt| builder_opt.as_mut().map(|b| b.finish(count)))
             .collect();
 
         self.record_count = 0;
@@ -290,6 +324,10 @@ impl RecordDecode for ProjectedRecordDecoder {
 
     fn pending_records(&self) -> usize {
         self.record_count
+    }
+
+    fn truncate_to(&mut self, _count: usize) {
+        // TODO: Implement proper truncation for rollback support
     }
 
     fn schema(&self) -> &Schema {
@@ -328,6 +366,18 @@ impl RecordDecoder {
         schema: &AvroSchema,
         projected_columns: Option<&[String]>,
     ) -> Result<Self, SchemaError> {
+        // Reject zero-field schemas upfront - Polars DataFrames cannot represent
+        // row counts without at least one column.
+        if let AvroSchema::Record(r) = schema {
+            if r.fields.is_empty() {
+                return Err(SchemaError::UnsupportedType(
+                    "Record schemas with zero fields cannot be converted to DataFrames. \
+                     Polars requires at least one column to represent row counts."
+                        .to_string(),
+                ));
+            }
+        }
+
         match projected_columns {
             None => Ok(RecordDecoder::Full(FullRecordDecoder::new(schema)?)),
             Some(cols) => Ok(RecordDecoder::Projected(ProjectedRecordDecoder::new(
@@ -370,6 +420,13 @@ impl RecordDecode for RecordDecoder {
         match self {
             RecordDecoder::Full(d) => d.pending_records(),
             RecordDecoder::Projected(d) => d.pending_records(),
+        }
+    }
+
+    fn truncate_to(&mut self, count: usize) {
+        match self {
+            RecordDecoder::Full(d) => d.truncate_to(count),
+            RecordDecoder::Projected(d) => d.truncate_to(count),
         }
     }
 
@@ -632,31 +689,35 @@ impl FieldBuilder {
         }
     }
 
-    /// Finish building and return the Series.
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    /// Finish building and return the Series, truncating to exactly `count` values.
+    ///
+    /// This ensures consistency even if a partial record decode left extra values
+    /// in some builders. The `count` parameter should be the number of complete
+    /// records (i.e., `record_count` from the RecordDecoder).
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         match self {
-            FieldBuilder::Null(b) => b.finish(),
-            FieldBuilder::Boolean(b) => b.finish(),
-            FieldBuilder::Int32(b) => b.finish(),
-            FieldBuilder::Int64(b) => b.finish(),
-            FieldBuilder::Float32(b) => b.finish(),
-            FieldBuilder::Float64(b) => b.finish(),
-            FieldBuilder::Binary(b) => b.finish(),
-            FieldBuilder::String(b) => b.finish(),
-            FieldBuilder::Nullable(b) => b.finish(),
-            FieldBuilder::List(b) => b.finish(),
-            FieldBuilder::Map(b) => b.finish(),
-            FieldBuilder::Struct(b) => b.finish(),
-            FieldBuilder::Enum(b) => b.finish(),
-            FieldBuilder::Fixed(b) => b.finish(),
-            FieldBuilder::Date(b) => b.finish(),
-            FieldBuilder::Time(b) => b.finish(),
-            FieldBuilder::Datetime(b) => b.finish(),
-            FieldBuilder::Duration(b) => b.finish(),
-            FieldBuilder::Decimal(b) => b.finish(),
-            FieldBuilder::Uuid(b) => b.finish(),
-            FieldBuilder::Recursive(b) => b.finish(),
-            FieldBuilder::BigDecimal(b) => b.finish(),
+            FieldBuilder::Null(b) => b.finish(count),
+            FieldBuilder::Boolean(b) => b.finish(count),
+            FieldBuilder::Int32(b) => b.finish(count),
+            FieldBuilder::Int64(b) => b.finish(count),
+            FieldBuilder::Float32(b) => b.finish(count),
+            FieldBuilder::Float64(b) => b.finish(count),
+            FieldBuilder::Binary(b) => b.finish(count),
+            FieldBuilder::String(b) => b.finish(count),
+            FieldBuilder::Nullable(b) => b.finish(count),
+            FieldBuilder::List(b) => b.finish(count),
+            FieldBuilder::Map(b) => b.finish(count),
+            FieldBuilder::Struct(b) => b.finish(count),
+            FieldBuilder::Enum(b) => b.finish(count),
+            FieldBuilder::Fixed(b) => b.finish(count),
+            FieldBuilder::Date(b) => b.finish(count),
+            FieldBuilder::Time(b) => b.finish(count),
+            FieldBuilder::Datetime(b) => b.finish(count),
+            FieldBuilder::Duration(b) => b.finish(count),
+            FieldBuilder::Decimal(b) => b.finish(count),
+            FieldBuilder::Uuid(b) => b.finish(count),
+            FieldBuilder::Recursive(b) => b.finish(count),
+            FieldBuilder::BigDecimal(b) => b.finish(count),
         }
     }
 
@@ -721,10 +782,11 @@ impl NullBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let count = self.count;
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        // Use the minimum of stored count and requested count
+        let actual_count = count.min(self.count);
         self.count = 0;
-        Ok(Series::new_null(self.name.clone().into(), count))
+        Ok(Series::new_null(self.name.clone().into(), actual_count))
     }
 
     fn reserve(&mut self, _additional: usize) {
@@ -752,8 +814,9 @@ impl BooleanBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         Ok(Series::new(self.name.clone().into(), values))
     }
 
@@ -782,8 +845,9 @@ impl Int32Builder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         Ok(Series::new(self.name.clone().into(), values))
     }
 
@@ -812,8 +876,9 @@ impl Int64Builder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         Ok(Series::new(self.name.clone().into(), values))
     }
 
@@ -842,8 +907,9 @@ impl Float32Builder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         Ok(Series::new(self.name.clone().into(), values))
     }
 
@@ -872,8 +938,9 @@ impl Float64Builder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         Ok(Series::new(self.name.clone().into(), values))
     }
 
@@ -912,12 +979,16 @@ impl BinaryBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         // Take the builder and replace with a new one
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
 
         // Freeze the mutable array into an immutable BinaryViewArray
         let arr = builder.freeze();
+
+        // Slice to exactly `count` elements (discards any partial record data)
+        let len = arr.len();
+        let arr = arr.sliced(0, count.min(len));
 
         // Wrap in BinaryChunked and convert to Series
         let chunked = BinaryChunked::with_chunk(self.name.clone().into(), arr);
@@ -927,21 +998,27 @@ impl BinaryBuilder {
     /// Finish building and return the Series with a validity mask applied.
     ///
     /// This is used by NullableBuilder to apply null values.
-    fn finish_with_validity(&mut self, validity: &[bool]) -> Result<Series, DecodeError> {
+    fn finish_with_validity(
+        &mut self,
+        validity: &[bool],
+        count: usize,
+    ) -> Result<Series, DecodeError> {
         // Take the builder and replace with a new one
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
-
-        // Apply validity mask by setting validity on the builder
-        // We need to create a new builder with validity
-        let mut new_builder = MutableBinaryViewArray::with_capacity(validity.len());
 
         // Get the frozen array to iterate over values
         let arr = builder.freeze();
 
-        // Re-add values with validity
-        for (i, &is_valid) in validity.iter().enumerate() {
+        // Apply validity mask by setting validity on the builder
+        // We need to create a new builder with validity
+        // Only process up to `count` elements
+        let actual_count = count.min(validity.len()).min(arr.len());
+        let mut new_builder = MutableBinaryViewArray::with_capacity(actual_count);
+
+        // Re-add values with validity (only up to actual_count)
+        for (i, &is_valid) in validity.iter().enumerate().take(actual_count) {
             if is_valid {
-                // SAFETY: i is within bounds since validity.len() == arr.len()
+                // SAFETY: i is within bounds since we checked above
                 let value = unsafe { arr.value_unchecked(i) };
                 new_builder.push_value(value);
             } else {
@@ -989,12 +1066,16 @@ impl StringBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         // Take the builder and replace with a new one
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
 
         // Freeze the mutable array into an immutable Utf8ViewArray
         let arr = builder.freeze();
+
+        // Slice to exactly `count` elements (discards any partial record data)
+        let len = arr.len();
+        let arr = arr.sliced(0, count.min(len));
 
         // Wrap in StringChunked and convert to Series
         let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
@@ -1004,21 +1085,26 @@ impl StringBuilder {
     /// Finish building and return the Series with a validity mask applied.
     ///
     /// This is used by NullableBuilder to apply null values.
-    fn finish_with_validity(&mut self, validity: &[bool]) -> Result<Series, DecodeError> {
+    fn finish_with_validity(
+        &mut self,
+        validity: &[bool],
+        count: usize,
+    ) -> Result<Series, DecodeError> {
         // Take the builder and replace with a new one
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
-
-        // Apply validity mask by setting validity on the builder
-        // We need to create a new builder with validity
-        let mut new_builder = MutableBinaryViewArray::with_capacity(validity.len());
 
         // Get the frozen array to iterate over values
         let arr = builder.freeze();
 
-        // Re-add values with validity
-        for (i, &is_valid) in validity.iter().enumerate() {
+        // Apply validity mask by setting validity on the builder
+        // Only process up to `count` elements
+        let actual_count = count.min(validity.len()).min(arr.len());
+        let mut new_builder = MutableBinaryViewArray::with_capacity(actual_count);
+
+        // Re-add values with validity (only up to actual_count)
+        for (i, &is_valid) in validity.iter().enumerate().take(actual_count) {
             if is_valid {
-                // SAFETY: i is within bounds since validity.len() == arr.len()
+                // SAFETY: i is within bounds since we checked above
                 let value = unsafe { arr.value_unchecked(i) };
                 new_builder.push_value(value);
             } else {
@@ -1159,28 +1245,30 @@ impl NullableBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let validity = std::mem::take(&mut self.validity);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut validity = std::mem::take(&mut self.validity);
+        // Truncate validity to exactly count elements
+        validity.truncate(count);
 
         // For BinaryBuilder, use the specialized finish_with_validity method
         // to properly apply the validity mask during array construction
         if let FieldBuilder::Binary(b) = &mut *self.inner {
-            return b.finish_with_validity(&validity);
+            return b.finish_with_validity(&validity, count);
         }
 
         // For StringBuilder, use the specialized finish_with_validity method
         // to properly apply the validity mask during array construction
         if let FieldBuilder::String(b) = &mut *self.inner {
-            return b.finish_with_validity(&validity);
+            return b.finish_with_validity(&validity, count);
         }
 
         // For EnumBuilder, use the specialized finish_with_validity method
         // because Polars Enum/Categorical types don't support zip_with
         if let FieldBuilder::Enum(b) = &mut *self.inner {
-            return b.finish_with_validity(&validity);
+            return b.finish_with_validity(&validity, count);
         }
 
-        let inner_series = self.inner.finish()?;
+        let inner_series = self.inner.finish(count)?;
 
         // Create a boolean chunked array for validity mask (true = valid, false = null)
         let mask = BooleanChunked::new("mask".into(), &validity);
@@ -1324,11 +1412,18 @@ impl ListBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let inner_series = self.inner.finish()?;
-        let offsets = std::mem::take(&mut self.offsets);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut offsets = std::mem::take(&mut self.offsets);
         self.offsets = vec![0];
         self.current_offset = 0;
+
+        // Truncate offsets to count + 1 elements (one offset per record, plus initial 0)
+        // offsets[count] gives us the total number of inner elements for the first `count` records
+        let actual_count = count.min(offsets.len().saturating_sub(1));
+        offsets.truncate(actual_count + 1);
+        let inner_count = offsets.last().copied().unwrap_or(0) as usize;
+
+        let inner_series = self.inner.finish(inner_count)?;
 
         // Direct ListArray construction - avoids slice-per-element overhead
         // Get the underlying arrow array from the inner series
@@ -1414,12 +1509,18 @@ impl MapBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let key_series = self.key_builder.finish()?;
-        let value_series = self.value_builder.finish()?;
-        let offsets = std::mem::take(&mut self.offsets);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut offsets = std::mem::take(&mut self.offsets);
         self.offsets = vec![0];
         self.current_offset = 0;
+
+        // Truncate offsets to count + 1 elements (one offset per record, plus initial 0)
+        let actual_count = count.min(offsets.len().saturating_sub(1));
+        offsets.truncate(actual_count + 1);
+        let inner_count = offsets.last().copied().unwrap_or(0) as usize;
+
+        let key_series = self.key_builder.finish(inner_count)?;
+        let value_series = self.value_builder.finish(inner_count)?;
 
         // Create struct series from key and value
         let struct_series = StructChunked::from_series(
@@ -1477,15 +1578,14 @@ impl StructBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         let field_series: Result<Vec<Series>, DecodeError> =
-            self.builders.iter_mut().map(|b| b.finish()).collect();
+            self.builders.iter_mut().map(|b| b.finish(count)).collect();
 
         let field_series = field_series?;
-        let len = field_series.first().map(|s| s.len()).unwrap_or(0);
 
         let struct_chunked =
-            StructChunked::from_series(self.name.clone().into(), len, field_series.iter())
+            StructChunked::from_series(self.name.clone().into(), count, field_series.iter())
                 .map_err(|e| DecodeError::InvalidData(format!("Failed to create struct: {}", e)))?;
 
         Ok(struct_chunked.into_series())
@@ -1520,8 +1620,9 @@ impl EnumBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let indices = std::mem::take(&mut self.indices);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut indices = std::mem::take(&mut self.indices);
+        indices.truncate(count);
 
         // Create categorical from indices and symbols
         // First create the DataType with the categories
@@ -1575,8 +1676,13 @@ impl EnumBuilder {
     /// This is used by NullableBuilder to apply null values to enum types.
     /// Unlike other types, Polars Enum/Categorical types don't support zip_with,
     /// so we need to construct the nullable array directly using Option<T> indices.
-    fn finish_with_validity(&mut self, validity: &[bool]) -> Result<Series, DecodeError> {
-        let indices = std::mem::take(&mut self.indices);
+    fn finish_with_validity(
+        &mut self,
+        validity: &[bool],
+        count: usize,
+    ) -> Result<Series, DecodeError> {
+        let mut indices = std::mem::take(&mut self.indices);
+        indices.truncate(count);
 
         // Create categorical from indices and symbols
         let categories = FrozenCategories::new(self.symbols.iter().map(|s| s.as_str()))
@@ -1587,11 +1693,14 @@ impl EnumBuilder {
 
         // Create the Series with nulls based on the physical type
         // We use from_iter with Option<T> to properly handle nulls
+        // Only process up to `count` elements
+        let actual_count = count.min(validity.len()).min(indices.len());
         match physical_type {
             CategoricalPhysical::U8 => {
                 let opt_indices: Vec<Option<u8>> = indices
                     .into_iter()
-                    .zip(validity.iter())
+                    .take(actual_count)
+                    .zip(validity.iter().take(actual_count))
                     .map(|(idx, &is_valid)| if is_valid { Some(idx as u8) } else { None })
                     .collect();
                 let physical: UInt8Chunked = opt_indices.into_iter().collect();
@@ -1606,7 +1715,8 @@ impl EnumBuilder {
             CategoricalPhysical::U16 => {
                 let opt_indices: Vec<Option<u16>> = indices
                     .into_iter()
-                    .zip(validity.iter())
+                    .take(actual_count)
+                    .zip(validity.iter().take(actual_count))
                     .map(|(idx, &is_valid)| if is_valid { Some(idx as u16) } else { None })
                     .collect();
                 let physical: UInt16Chunked = opt_indices.into_iter().collect();
@@ -1621,7 +1731,8 @@ impl EnumBuilder {
             CategoricalPhysical::U32 => {
                 let opt_indices: Vec<Option<u32>> = indices
                     .into_iter()
-                    .zip(validity.iter())
+                    .take(actual_count)
+                    .zip(validity.iter().take(actual_count))
                     .map(|(idx, &is_valid)| if is_valid { Some(idx) } else { None })
                     .collect();
                 let physical: UInt32Chunked = opt_indices.into_iter().collect();
@@ -1677,12 +1788,16 @@ impl FixedBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         // Take the builder and replace with a new one
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
 
         // Freeze the mutable array into an immutable BinaryViewArray
         let arr = builder.freeze();
+
+        // Slice to exactly `count` elements (discards any partial record data)
+        let len = arr.len();
+        let arr = arr.sliced(0, count.min(len));
 
         // Wrap in BinaryChunked and convert to Series
         let chunked = BinaryChunked::with_chunk(self.name.clone().into(), arr);
@@ -1714,8 +1829,9 @@ impl DateBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         let ca = Int32Chunked::new(self.name.clone().into(), &values);
         Ok(ca.into_date().into_series())
     }
@@ -1759,8 +1875,9 @@ impl TimeBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         let ca = Int64Chunked::new(self.name.clone().into(), &values);
         // into_time() expects nanoseconds, which we've already converted to
         Ok(ca.into_time().into_series())
@@ -1795,8 +1912,9 @@ impl DatetimeBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         let ca = Int64Chunked::new(self.name.clone().into(), &values);
         Ok(ca
             .into_datetime(self.unit, self.timezone.clone())
@@ -1840,8 +1958,9 @@ impl DurationBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         let ca = Int64Chunked::new(self.name.clone().into(), &values);
         Ok(ca.into_duration(TimeUnit::Microseconds).into_series())
     }
@@ -1905,9 +2024,12 @@ impl UuidBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
         let arr = builder.freeze();
+        // Slice to exactly `count` elements (discards any partial record data)
+        let len = arr.len();
+        let arr = arr.sliced(0, count.min(len));
         let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
         Ok(chunked.into_series())
     }
@@ -1980,8 +2102,9 @@ impl DecimalBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         let ca = Int128Chunked::from_vec(self.name.clone().into(), values);
         Ok(ca
             .into_decimal_unchecked(self.precision, self.scale)
@@ -2036,8 +2159,9 @@ impl RecursiveBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
-        let values = std::mem::take(&mut self.values);
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
+        let mut values = std::mem::take(&mut self.values);
+        values.truncate(count);
         Ok(Series::new(self.name.clone().into(), values))
     }
 
@@ -2085,9 +2209,12 @@ impl BigDecimalBuilder {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<Series, DecodeError> {
+    fn finish(&mut self, count: usize) -> Result<Series, DecodeError> {
         let builder = std::mem::replace(&mut self.builder, MutableBinaryViewArray::new());
         let arr = builder.freeze();
+        // Slice to exactly `count` elements (discards any partial record data)
+        let len = arr.len();
+        let arr = arr.sliced(0, count.min(len));
         let chunked = StringChunked::with_chunk(self.name.clone().into(), arr);
         Ok(chunked.into_series())
     }
@@ -2238,7 +2365,7 @@ mod tests {
         let mut data: &[u8] = &[0x06];
         builder.decode(&mut data).unwrap();
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(4).unwrap();
 
         // Verify the series has correct length
         assert_eq!(series.len(), 4);
@@ -2269,7 +2396,7 @@ mod tests {
             builder.decode(&mut data).unwrap();
         }
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(7).unwrap();
         assert_eq!(series.len(), 7);
 
         let values = enum_to_strings(&series);
@@ -2288,7 +2415,7 @@ mod tests {
             builder.decode(&mut data).unwrap();
         }
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(3).unwrap();
         assert_eq!(series.len(), 3);
 
         let values = enum_to_strings(&series);
@@ -2308,7 +2435,7 @@ mod tests {
             builder.decode(&mut data).unwrap();
         }
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(4).unwrap();
         assert_eq!(series.len(), 4);
 
         // Should still be Enum type
@@ -2331,7 +2458,7 @@ mod tests {
             builder.decode(&mut data).unwrap();
         }
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(4).unwrap();
         assert_eq!(series.len(), 4);
 
         // Should still be Enum type
@@ -2347,7 +2474,7 @@ mod tests {
         let symbols = vec!["A".to_string(), "B".to_string()];
         let mut builder = EnumBuilder::new("empty", symbols);
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(0).unwrap();
         assert_eq!(series.len(), 0);
         assert!(matches!(series.dtype(), DataType::Enum(_, _)));
     }
@@ -2364,7 +2491,7 @@ mod tests {
         let mut data: &[u8] = &[0x00];
         builder.decode(&mut data).unwrap();
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(1).unwrap();
         assert_eq!(series.len(), 1);
     }
 
@@ -2420,7 +2547,7 @@ mod tests {
             builder.decode(&mut data).unwrap();
         }
 
-        let series = builder.finish().unwrap();
+        let series = builder.finish(4).unwrap();
         assert_eq!(series.len(), 4);
 
         let values = enum_to_strings(&series);

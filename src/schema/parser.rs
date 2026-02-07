@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use serde_json::Value;
+use tracing::debug;
 
 use crate::error::SchemaError;
 use crate::schema::{
@@ -63,7 +64,15 @@ pub fn parse_schema_with_options(json: &str, strict: bool) -> Result<AvroSchema,
         .map_err(|e| SchemaError::ParseError(format!("Invalid JSON: {}", e)))?;
 
     let mut parser = SchemaParser::new().with_strict(strict);
-    parser.parse(&value)
+    let schema = parser.parse(&value)?;
+
+    debug!(
+        schema = ?schema,
+        strict = strict,
+        "Parsed Avro schema"
+    );
+
+    Ok(schema)
 }
 
 /// Schema parser with named type resolution context.

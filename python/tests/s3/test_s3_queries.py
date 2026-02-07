@@ -46,13 +46,13 @@ class TestS3ProjectionPushdown:
         selecting a single column from an S3-backed Avro file.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .select("station")
             .collect()
         )
@@ -74,13 +74,13 @@ class TestS3ProjectionPushdown:
         selecting multiple columns from an S3-backed Avro file.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .select(["station", "temp"])
             .collect()
         )
@@ -104,17 +104,17 @@ class TestS3ProjectionPushdown:
         """
         local_path = get_test_data_path("apache-avro/weather.avro")
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Read with projection from local
-        local_df = jetliner.scan(local_path).select(["station", "temp"]).collect()
+        local_df = jetliner.scan_avro(local_path).select(["station", "temp"]).collect()
 
         # Read with projection from S3
         s3_df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .select(["station", "temp"])
             .collect()
         )
@@ -148,20 +148,20 @@ class TestS3PredicatePushdown:
         filtering with equality from an S3-backed Avro file.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Get all data first to find a valid station value
-        all_df = jetliner.scan(
+        all_df = jetliner.scan_avro(
             s3_weather_file_minio, storage_options=storage_options
         ).collect()
         first_station = all_df["station"][0]
 
         # Filter by that station
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .filter(pl.col("station") == first_station)
             .collect()
         )
@@ -181,20 +181,20 @@ class TestS3PredicatePushdown:
         filtering with comparison operators from an S3-backed Avro file.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Get all data to determine a threshold
-        all_df = jetliner.scan(
+        all_df = jetliner.scan_avro(
             s3_weather_file_minio, storage_options=storage_options
         ).collect()
         median_temp = all_df["temp"].median()
 
         # Filter by temperature greater than median
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .filter(pl.col("temp") > median_temp)
             .collect()
         )
@@ -214,20 +214,20 @@ class TestS3PredicatePushdown:
         works correctly with S3-backed Avro files.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Get all data to determine a threshold
-        all_df = jetliner.scan(
+        all_df = jetliner.scan_avro(
             s3_weather_file_minio, storage_options=storage_options
         ).collect()
         median_temp = all_df["temp"].median()
 
         # Filter and select
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .filter(pl.col("temp") > median_temp)
             .select("station")
             .collect()
@@ -250,21 +250,21 @@ class TestS3PredicatePushdown:
         """
         local_path = get_test_data_path("apache-avro/weather.avro")
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Get threshold from local file
-        all_df = jetliner.scan(local_path).collect()
+        all_df = jetliner.scan_avro(local_path).collect()
         median_temp = all_df["temp"].median()
 
         # Read with filter from local
-        local_df = jetliner.scan(local_path).filter(pl.col("temp") > median_temp).collect()
+        local_df = jetliner.scan_avro(local_path).filter(pl.col("temp") > median_temp).collect()
 
         # Read with filter from S3
         s3_df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .filter(pl.col("temp") > median_temp)
             .collect()
         )
@@ -299,13 +299,13 @@ class TestS3EarlyStopping:
         using head() with an S3-backed Avro file.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .head(3)
             .collect()
         )
@@ -324,13 +324,13 @@ class TestS3EarlyStopping:
         when reading from S3.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .limit(3)
             .collect()
         )
@@ -349,20 +349,20 @@ class TestS3EarlyStopping:
         works correctly with S3-backed Avro files.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Get all data to determine a threshold that returns multiple rows
-        all_df = jetliner.scan(
+        all_df = jetliner.scan_avro(
             s3_weather_file_minio, storage_options=storage_options
         ).collect()
         min_temp = all_df["temp"].min()
 
         # Filter and limit
         df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .filter(pl.col("temp") > min_temp)
             .head(2)
             .collect()
@@ -384,17 +384,17 @@ class TestS3EarlyStopping:
         """
         local_path = get_test_data_path("apache-avro/weather.avro")
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Read with head from local
-        local_df = jetliner.scan(local_path).head(3).collect()
+        local_df = jetliner.scan_avro(local_path).head(3).collect()
 
         # Read with head from S3
         s3_df = (
-            jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+            jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
             .head(3)
             .collect()
         )
@@ -428,7 +428,7 @@ class TestS3BatchIteration:
         with S3-backed Avro files.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -456,7 +456,7 @@ class TestS3BatchIteration:
         """
         local_path = get_test_data_path("apache-avro/weather.avro")
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -557,15 +557,15 @@ class TestQueryOperationEquivalenceProperty:
         s3_uri = mock_s3_minio.upload_bytes(avro_bytes, f"query-test-{id(records)}.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Test 1: Projection pushdown equivalence
-        local_proj_df = jetliner.scan(str(local_path)).select(column_subset).collect()
+        local_proj_df = jetliner.scan_avro(str(local_path)).select(column_subset).collect()
         s3_proj_df = (
-            jetliner.scan(s3_uri, storage_options=storage_options)
+            jetliner.scan_avro(s3_uri, storage_options=storage_options)
             .select(column_subset)
             .collect()
         )
@@ -575,12 +575,12 @@ class TestQueryOperationEquivalenceProperty:
 
         # Test 2: Predicate pushdown equivalence
         local_pred_df = (
-            jetliner.scan(str(local_path))
+            jetliner.scan_avro(str(local_path))
             .filter(pl.col("id") > id_threshold)
             .collect()
         )
         s3_pred_df = (
-            jetliner.scan(s3_uri, storage_options=storage_options)
+            jetliner.scan_avro(s3_uri, storage_options=storage_options)
             .filter(pl.col("id") > id_threshold)
             .collect()
         )
@@ -589,9 +589,9 @@ class TestQueryOperationEquivalenceProperty:
         )
 
         # Test 3: Early stopping equivalence
-        local_head_df = jetliner.scan(str(local_path)).head(row_limit).collect()
+        local_head_df = jetliner.scan_avro(str(local_path)).head(row_limit).collect()
         s3_head_df = (
-            jetliner.scan(s3_uri, storage_options=storage_options)
+            jetliner.scan_avro(s3_uri, storage_options=storage_options)
             .head(row_limit)
             .collect()
         )
@@ -601,14 +601,14 @@ class TestQueryOperationEquivalenceProperty:
 
         # Test 4: Combined operations equivalence
         local_combined_df = (
-            jetliner.scan(str(local_path))
+            jetliner.scan_avro(str(local_path))
             .filter(pl.col("id") > id_threshold)
             .select(column_subset)
             .head(row_limit)
             .collect()
         )
         s3_combined_df = (
-            jetliner.scan(s3_uri, storage_options=storage_options)
+            jetliner.scan_avro(s3_uri, storage_options=storage_options)
             .filter(pl.col("id") > id_threshold)
             .select(column_subset)
             .head(row_limit)

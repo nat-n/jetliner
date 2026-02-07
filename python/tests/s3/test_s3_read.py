@@ -1,7 +1,7 @@
 """Tests for S3 read operations using MinIO mock.
 
 These tests verify that jetliner can read Avro files from S3 using
-the scan() and open() APIs.
+the scan_avro() and open() APIs.
 
 Note: moto (in-process mock) cannot be used for testing the Rust S3
 implementation because moto intercepts boto3 calls but the Rust AWS SDK
@@ -9,7 +9,7 @@ makes actual HTTP calls. MinIO provides a real HTTP endpoint that works
 with the Rust SDK.
 
 Requirements tested:
-- 2.1: scan() reads Avro files from S3 via s3:// URI
+- 2.1: scan_avro() reads Avro files from S3 via s3:// URI
 - 2.2: open() reads Avro files from S3 via s3:// URI
 - 2.5: Local and S3 reads produce identical DataFrames
 """
@@ -28,7 +28,7 @@ from .conftest import MockS3Context
 
 @pytest.mark.container
 class TestMinioScanOperations:
-    """Tests for scan() operations using MinIO mock.
+    """Tests for scan_avro() operations using MinIO mock.
 
     Requirements: 2.1
     """
@@ -39,19 +39,19 @@ class TestMinioScanOperations:
         s3_weather_file_minio: str,
         minio_container,
     ):
-        """Test that scan() can read an Avro file from mock S3.
+        """Test that scan_avro() can read an Avro file from mock S3.
 
         Uploads weather.avro to MinIO mock S3 and verifies that
-        jetliner.scan() can read it via s3:// URI.
+        jetliner.scan_avro() can read it via s3:// URI.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        # Read via scan()
-        lf = jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+        # Read via scan_avro()
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
         df = lf.collect()
 
         # Verify we got data
@@ -68,14 +68,14 @@ class TestMinioScanOperations:
         s3_weather_file_minio: str,
         minio_container,
     ):
-        """Test that scan() returns a LazyFrame for S3 URIs."""
+        """Test that scan_avro() returns a LazyFrame for S3 URIs."""
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        lf = jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
 
         assert isinstance(lf, pl.LazyFrame)
 
@@ -85,14 +85,14 @@ class TestMinioScanOperations:
         s3_weather_file_minio: str,
         minio_container,
     ):
-        """Test that scan() with column selection works for S3."""
+        """Test that scan_avro() with column selection works for S3."""
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        lf = jetliner.scan(s3_weather_file_minio, storage_options=storage_options)
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
         df = lf.select(["station", "temp"]).collect()
 
         assert df.columns == ["station", "temp"]
@@ -118,7 +118,7 @@ class TestMinioOpenOperations:
         jetliner.open() can iterate batches via s3:// URI.
         """
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -147,7 +147,7 @@ class TestMinioOpenOperations:
     ):
         """Test that open() provides schema access for S3 files."""
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -170,7 +170,7 @@ class TestMinioOpenOperations:
     ):
         """Test that open() works as a context manager for S3 files."""
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -198,23 +198,23 @@ class TestLocalS3Equivalence:
         minio_container,
         get_test_data_path,
     ):
-        """Test that scan() produces identical results for local and S3.
+        """Test that scan_avro() produces identical results for local and S3.
 
         Reads the same Avro file from local filesystem and mock S3,
         then verifies the DataFrames are identical.
         """
         local_path = get_test_data_path("apache-avro/weather.avro")
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
         # Read from local
-        local_df = jetliner.scan(local_path).collect()
+        local_df = jetliner.scan_avro(local_path).collect()
 
         # Read from S3
-        s3_df = jetliner.scan(
+        s3_df = jetliner.scan_avro(
             s3_weather_file_minio, storage_options=storage_options
         ).collect()
 
@@ -237,7 +237,7 @@ class TestLocalS3Equivalence:
         """
         local_path = get_test_data_path("apache-avro/weather.avro")
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
@@ -332,16 +332,16 @@ class TestLocalS3EquivalenceProperty:
         s3_uri = mock_s3_minio.upload_bytes(avro_bytes, f"test-{id(records)}.avro")
 
         storage_options = {
-            "endpoint_url": mock_s3_minio.endpoint_url,
+            "endpoint": mock_s3_minio.endpoint_url,
             "aws_access_key_id": minio_container.access_key,
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        # Read from local using scan()
-        local_df = jetliner.scan(str(local_path)).collect()
+        # Read from local using scan_avro()
+        local_df = jetliner.scan_avro(str(local_path)).collect()
 
-        # Read from S3 using scan()
-        s3_df = jetliner.scan(s3_uri, storage_options=storage_options).collect()
+        # Read from S3 using scan_avro()
+        s3_df = jetliner.scan_avro(s3_uri, storage_options=storage_options).collect()
 
         # Property: DataFrames must be identical
         assert local_df.shape == s3_df.shape, (
@@ -362,3 +362,146 @@ class TestLocalS3EquivalenceProperty:
         s3_open_df = pl.concat(s3_batches) if s3_batches else pl.DataFrame()
 
         assert local_open_df.equals(s3_open_df), "open() DataFrames are not equal"
+
+
+# =============================================================================
+# read_avro_schema() S3 Tests
+# =============================================================================
+
+
+@pytest.mark.container
+class TestMinioSchemaOperations:
+    """Tests for read_avro_schema() operations using MinIO mock.
+
+    Requirements: 13.5 (read_avro_schema returns Schema)
+    """
+
+    def test_read_avro_schema_from_s3(
+        self,
+        mock_s3_minio: MockS3Context,
+        s3_weather_file_minio: str,
+        minio_container,
+    ):
+        """Test that read_avro_schema() can read schema from S3.
+
+        Verifies that jetliner.read_avro_schema() can extract the schema
+        from an Avro file stored in S3 via s3:// URI.
+        """
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        schema = jetliner.read_avro_schema(
+            s3_weather_file_minio, storage_options=storage_options
+        )
+
+        # Verify we got a valid schema
+        assert schema is not None
+        assert len(schema) > 0
+        assert isinstance(schema, pl.Schema)
+
+        # Verify expected columns from weather.avro
+        assert "station" in schema
+        assert "temp" in schema
+
+    def test_read_avro_schema_local_s3_equivalence(
+        self,
+        mock_s3_minio: MockS3Context,
+        s3_weather_file_minio: str,
+        minio_container,
+        get_test_data_path,
+    ):
+        """Test that read_avro_schema() returns identical schema for local and S3.
+
+        Reads schema from the same Avro file via local filesystem and S3,
+        then verifies the schemas are identical.
+        """
+        local_path = get_test_data_path("apache-avro/weather.avro")
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        # Read schema from local
+        local_schema = jetliner.read_avro_schema(local_path)
+
+        # Read schema from S3
+        s3_schema = jetliner.read_avro_schema(
+            s3_weather_file_minio, storage_options=storage_options
+        )
+
+        # Verify identical schemas
+        assert local_schema == s3_schema, "Local and S3 schemas should be identical"
+
+    def test_read_avro_schema_matches_scan_schema(
+        self,
+        mock_s3_minio: MockS3Context,
+        s3_weather_file_minio: str,
+        minio_container,
+    ):
+        """Test that read_avro_schema() matches scan_avro().collect_schema().
+
+        Verifies consistency between the dedicated schema function and
+        the schema inferred by scan_avro().
+        """
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        # Get schema via read_avro_schema()
+        direct_schema = jetliner.read_avro_schema(
+            s3_weather_file_minio, storage_options=storage_options
+        )
+
+        # Get schema via scan_avro()
+        lf = jetliner.scan_avro(s3_weather_file_minio, storage_options=storage_options)
+        scan_schema = lf.collect_schema()
+
+        # Verify schemas match
+        assert direct_schema == scan_schema, (
+            "read_avro_schema() and scan_avro().collect_schema() should return same schema"
+        )
+
+    def test_read_avro_schema_error_nonexistent_s3_file(
+        self,
+        mock_s3_minio: MockS3Context,
+        minio_container,
+    ):
+        """Test that read_avro_schema() raises appropriate error for nonexistent S3 file."""
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": minio_container.access_key,
+            "aws_secret_access_key": minio_container.secret_key,
+        }
+
+        nonexistent_uri = f"s3://{mock_s3_minio.bucket}/nonexistent_file_12345.avro"
+
+        with pytest.raises(Exception) as exc_info:
+            jetliner.read_avro_schema(nonexistent_uri, storage_options=storage_options)
+
+        # Should be an S3-related error (NotFound, service error, etc.)
+        err_msg = str(exc_info.value).lower()
+        assert "s3" in err_msg or "not found" in err_msg, f"Expected S3 error, got: {exc_info.value}"
+
+    def test_read_avro_schema_error_invalid_credentials(
+        self,
+        mock_s3_minio: MockS3Context,
+        s3_weather_file_minio: str,
+    ):
+        """Test that read_avro_schema() raises appropriate error for invalid credentials."""
+        assert mock_s3_minio.endpoint_url is not None
+        storage_options = {
+            "endpoint": mock_s3_minio.endpoint_url,
+            "aws_access_key_id": "invalid_key",
+            "aws_secret_access_key": "invalid_secret",
+        }
+
+        with pytest.raises(Exception):
+            jetliner.read_avro_schema(
+                s3_weather_file_minio, storage_options=storage_options
+            )

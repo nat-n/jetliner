@@ -42,7 +42,7 @@ class TestInteroperabilityValidation:
         path = get_test_data_path("fastavro/java-generated-uuid.avro")
 
         # Should be able to read without error
-        df = jetliner.scan(path).collect()
+        df = jetliner.scan_avro(path).collect()
 
         # Verify exact record count
         assert df.height == 151, f"Expected 151 records, got {df.height}"
@@ -77,11 +77,11 @@ class TestInteroperabilityValidation:
         should produce byte-identical decompressed data.
         """
         base_path = get_test_data_path("apache-avro/weather.avro")
-        base_df = jetliner.scan(base_path).collect()
+        base_df = jetliner.scan_avro(base_path).collect()
 
         for codec in ["deflate", "snappy", "zstd"]:
             codec_path = get_test_data_path(f"apache-avro/weather-{codec}.avro")
-            codec_df = jetliner.scan(codec_path).collect()
+            codec_df = jetliner.scan_avro(codec_path).collect()
 
             # Should have same shape
             assert codec_df.height == base_df.height, f"{codec} has different row count"

@@ -4,7 +4,7 @@ Unit tests for schema access and inspection.
 Tests cover:
 - schema property returns JSON string
 - schema_dict property returns parsed dictionary
-- parse_avro_schema() function
+- read_avro_schema() function
 """
 
 import jetliner
@@ -28,9 +28,9 @@ class TestSchemaAccess:
             assert schema_dict.get("name") == "TestRecord"
             assert "fields" in schema_dict
 
-    def test_parse_avro_schema_function(self, temp_avro_file):
-        """Test parse_avro_schema() function."""
-        schema = jetliner.parse_avro_schema(temp_avro_file)
+    def test_read_avro_schema_function(self, temp_avro_file):
+        """Test read_avro_schema() function."""
+        schema = jetliner.read_avro_schema(temp_avro_file)
         # Should return a Polars schema
         assert "id" in schema
         assert "name" in schema

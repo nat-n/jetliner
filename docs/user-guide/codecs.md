@@ -25,7 +25,7 @@ All codecs are included in the default Jetliner build. No additional configurati
 
 ```python
 # Fastest reads, largest files
-df = jetliner.scan("uncompressed.avro").collect()
+df = jetliner.scan_avro("uncompressed.avro").collect()
 ```
 
 ### snappy
@@ -106,7 +106,7 @@ Decompression requires temporary buffers. For memory-constrained environments:
 import jetliner
 
 # Smaller buffers for memory-constrained environments
-df = jetliner.scan(
+df = jetliner.scan_avro(
     "data.avro",
     buffer_blocks=2,
     buffer_bytes=16 * 1024 * 1024,  # 16MB
@@ -131,9 +131,20 @@ Codec errors are raised as `CodecError`:
 import jetliner
 
 try:
-    df = jetliner.scan("data.avro").collect()
+    df = jetliner.scan_avro("data.avro").collect()
 except jetliner.CodecError as e:
     print(f"Decompression failed: {e}")
+```
+
+For structured error handling with metadata:
+
+```python
+import jetliner
+
+try:
+    df = jetliner.scan_avro("data.avro").collect()
+except jetliner.PyCodecError as e:
+    print(f"Decompression failed: {e.message}")
 ```
 
 Common causes:

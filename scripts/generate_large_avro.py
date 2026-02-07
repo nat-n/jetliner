@@ -11,7 +11,6 @@ This script creates an Avro file for multi-block testing:
 Requirements tested: 3.1 (block-by-block reading), 3.4 (batch size limits)
 """
 
-import random
 import sys
 from pathlib import Path
 
@@ -116,8 +115,7 @@ def generate_large_file(
     # Get file stats
     file_size = output_path.stat().st_size
 
-    # Count blocks by reading the file
-    block_count = 0
+    # Count records by reading the file
     record_count = 0
     with open(output_path, "rb") as f:
         reader = fastavro.reader(f)
@@ -126,13 +124,8 @@ def generate_large_file(
             record_count += 1
 
     # Estimate block count from file structure
-    # Read file to count sync markers
-    with open(output_path, "rb") as f:
-        content = f.read()
-        # Skip header, find sync marker, then count occurrences
-        # The sync marker is 16 bytes after the header
-        # For simplicity, we'll estimate based on file size and sync_interval
-        estimated_blocks = max(1, (file_size - 200) // sync_interval)
+    # For simplicity, we'll estimate based on file size and sync_interval
+    estimated_blocks = max(1, (file_size - 200) // sync_interval)
 
     return {
         "file_path": str(output_path),
@@ -186,7 +179,7 @@ def main():
                 total_rows += len(df)
                 batch_count += 1
 
-        print(f"\nVerified with jetliner:")
+        print("\nVerified with jetliner:")
         print(f"  Total rows read: {total_rows:,}")
         print(f"  Batches: {batch_count}")
     except ImportError:

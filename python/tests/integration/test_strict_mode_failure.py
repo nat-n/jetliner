@@ -1,8 +1,11 @@
 """
-Integration tests for strict mode failure behavior with corrupted files.
+Integration tests for ignore_errors=False (strict) mode failure behavior with corrupted files.
 
-Tests verify that strict mode (strict=True) fails immediately on each corruption type
+Tests verify that ignore_errors=False fails immediately on each corruption type
 and provides descriptive error messages.
+
+Note: The old `strict=True` parameter has been replaced with `ignore_errors=False`.
+The semantics are inverted: strict=True is equivalent to ignore_errors=False.
 
 Requirements tested: 7.5 (fail immediately on any error), 7.7 (descriptive error messages)
 """
@@ -12,12 +15,12 @@ import pytest
 import jetliner
 
 
-class TestStrictModeFailure:
-    """Tests for strict mode immediate failure on corrupted files."""
+class TestIgnoreErrorsFalseFailure:
+    """Tests for ignore_errors=False (strict mode) immediate failure on corrupted files."""
 
     def test_invalid_magic_fails_immediately(self, get_test_data_path):
         """
-        Test that invalid magic bytes cause immediate failure in strict mode.
+        Test that invalid magic bytes cause immediate failure with ignore_errors=False.
 
         Invalid magic bytes mean the file is not a valid Avro file.
         The error should be raised immediately when opening the file.
@@ -26,7 +29,7 @@ class TestStrictModeFailure:
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify descriptive error message
@@ -36,7 +39,7 @@ class TestStrictModeFailure:
 
     def test_truncated_file_fails_immediately(self, get_test_data_path):
         """
-        Test that truncated file causes immediate failure in strict mode.
+        Test that truncated file causes immediate failure with ignore_errors=False.
 
         A truncated file should raise an error when the reader encounters
         unexpected EOF, not silently return partial data.
@@ -44,10 +47,10 @@ class TestStrictModeFailure:
         """
         path = get_test_data_path("corrupted/truncated.avro")
 
-        # In strict mode, truncated file should raise an error
+        # With ignore_errors=False, truncated file should raise an error
         # The error could be ParseError (unexpected EOF) or another error type
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 # Consume all batches - error should occur during iteration
                 list(reader)
 
@@ -56,16 +59,16 @@ class TestStrictModeFailure:
 
     def test_corrupted_sync_marker_fails_immediately(self, get_test_data_path):
         """
-        Test that corrupted sync marker causes immediate failure in strict mode.
+        Test that corrupted sync marker causes immediate failure with ignore_errors=False.
 
-        When a sync marker doesn't match the expected value, strict mode should
+        When a sync marker doesn't match the expected value, ignore_errors=False should
         fail immediately rather than attempting recovery.
         Requirements: 7.5, 7.7
         """
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify descriptive error message mentions sync marker
@@ -75,16 +78,16 @@ class TestStrictModeFailure:
 
     def test_corrupted_compressed_data_fails_immediately(self, get_test_data_path):
         """
-        Test that corrupted compressed data causes immediate failure in strict mode.
+        Test that corrupted compressed data causes immediate failure with ignore_errors=False.
 
-        When decompression fails, strict mode should fail immediately rather than
+        When decompression fails, ignore_errors=False should fail immediately rather than
         skipping the corrupted block.
         Requirements: 7.5, 7.7
         """
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
         with pytest.raises((jetliner.CodecError, jetliner.ParseError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify descriptive error message mentions decompression or codec
@@ -94,16 +97,16 @@ class TestStrictModeFailure:
 
     def test_invalid_record_data_fails_immediately(self, get_test_data_path):
         """
-        Test that invalid record data causes immediate failure in strict mode.
+        Test that invalid record data causes immediate failure with ignore_errors=False.
 
         When record data doesn't match the schema (e.g., invalid varints),
-        strict mode should fail immediately.
+        ignore_errors=False should fail immediately.
         Requirements: 7.5, 7.7
         """
         path = get_test_data_path("corrupted/invalid-record-data.avro")
 
         with pytest.raises((jetliner.DecodeError, jetliner.ParseError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify we got an error
@@ -111,24 +114,24 @@ class TestStrictModeFailure:
 
     def test_multi_block_corrupted_fails_immediately(self, get_test_data_path):
         """
-        Test that multi-block file with corruption fails immediately in strict mode.
+        Test that multi-block file with corruption fails immediately with ignore_errors=False.
 
         Even if valid blocks exist before and after the corrupted block,
-        strict mode should fail at the first error.
+        ignore_errors=False should fail at the first error.
         Requirements: 7.5, 7.7
         """
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify we got an error
         assert exc_info.value is not None, "Should have raised an error for corrupted block"
 
 
-class TestStrictModeErrorMessages:
-    """Tests for descriptive error messages in strict mode."""
+class TestIgnoreErrorsFalseErrorMessages:
+    """Tests for descriptive error messages with ignore_errors=False."""
 
     def test_invalid_magic_error_message_is_descriptive(self, get_test_data_path):
         """
@@ -140,7 +143,7 @@ class TestStrictModeErrorMessages:
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value)
@@ -161,7 +164,7 @@ class TestStrictModeErrorMessages:
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value)
@@ -179,7 +182,7 @@ class TestStrictModeErrorMessages:
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
         with pytest.raises((jetliner.CodecError, jetliner.ParseError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value)
@@ -187,28 +190,28 @@ class TestStrictModeErrorMessages:
         assert len(error_msg) > 10, "Error message should be descriptive"
 
 
-class TestStrictModeVsSkipMode:
-    """Tests comparing strict mode and skip mode behavior."""
+class TestIgnoreErrorsModeComparison:
+    """Tests comparing ignore_errors=True (skip mode) and ignore_errors=False (strict mode) behavior."""
 
-    def test_strict_mode_fails_where_skip_mode_recovers(self, get_test_data_path):
+    def test_ignore_errors_false_fails_where_true_recovers(self, get_test_data_path):
         """
-        Test that strict mode fails where skip mode would recover.
+        Test that ignore_errors=False fails where ignore_errors=True would recover.
 
         This verifies the fundamental difference between the two modes:
-        strict mode fails immediately, skip mode continues.
+        ignore_errors=False fails immediately, ignore_errors=True continues.
         Requirements: 7.5
         """
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        # Skip mode should recover some data
-        with jetliner.open(path, strict=False) as reader:
+        # ignore_errors=True (skip mode) should recover some data
+        with jetliner.open(path, ignore_errors=True) as reader:
             dfs = list(reader)
             skip_mode_rows = sum(df.height for df in dfs) if dfs else 0
             skip_mode_errors = reader.error_count
 
-        # Strict mode should fail
+        # ignore_errors=False (strict mode) should fail
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)):
-            with jetliner.open(path, strict=True) as reader:
+            with jetliner.open(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Skip mode should have recovered some data and tracked errors
@@ -219,19 +222,19 @@ class TestStrictModeVsSkipMode:
         """
         Test that valid files work identically in both modes.
 
-        For valid files, strict and skip mode should produce the same results.
+        For valid files, ignore_errors=True and ignore_errors=False should produce the same results.
         Requirements: 7.5
         """
         path = get_test_data_path("apache-avro/weather.avro")
 
-        # Read in skip mode
-        with jetliner.open(path, strict=False) as reader:
+        # Read with ignore_errors=True (skip mode)
+        with jetliner.open(path, ignore_errors=True) as reader:
             skip_dfs = list(reader)
             skip_rows = sum(df.height for df in skip_dfs)
             skip_errors = reader.error_count
 
-        # Read in strict mode
-        with jetliner.open(path, strict=True) as reader:
+        # Read with ignore_errors=False (strict mode)
+        with jetliner.open(path, ignore_errors=False) as reader:
             strict_dfs = list(reader)
             strict_rows = sum(df.height for df in strict_dfs)
 

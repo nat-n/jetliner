@@ -153,10 +153,10 @@ class TestNonRecordTopLevelSchemas:
         reason="Array top-level schemas not yet fully supported via scan API"
     )
     def test_array_toplevel_scan_api(self, get_test_data_path):
-        """Test scan() API with array top-level schema."""
+        """Test scan_avro() API with array top-level schema."""
         path = get_test_data_path("fastavro/array-toplevel.avro")
 
-        lf = jetliner.scan(path)
+        lf = jetliner.scan_avro(path)
         assert isinstance(lf, pl.LazyFrame)
 
         df = lf.collect()
@@ -168,7 +168,7 @@ class TestNonRecordTopLevelSchemas:
         path = get_test_data_path("fastavro/int-toplevel.avro")
 
         # Should be able to select the "value" column
-        df = jetliner.scan(path).select("value").collect()
+        df = jetliner.scan_avro(path).select("value").collect()
 
         assert df.width == 1
         assert "value" in df.columns
@@ -177,7 +177,7 @@ class TestNonRecordTopLevelSchemas:
         """Test that array top-level gives a helpful error message."""
         path = get_test_data_path("fastavro/array-toplevel.avro")
 
-        # Test with open() API
+        # Test with open() API - raises SchemaError directly
         with pytest.raises(jetliner.SchemaError) as exc_info:
             with jetliner.open(path) as reader:
                 list(reader)
@@ -187,9 +187,13 @@ class TestNonRecordTopLevelSchemas:
         assert "workaround" in error_msg
         assert "primitive types" in error_msg
 
-        # Test with scan() API
-        with pytest.raises(jetliner.SchemaError) as exc_info:
-            jetliner.scan(path)
+        # Test with scan_avro() API - follows Polars lazy evaluation norms
+        # Error surfaces during .collect() wrapped in ComputeError
+        lf = jetliner.scan_avro(path)
+        assert isinstance(lf, pl.LazyFrame)
+
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
+            lf.collect()
 
         error_msg = str(exc_info.value).lower()
         assert "not yet supported" in error_msg
@@ -198,7 +202,7 @@ class TestNonRecordTopLevelSchemas:
         """Test that map top-level gives a helpful error message."""
         path = get_test_data_path("fastavro/map-toplevel.avro")
 
-        # Test with open() API
+        # Test with open() API - raises SchemaError directly
         with pytest.raises(jetliner.SchemaError) as exc_info:
             with jetliner.open(path) as reader:
                 list(reader)
@@ -208,9 +212,13 @@ class TestNonRecordTopLevelSchemas:
         assert "workaround" in error_msg
         assert "primitive types" in error_msg
 
-        # Test with scan() API
-        with pytest.raises(jetliner.SchemaError) as exc_info:
-            jetliner.scan(path)
+        # Test with scan_avro() API - follows Polars lazy evaluation norms
+        # Error surfaces during .collect() wrapped in ComputeError
+        lf = jetliner.scan_avro(path)
+        assert isinstance(lf, pl.LazyFrame)
+
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
+            lf.collect()
 
         error_msg = str(exc_info.value).lower()
         assert "not yet supported" in error_msg

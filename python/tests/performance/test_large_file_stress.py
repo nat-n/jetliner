@@ -13,7 +13,9 @@ Requirements: 8.2, 3.5, 3.6
 
 import gc
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import fastavro
 import psutil
@@ -38,7 +40,7 @@ def generate_large_avro_file(
     path: Path,
     target_size_mb: int,
     sync_interval: int = 16000,
-) -> dict:
+) -> dict[str, Any]:
     """
     Generate a large Avro file of approximately target_size_mb.
 
@@ -49,7 +51,7 @@ def generate_large_avro_file(
     target_bytes = target_size_mb * 1024 * 1024
     estimated_records = target_bytes // estimated_record_size
 
-    def record_generator():
+    def record_generator() -> Iterator[dict[str, Any]]:
         for i in range(estimated_records):
             yield {
                 "station": f"STATION-{i:08d}-{'X' * 20}",
@@ -70,8 +72,8 @@ def generate_large_avro_file(
 
     # Count actual records
     record_count = 0
-    with open(path, "rb") as f:
-        for _ in fastavro.reader(f):
+    with open(path, "rb") as reader:
+        for _ in fastavro.reader(reader):
             record_count += 1
 
     return {

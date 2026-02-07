@@ -280,6 +280,10 @@ pub fn avro_to_arrow_field(name: &str, schema: &AvroSchema) -> Result<Field, Sch
 /// If the schema is not a record type, it will be wrapped in a synthetic record
 /// with a single "value" field. This allows non-record schemas to be converted
 /// to a single-column DataFrame.
+///
+/// Note: Array and Map top-level schemas will convert to a schema here, but will
+/// fail during actual data reading due to Polars builder constraints. The error
+/// is raised in the reader (stream.rs) with a helpful message.
 pub fn avro_to_arrow_schema(schema: &AvroSchema) -> Result<Schema, SchemaError> {
     match schema {
         AvroSchema::Record(record) => {
@@ -315,6 +319,10 @@ pub fn avro_to_arrow_schema(schema: &AvroSchema) -> Result<Schema, SchemaError> 
 /// If the schema is not a record type, it will be wrapped in a synthetic record
 /// with a single "value" field. Projection will only work if "value" is in the
 /// projected_names set.
+///
+/// Note: Array and Map top-level schemas will convert to a schema here, but will
+/// fail during actual data reading due to Polars builder constraints. The error
+/// is raised in the reader (stream.rs) with a helpful message.
 pub fn avro_to_arrow_schema_projected(
     schema: &AvroSchema,
     projected_names: &std::collections::HashSet<String>,
