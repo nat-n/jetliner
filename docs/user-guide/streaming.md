@@ -22,7 +22,7 @@ The `open()` API gives you direct control over batch processing:
 ```python
 import jetliner
 
-with jetliner.open("large_file.avro") as reader:
+with jetliner.AvroReader("large_file.avro") as reader:
     for batch in reader:
         # Process each batch individually
         # Memory is released after each iteration
@@ -39,7 +39,7 @@ import jetliner
 total_amount = 0
 row_count = 0
 
-with jetliner.open("huge_file.avro") as reader:
+with jetliner.AvroReader("huge_file.avro") as reader:
     for batch in reader:
         # Aggregate without keeping data in memory
         total_amount += batch["amount"].sum()
@@ -55,7 +55,7 @@ Stream results to disk without accumulating in memory:
 ```python
 import jetliner
 
-with jetliner.open("input.avro") as reader:
+with jetliner.AvroReader("input.avro") as reader:
     for i, batch in enumerate(reader):
         # Process and write each batch
         processed = batch.filter(batch["amount"] > 0)
@@ -96,7 +96,7 @@ For environments with limited memory (Lambda, containers):
 import jetliner
 
 # Less prefetching, smaller buffer
-with jetliner.open(
+with jetliner.AvroReader(
     "data.avro",
     buffer_blocks=2,
     buffer_bytes=16 * 1024 * 1024,  # 16MB
@@ -113,13 +113,13 @@ Control the number of records per batch:
 import jetliner
 
 # Smaller batches for fine-grained control
-with jetliner.open("data.avro", batch_size=10_000) as reader:
+with jetliner.AvroReader("data.avro", batch_size=10_000) as reader:
     for batch in reader:
         assert batch.height <= 10_000
         process(batch)
 
 # Larger batches for better throughput
-with jetliner.open("data.avro", batch_size=500_000) as reader:
+with jetliner.AvroReader("data.avro", batch_size=500_000) as reader:
     for batch in reader:
         process(batch)
 ```
@@ -131,7 +131,7 @@ Track progress during streaming:
 ```python
 import jetliner
 
-with jetliner.open("large_file.avro") as reader:
+with jetliner.AvroReader("large_file.avro") as reader:
     total_rows = 0
     batch_count = 0
 
@@ -153,7 +153,7 @@ with jetliner.open("large_file.avro") as reader:
 import jetliner
 from tqdm import tqdm
 
-with jetliner.open("large_file.avro") as reader:
+with jetliner.AvroReader("large_file.avro") as reader:
     for batch in tqdm(reader, desc="Processing"):
         process(batch)
 ```
@@ -166,7 +166,7 @@ Estimate memory requirements for your data:
 import jetliner
 
 # Check schema to estimate row size
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     schema = reader.schema_dict
 
     # Get first batch to estimate memory per row
@@ -208,7 +208,7 @@ import jetliner
 
 def lambda_handler(event, context):
     # Conservative settings for Lambda
-    with jetliner.open(
+    with jetliner.AvroReader(
         event["s3_uri"],
         storage_options={"region": "us-east-1"},
         buffer_blocks=2,
@@ -238,7 +238,7 @@ def process_batch(batch):
     # CPU-bound processing
     return batch.filter(batch["amount"] > 0).height
 
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     batches = list(reader)
 
 with ThreadPoolExecutor(max_workers=4) as executor:

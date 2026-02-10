@@ -644,7 +644,7 @@ __all__ = [
 4. Implement `read_avro_schema`
 5. Rename `strict` → `ignore_errors` (inverted)
 6. Update `storage_options` to use `endpoint` key
-7. Remove old `scan()` and `parse_avro_schema()` functions
+7. ✅ Removed old `scan()` and `parse_avro_schema()` functions
 
 ### Phase 5: S3 Glob Support (1-2 days)
 

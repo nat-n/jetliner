@@ -331,7 +331,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
 
   - [x] 15.3 Implement schema and error accessors
     - Expose schema as JSON string and dict
-    - Implement parse_avro_schema() for IO plugin schema extraction
+    - Implement read_avro_schema() for IO plugin schema extraction
     - _Requirements: 9.3, 6a.5_
 
   - [x] 15.3a Implement structured error exposure for Python
@@ -343,7 +343,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Keep normal iteration API simple - no callbacks or exceptions for skipped errors
     - Example usage:
       ```python
-      with jetliner.open("file.avro", on_error="skip") as reader:
+      with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
           for df in reader:
               process(df)
           if reader.error_count > 0:
@@ -358,7 +358,7 @@ This plan implements Jetliner, a high-performance Rust library with Python bindi
     - Include context in error messages
     - _Requirements: 6.4, 6.5_
 
-  - [x] 15.5 Implement jetliner.open() entry point
+  - [x] 15.5 Implement AvroReader class
     - Parse S3 URIs vs local paths
     - Create appropriate source and reader
     - _Requirements: 4.1, 4.2, 4.3_

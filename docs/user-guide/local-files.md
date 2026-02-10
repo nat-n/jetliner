@@ -48,7 +48,7 @@ The `open()` function returns an iterator for batch-by-batch processing:
 ```python
 import jetliner
 
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     for batch in reader:
         print(f"Batch with {batch.height} rows")
 ```
@@ -133,7 +133,7 @@ import jetliner
 import polars as pl
 
 # Process batches with progress tracking
-with jetliner.open("large_file.avro") as reader:
+with jetliner.AvroReader("large_file.avro") as reader:
     total_rows = 0
     batches = []
 
@@ -154,12 +154,12 @@ Control memory usage by adjusting batch size:
 import jetliner
 
 # Smaller batches for memory-constrained environments
-with jetliner.open("data.avro", batch_size=10_000) as reader:
+with jetliner.AvroReader("data.avro", batch_size=10_000) as reader:
     for batch in reader:
         process(batch)
 
 # Larger batches for better throughput
-with jetliner.open("data.avro", batch_size=500_000) as reader:
+with jetliner.AvroReader("data.avro", batch_size=500_000) as reader:
     for batch in reader:
         process(batch)
 ```
@@ -171,7 +171,7 @@ Get schema information before reading data:
 ```python
 import jetliner
 
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     # JSON string representation
     print(reader.schema)
 

@@ -182,7 +182,7 @@ To check which codec a file uses:
 import jetliner
 import json
 
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     # The codec is in the file metadata
     schema = reader.schema_dict
     # Note: codec info is in the file header, not schema

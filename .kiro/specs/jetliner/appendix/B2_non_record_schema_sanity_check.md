@@ -217,7 +217,7 @@ Complex types → Unwrap if possible, or single column
 ```
 Allow users to specify column name for non-record schemas
 Default: "value"
-Example: jetliner.open("file.avro", value_column_name="data")
+Example: jetliner.AvroReader("file.avro", value_column_name="data")
 ```
 
 #### Arrow/Polars Mapping
@@ -318,7 +318,7 @@ def test_read_null_type(get_test_data_path):
     """
     path = get_test_data_path("fastavro/null.avro")
 
-    with jetliner.open(path) as reader:
+    with jetliner.AvroReader(path) as reader:
         dfs = list(reader)
         # Should read without error
 ```
@@ -333,7 +333,7 @@ def test_read_bytes_primitive_schema(get_test_data_path):
     """Test reading file with primitive bytes schema at top level."""
     path = get_test_data_path("fastavro/null.avro")
 
-    with jetliner.open(path) as reader:
+    with jetliner.AvroReader(path) as reader:
         dfs = list(reader)
         df = pl.concat(dfs)
 

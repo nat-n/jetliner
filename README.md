@@ -77,13 +77,13 @@ Use `open()` for fine-grained control over batch processing — useful for progr
 import jetliner
 
 # Process batches one at a time
-with jetliner.open("large_file.avro") as reader:
+with jetliner.AvroReader("large_file.avro") as reader:
     for batch in reader:
         print(f"Processing batch with {batch.height} rows")
         process(batch)
 
 # Configure batch size and buffer settings
-with jetliner.open(
+with jetliner.AvroReader(
     "large_file.avro",
     batch_size=50_000,
     buffer_blocks=2,

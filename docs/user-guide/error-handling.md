@@ -43,7 +43,7 @@ import jetliner
 df = jetliner.scan_avro("data.avro", ignore_errors=True).collect()
 
 # Or with open()
-with jetliner.open("data.avro", strict=False) as reader:
+with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
     for batch in reader:
         process(batch)
 ```
@@ -55,7 +55,7 @@ With `open()`, you can check if any records were skipped:
 ```python
 import jetliner
 
-with jetliner.open("data.avro", strict=False) as reader:
+with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
     batches = list(reader)
 
     # Check error count
@@ -211,7 +211,7 @@ def process_directory(dir_path):
 import jetliner
 
 try:
-    with jetliner.open("suspect.avro") as reader:
+    with jetliner.AvroReader("suspect.avro") as reader:
         print(f"Schema: {reader.schema}")
 except jetliner.ParseError as e:
     print(f"Header is corrupted: {e}")
@@ -222,7 +222,7 @@ except jetliner.ParseError as e:
 ```python
 import jetliner
 
-with jetliner.open("suspect.avro", strict=False) as reader:
+with jetliner.AvroReader("suspect.avro", ignore_errors=True) as reader:
     for i, batch in enumerate(reader):
         print(f"Batch {i}: {batch.height} rows")
 
@@ -245,7 +245,7 @@ def compare_readers(path):
         fastavro_records = list(fastavro.reader(f))
 
     # Read with Jetliner
-    with jetliner.open(path, strict=False) as reader:
+    with jetliner.AvroReader(path, ignore_errors=True) as reader:
         jetliner_batches = list(reader)
         jetliner_rows = sum(b.height for b in jetliner_batches)
         errors = reader.error_count

@@ -122,7 +122,7 @@ Use when you need fine-grained control over batch processing:
 import jetliner
 
 # Process batches with full control
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     print(f"Schema: {reader.schema}")
 
     for batch in reader:
@@ -185,7 +185,7 @@ print(f"Available: {jetliner.__all__}")
 Expected output:
 ```
 Jetliner version: jetliner
-Available: ['scan_avro', 'read_avro', 'read_avro_schema', 'scan', 'open', 'parse_avro_schema', 'AvroReader', 'AvroReaderCore', 'JetlinerError', 'ParseError', 'SchemaError', 'CodecError', 'DecodeError', 'SourceError', 'PyDecodeError', 'PyParseError', 'PySourceError', 'PySchemaError', 'PyCodecError', 'FileSource']
+Available: ['scan_avro', 'read_avro', 'read_avro_schema', 'AvroReader', 'MultiAvroReader', 'BadBlockError', 'JetlinerError', 'DecodeError', 'ParseError', 'SourceError', 'SchemaError', 'CodecError', 'AuthenticationError', 'FileNotFoundError', 'PermissionError', 'ConfigurationError', 'FileSource']
 ```
 
 ## System Requirements

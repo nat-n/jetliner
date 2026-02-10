@@ -716,18 +716,18 @@ result = (
 # ============================================================
 
 # Iterator-based reading
-reader = jetliner.open("s3://bucket/file.avro")
-reader = jetliner.open("/path/to/file.avro")
-reader = jetliner.open(
+reader = jetliner.AvroReader("s3://bucket/file.avro")
+reader = jetliner.AvroReader("/path/to/file.avro")
+reader = jetliner.AvroReader(
     "s3://bucket/file.avro",
     batch_size=100_000,
     buffer_blocks=4,
     buffer_bytes=64 * 1024 * 1024,
-    strict=False,
+    ignore_errors=True,
 )
 
 # S3-compatible services (MinIO, LocalStack, R2, etc.)
-reader = jetliner.open(
+reader = jetliner.AvroReader(
     "s3://bucket/file.avro",
     storage_options={
         "endpoint_url": "http://localhost:9000",
@@ -741,17 +741,17 @@ for df in reader:
     process(df)
 
 # Context manager
-with jetliner.open("file.avro") as reader:
+with jetliner.AvroReader("file.avro") as reader:
     for df in reader:
         process(df)
 
 # Schema inspection
-reader = jetliner.open("file.avro")
+reader = jetliner.AvroReader("file.avro")
 print(reader.schema)  # JSON string
 print(reader.schema_dict)  # Python dict
 
 # Error inspection (after iteration in skip mode)
-with jetliner.open("file.avro", strict=False) as reader:
+with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
     for df in reader:
         process(df)
 
@@ -914,7 +914,7 @@ The Python API exposes errors accumulated during skip-mode reading without compl
 **Usage Pattern:**
 ```python
 # Simple case - just check if errors occurred
-with jetliner.open("file.avro", strict=False) as reader:
+with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
     for df in reader:
         process(df)
 
@@ -922,7 +922,7 @@ with jetliner.open("file.avro", strict=False) as reader:
         print(f"Warning: {reader.error_count} errors during read")
 
 # Detailed inspection
-with jetliner.open("file.avro", strict=False) as reader:
+with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
     for df in reader:
         process(df)
 
@@ -958,16 +958,15 @@ The `scan()` function uses Polars' `register_io_source` to enable query optimiza
 import polars as pl
 from polars.io.plugins import register_io_source
 from typing import Iterator
-from ._jetliner import AvroReaderCore, parse_avro_schema
+from .jetliner import AvroReader, read_avro_schema
 
-def scan(
+def scan_avro(
     path: str,
     *,
     buffer_blocks: int = 4,
     buffer_bytes: int = 64 * 1024 * 1024,
     read_chunk_size: int | None = None,
-    strict: bool = False,
-    validate_schema: bool = False,
+    ignore_errors: bool = False,
     storage_options: dict[str, str] | None = None,
 ) -> pl.LazyFrame:
     """
@@ -984,24 +983,14 @@ def scan(
     buffer_bytes : int
         Maximum bytes to buffer (default: 64MB)
     read_chunk_size : int | None
-        Size of each I/O read operation in bytes. If None, uses source-aware defaults:
-        - Local files: 64KB (OS page cache handles prefetching)
-        - S3: 4MB (amortizes HTTP request overhead and latency)
-        Set explicitly to tune for your workload (e.g., 8MB for high-latency S3).
-    strict : bool
-        If True, fail on first error. If False, skip bad records (default: False)
-    validate_schema : bool
-        If True, Polars validates each batch matches declared schema (default: False)
-        Useful for debugging but adds overhead.
+        Size of each I/O read operation in bytes. If None, uses source-aware defaults.
+    ignore_errors : bool
+        If True, skip bad records. If False, fail on first error (default: False)
     storage_options : dict[str, str] | None
-        Configuration for S3 connections. Supported keys:
-        - endpoint_url: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-        - aws_access_key_id: AWS access key (overrides environment)
-        - aws_secret_access_key: AWS secret key (overrides environment)
-        - region: AWS region (overrides environment)
+        Configuration for S3 connections (endpoint, credentials, region)
     """
     # Parse schema to get Polars schema (calls into Rust)
-    polars_schema = parse_avro_schema(path)
+    polars_schema = read_avro_schema(path)
 
     def source_generator(
         with_columns: list[str] | None,
@@ -1015,14 +1004,14 @@ def scan(
             batch_size = 100_000
 
         # Create Rust reader with projection info
-        reader = AvroReaderCore(
+        reader = AvroReader(
             path,
             batch_size=batch_size,
             buffer_blocks=buffer_blocks,
             buffer_bytes=buffer_bytes,
-            read_chunk_size=read_chunk_size,  # None = source-aware default
-            strict=strict,
-            projected_columns=with_columns,  # Pass projection to Rust
+            read_chunk_size=read_chunk_size,
+            ignore_errors=ignore_errors,
+            projected_columns=with_columns,
             storage_options=storage_options,
         )
 
@@ -1044,15 +1033,12 @@ def scan(
             rows_yielded += df.height
             yield df
 
-            # Stop if we've hit the row limit
             if n_rows is not None and rows_yielded >= n_rows:
                 break
 
     return register_io_source(
         io_source=source_generator,
         schema=polars_schema,
-        validate_schema=validate_schema,
-        is_pure=True,  # Same path + config = same data, enables query optimization
     )
 
 ```

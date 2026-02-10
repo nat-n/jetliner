@@ -34,8 +34,9 @@ benches/                # Criterion benchmarks
 ## Architecture (Essential)
 
 Two Python APIs sharing the same Rust core:
-- `jetliner.scan(path)` → LazyFrame with query optimization (projection/predicate pushdown, early stopping)
-- `jetliner.open(path)` → Iterator yielding DataFrames for streaming control
+- `jetliner.scan_avro(path)` → LazyFrame with query optimization (projection/predicate pushdown, early stopping)
+- `jetliner.read_avro(path)` → DataFrame (eager loading)
+- `jetliner.AvroReader(path)` / `jetliner.MultiAvroReader(paths)` → Iterator for streaming control
 
 Pipeline: `StreamSource` → `BlockReader` → `PrefetchBuffer` → `RecordDecoder` → `DataFrameBuilder` → DataFrame
 

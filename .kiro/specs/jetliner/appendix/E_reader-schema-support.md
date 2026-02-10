@@ -47,7 +47,7 @@ Jetliner has foundational support for schema resolution:
 ```python
 reader_schema = {"type": "record", "name": "Event", "fields": [...]}
 jetliner.scan("file.avro", reader_schema=reader_schema)
-jetliner.open("file.avro", reader_schema=reader_schema)
+jetliner.AvroReader("file.avro", reader_schema=reader_schema)
 ```
 
 ### Option 2: Schema from File

@@ -10,7 +10,7 @@ This plan implements Polars API alignment for Jetliner, making the library feel 
 
 Key changes from current API:
 - `scan()` → `scan_avro()` (Python only, using `register_io_source`)
-- `parse_avro_schema()` → `read_avro_schema()`
+- ✅ `parse_avro_schema()` → `read_avro_schema()`
 - `strict` → `ignore_errors` (inverted semantics)
 - `buffer_blocks`, `buffer_bytes`, etc. → flattened top-level kwargs (not nested dict)
 - `retries` → `storage_options["max_retries"]`
@@ -202,7 +202,7 @@ Each implementation task includes its own test coverage. Unit tests should be wr
   - [x] 4.7 Update PyO3 module registration
     - Register new functions: `scan_avro`, `read_avro`, `read_avro_schema`
     - Register exception classes
-    - Remove old functions: `scan`, `parse_avro_schema`
+    - ✅ Removed old functions: `scan`, `parse_avro_schema`
     - Location: `src/lib.rs`
     - _Requirements: 1.4, 1.5_
 
@@ -241,7 +241,7 @@ Each implementation task includes its own test coverage. Unit tests should be wr
 - [x] 6. Codebase Cleanup
   - [x] 6.1 Update Python tests to use new API
     - Replace all `scan()` calls with `scan_avro()`
-    - Replace all `parse_avro_schema()` calls with `read_avro_schema()`
+    - ✅ Replaced all `parse_avro_schema()` calls with `read_avro_schema()`
     - Replace `strict=True` with `ignore_errors=False` (inverted)
     - Replace `endpoint_url` with `endpoint` in storage_options
     - Update buffer config to use flattened kwargs
@@ -265,7 +265,7 @@ Each implementation task includes its own test coverage. Unit tests should be wr
 
   - [x] 6.4 Remove deprecated code
     - Remove `scan()` function from Rust
-    - Remove `parse_avro_schema()` function from Rust
+    - ✅ Removed `parse_avro_schema()` function from Rust
     - Remove old `strict` parameter handling
     - Remove old `endpoint_url` handling
     - Remove `engine_options` dict parsing
@@ -328,7 +328,7 @@ Each implementation task includes its own test coverage. Unit tests should be wr
   - Documentation updated
   - `ty` passes
   - `py.typed` marker present
-  - No references to old function names (`scan`, `parse_avro_schema`)
+  - ✅ No references to old function names (`scan`, `parse_avro_schema`)
   - No references to old `strict` parameter
   - No references to old `endpoint_url`
   - `scan_avro().collect()` and `read_avro()` produce consistent results for same input

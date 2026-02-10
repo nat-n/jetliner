@@ -51,7 +51,7 @@ Iterator API for streaming control. Returns a context manager yielding DataFrame
 ```python
 import jetliner
 
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     for batch in reader:
         process(batch)
 ```
@@ -85,7 +85,7 @@ schema = jetliner.read_avro_schema("data.avro")
 Context manager returned by `open()`. Provides iteration and schema access.
 
 ```python
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     print(reader.schema)        # JSON string
     print(reader.schema_dict)   # Python dict
     print(reader.error_count)   # Errors in skip mode
@@ -179,7 +179,7 @@ import jetliner
 jetliner.scan_avro
 jetliner.read_avro
 jetliner.read_avro_schema
-jetliner.open
+jetliner.AvroReader
 
 # Classes
 jetliner.AvroReader

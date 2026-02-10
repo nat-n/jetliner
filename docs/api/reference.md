@@ -214,17 +214,17 @@ Returns a context manager that yields DataFrame batches. Use this API when you n
 import jetliner
 
 # Basic iteration
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     for batch in reader:
         print(f"Batch: {batch.height} rows")
 
 # Access schema
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     print(reader.schema)
     print(reader.schema_dict)
 
 # Check errors in skip mode
-with jetliner.open("data.avro", strict=False) as reader:
+with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
     batches = list(reader)
     if reader.error_count > 0:
         print(f"Skipped {reader.error_count} records")
@@ -275,72 +275,120 @@ schema = jetliner.read_avro_schema(
 
 ---
 
-### parse_avro_schema (deprecated)
-
-```python
-def parse_avro_schema(
-    path: str,
-    *,
-    storage_options: dict[str, str] | None = None,
-) -> dict[str, pl.DataType]
-```
-
-!!! warning "Deprecated"
-    Use `read_avro_schema()` instead. This function will be removed in a future version.
-
----
-
 ## Classes
 
 ### AvroReader
 
-Context manager returned by `open()`. Provides iteration over DataFrame batches and schema access.
+Single-file Avro reader for batch iteration. Use when you need control over batch processing, progress tracking, or error inspection.
+
+**Constructor:**
+
+```python
+AvroReader(
+    path: str,
+    *,
+    batch_size: int = 100_000,
+    buffer_blocks: int = 4,
+    buffer_bytes: int = 64 * 1024 * 1024,
+    ignore_errors: bool = False,
+    projected_columns: list[str] | None = None,
+    storage_options: dict[str, str] | None = None,
+    read_chunk_size: int | None = None,
+    max_block_size: int | None = 512 * 1024 * 1024,
+)
+```
 
 **Properties:**
 
-| Property      | Type        | Description                                |
-| ------------- | ----------- | ------------------------------------------ |
-| `schema`      | `str`       | Avro schema as JSON string                 |
-| `schema_dict` | `dict`      | Avro schema as Python dictionary           |
-| `error_count` | `int`       | Number of records skipped (skip mode only) |
-| `errors`      | `list[str]` | List of error messages (skip mode only)    |
+| Property          | Type                | Description                                      |
+| ----------------- | ------------------- | ------------------------------------------------ |
+| `schema`          | `str`               | Avro schema as JSON string                       |
+| `schema_dict`     | `dict`              | Avro schema as Python dictionary                 |
+| `batch_size`      | `int`               | Target rows per batch                            |
+| `pending_records` | `int`               | Records buffered for next batch                  |
+| `is_finished`     | `bool`              | Whether iteration is complete                    |
+| `error_count`     | `int`               | Number of errors (with `ignore_errors=True`)     |
+| `errors`          | `list[BadBlockError]` | Error details (with `ignore_errors=True`)      |
 
 **Usage:**
 
 ```python
 import jetliner
 
-with jetliner.open("data.avro") as reader:
-    # Access schema before reading
-    print(f"Schema: {reader.schema}")
-
-    # Iterate over batches
+with jetliner.AvroReader("data.avro") as reader:
+    print(f"Schema: {reader.schema_dict}")
     for batch in reader:
         process(batch)
 
-    # Check for errors (skip mode)
+# With error handling
+with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
+    for batch in reader:
+        process(batch)
     if reader.error_count > 0:
-        for error in reader.errors:
-            print(f"Error: {error}")
+        for err in reader.errors:
+            print(f"[{err.kind}] Block {err.block_index}: {err.message}")
 ```
 
 ---
 
-### AvroReaderCore
+### MultiAvroReader
 
-Low-level reader class used internally by `scan_avro()` and `open()`. Most users should use those functions instead.
+Multi-file Avro reader for batch iteration with row index continuity across files.
 
-**Parameters:**
+**Constructor:**
 
-| Parameter           | Type        | Default   | Description                  |
-| ------------------- | ----------- | --------- | ---------------------------- |
-| `path`              | `str`       | required  | Path to Avro file            |
-| `batch_size`        | `int`       | `100_000` | Records per batch            |
-| `buffer_blocks`     | `int`       | `4`       | Blocks to prefetch           |
-| `buffer_bytes`      | `int`       | `64MB`    | Max buffer size              |
-| `strict`            | `bool`      | `False`   | Fail on first error          |
-| `projected_columns` | `list[str]` | `None`    | Columns to read (projection) |
-| `storage_options`   | `dict`      | `None`    | S3 configuration             |
+```python
+MultiAvroReader(
+    paths: list[str],
+    *,
+    batch_size: int = 100_000,
+    buffer_blocks: int = 4,
+    buffer_bytes: int = 64 * 1024 * 1024,
+    ignore_errors: bool = False,
+    projected_columns: list[str] | None = None,
+    n_rows: int | None = None,
+    row_index_name: str | None = None,
+    row_index_offset: int = 0,
+    include_file_paths: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    read_chunk_size: int | None = None,
+    max_block_size: int | None = 512 * 1024 * 1024,
+)
+```
+
+**Properties:**
+
+| Property               | Type                | Description                                      |
+| ---------------------- | ------------------- | ------------------------------------------------ |
+| `schema`               | `str`               | Unified Avro schema as JSON string               |
+| `schema_dict`          | `dict`              | Unified Avro schema as Python dictionary         |
+| `rows_read`            | `int`               | Total rows read so far                           |
+| `total_sources`        | `int`               | Number of source files                           |
+| `current_source_index` | `int`               | Index of file currently being read (0-based)     |
+| `is_finished`          | `bool`              | Whether iteration is complete                    |
+| `error_count`          | `int`               | Number of errors (with `ignore_errors=True`)     |
+| `errors`               | `list[BadBlockError]` | Error details (with `ignore_errors=True`)      |
+
+---
+
+### BadBlockError
+
+Structured error information from skip mode reading. Returned in the `errors` list of `AvroReader` and `MultiAvroReader`.
+
+**Properties:**
+
+| Property       | Type           | Description                                    |
+| -------------- | -------------- | ---------------------------------------------- |
+| `kind`         | `str`          | Error type (e.g., "InvalidSyncMarker")         |
+| `block_index`  | `int`          | Block number where error occurred (0-based)    |
+| `record_index` | `int \| None`  | Record number within block, if applicable      |
+| `file_offset`  | `int`          | Byte offset where error occurred               |
+| `message`      | `str`          | Human-readable error description               |
+| `filepath`     | `str \| None`  | Source file path, if known                     |
+
+**Methods:**
+
+- `to_dict()` → `dict`: Convert to dictionary for logging/serialization
 
 ---
 

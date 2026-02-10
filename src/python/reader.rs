@@ -3,8 +3,9 @@
 //! This module provides PyO3-based Python classes for streaming Avro data
 //! into Polars DataFrames:
 //!
-//! - `AvroReader`: User-facing class for the `open()` API with context manager support
-//! - `parse_avro_schema`: Function to extract Polars schema from an Avro file
+//! - `AvroReader`: Single-file reader with iterator and context manager support
+//! - `MultiAvroReader`: Multi-file reader with row index continuity
+//! - `read_avro_schema`: Function to extract Avro schema from a file
 //!
 //! # Exception Types
 //! Structured exception classes with metadata attributes are defined in `errors.rs`:

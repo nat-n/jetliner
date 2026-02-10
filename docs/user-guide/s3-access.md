@@ -15,7 +15,7 @@ import jetliner
 df = jetliner.scan_avro("s3://my-bucket/data/records.avro").collect()
 
 # With the iterator API
-with jetliner.open("s3://my-bucket/data/records.avro") as reader:
+with jetliner.AvroReader("s3://my-bucket/data/records.avro") as reader:
     for batch in reader:
         process(batch)
 ```
@@ -220,7 +220,7 @@ Use the iterator API for memory-efficient S3 streaming:
 ```python
 import jetliner
 
-with jetliner.open(
+with jetliner.AvroReader(
     "s3://bucket/large-file.avro",
     storage_options={"region": "us-east-1"},
     buffer_blocks=2,  # Reduce prefetch for memory savings

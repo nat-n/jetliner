@@ -1,8 +1,8 @@
-# Devnote: Fix parse_avro_schema panic with Enum types
+# Devnote: Fix read_avro_schema panic with Enum types
 
 ## Context
 
-When calling `jetliner.scan()` or `jetliner.parse_avro_schema()` on Avro files containing map types (which internally use Enum for categorical keys), the library panicked with:
+When calling `jetliner.scan_avro()` or `jetliner.read_avro_schema()` on Avro files containing map types (which internally use Enum for categorical keys), the library panicked with:
 
 ```
 pyo3_runtime.PanicException: activate dtype
@@ -33,7 +33,7 @@ Key implementation details:
 ## Testing
 
 - `jetliner.scan('benches/data/large_complex.avro').collect()` now works (1M rows, 6 columns including nested structs/arrays/maps)
-- `jetliner.parse_avro_schema()` returns correct Python schema
+- `jetliner.read_avro_schema()` returns correct Python schema
 - All 302 Python tests pass
 - All 27 Rust tests pass
 

@@ -75,8 +75,7 @@ use tracing_subscriber::EnvFilter;
 /// - 1.1: Expose `scan_avro()` function that returns `pl.LazyFrame`
 /// - 1.2: Expose `read_avro()` function that returns `pl.DataFrame`
 /// - 1.3: Expose `read_avro_schema()` function that returns `pl.Schema`
-/// - 1.4: Remove old `scan()` function (replaced by `scan_avro()`)
-/// - 1.5: Remove old `parse_avro_schema()` function (replaced by `read_avro_schema()`)
+/// - 1.4: Expose `scan_avro()` function that returns `pl.LazyFrame`
 /// - 6.4: Raise appropriate Python exceptions with descriptive messages
 /// - 6.5: Include context about block and record position in errors
 #[pymodule]

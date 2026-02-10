@@ -337,7 +337,7 @@ This is a **PRIORITY 3** phase that was correctly deprioritized. However, schema
 3. ✅ **`TestSchemaInspection`** (3 tests)
    - Schema JSON extraction
    - Schema dict extraction
-   - `parse_avro_schema()` function
+   - `read_avro_schema()` function
 
 4. ✅ **`TestDataTypeValidation`** (2 tests)
    - Polars type mapping (Utf8, Int64, Int32)

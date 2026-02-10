@@ -51,7 +51,7 @@ df = jetliner.scan_avro("data.avro").collect()
 df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
 
 # Iterator API
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     for batch in reader:
         process(batch)
 ```

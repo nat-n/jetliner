@@ -146,12 +146,12 @@ For `open()` API, adjust batch size:
 
 ```python
 # Smaller batches: lower memory, more Python overhead
-with jetliner.open("data.avro", batch_size=10_000) as reader:
+with jetliner.AvroReader("data.avro", batch_size=10_000) as reader:
     for batch in reader:
         process(batch)
 
 # Larger batches: higher memory, less overhead
-with jetliner.open("data.avro", batch_size=500_000) as reader:
+with jetliner.AvroReader("data.avro", batch_size=500_000) as reader:
     for batch in reader:
         process(batch)
 ```

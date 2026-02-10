@@ -11,7 +11,7 @@ The `open()` API provides schema access before reading data:
 ```python
 import jetliner
 
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     # JSON string representation
     print(reader.schema)
 
@@ -55,7 +55,7 @@ polars_schema = jetliner.read_avro_schema(
 The raw Avro schema as a JSON string:
 
 ```python
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     schema_json = reader.schema
     print(schema_json)
 ```
@@ -78,7 +78,7 @@ Output:
 Parsed schema as a Python dictionary:
 
 ```python
-with jetliner.open("data.avro") as reader:
+with jetliner.AvroReader("data.avro") as reader:
     schema = reader.schema_dict
 
     print(f"Record name: {schema['name']}")

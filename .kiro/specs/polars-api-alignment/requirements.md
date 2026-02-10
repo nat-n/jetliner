@@ -11,7 +11,7 @@ This document specifies requirements for aligning Jetliner's API with standard P
 
 ## Motivation
 
-Currently, Jetliner uses non-standard naming (`scan`, `open`, `parse_avro_schema`) and limited parameter support compared to Polars conventions. Users familiar with Polars expect:
+Previously, Jetliner used non-standard naming. The API has been updated to follow Polars conventions: Users familiar with Polars expect:
 - `scan_avro()` / `read_avro()` naming pattern
 - Standard parameters like `n_rows`, `row_index_name`
 - Support for `Path` objects, glob patterns, and multiple files
@@ -46,7 +46,7 @@ Additionally, the current architecture has too much logic in Python. Moving logi
 2. THE library SHALL expose a `read_avro()` function that returns a `pl.DataFrame`
 3. THE library SHALL expose a `read_avro_schema()` function that returns a `pl.Schema`
 4. THE existing `scan()` function SHALL be removed (replaced by `scan_avro()`)
-5. THE existing `parse_avro_schema()` function SHALL be removed (replaced by `read_avro_schema()`)
+5. ✅ THE existing `parse_avro_schema()` function has been replaced by `read_avro_schema()`
 6. THE `open()` function SHALL remain available for streaming iterator access (no Polars equivalent exists)
 7. THE `open()` function SHALL accept `str` or `Path` for the source parameter (single file only, no glob or multi-file support)
 
@@ -263,7 +263,7 @@ Additionally, the current architecture has too much logic in Python. Moving logi
 #### Acceptance Criteria
 
 1. ALL references to `scan()` SHALL be updated to `scan_avro()`
-2. ALL references to `parse_avro_schema()` SHALL be updated to `read_avro_schema()`
+2. ✅ ALL references to `parse_avro_schema()` have been updated to `read_avro_schema()`
 3. ALL references to `strict` parameter SHALL be updated to `ignore_errors` (with inverted semantics)
 4. ALL references to `endpoint_url` in storage_options SHALL be updated to `endpoint`
 5. ALL documentation SHALL use the new function names and parameter names
@@ -365,7 +365,7 @@ df = jetliner.read_avro(
 )
 
 # Streaming iterator (unchanged)
-with jetliner.open("file.avro") as reader:
+with jetliner.AvroReader("file.avro") as reader:
     for batch in reader:
         process(batch)
 

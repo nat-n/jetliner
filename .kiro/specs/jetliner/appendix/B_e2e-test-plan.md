@@ -785,7 +785,7 @@ import pytest
 def test_read_apache_avro_weather_files():
     """Test reading official Apache Avro test files"""
     # Test uncompressed
-    with jetliner.open("tests/data/apache-avro/weather.avro") as reader:
+    with jetliner.AvroReader("tests/data/apache-avro/weather.avro") as reader:
         dfs = list(reader)
         assert len(dfs) > 0
         df = pl.concat(dfs)
@@ -795,14 +795,14 @@ def test_read_apache_avro_weather_files():
 
     # Test compressed variants
     for codec in ["deflate", "snappy", "zstd"]:
-        with jetliner.open(f"tests/data/apache-avro/weather-{codec}.avro") as reader:
+        with jetliner.AvroReader(f"tests/data/apache-avro/weather-{codec}.avro") as reader:
             dfs = list(reader)
             assert len(dfs) > 0
 
 def test_read_fastavro_files():
     """Test reading fastavro test files"""
     # Test reading Java-generated UUID file
-    with jetliner.open("tests/data/fastavro/java-generated-uuid.avro") as reader:
+    with jetliner.AvroReader("tests/data/fastavro/java-generated-uuid.avro") as reader:
         dfs = list(reader)
         df = pl.concat(dfs)
         # Validate UUID field present and formatted correctly
@@ -850,7 +850,7 @@ def test_interop_all_codecs(codec):
 def test_error_accumulation_skip_mode():
     """Test error tracking in skip mode"""
     # Read file with some corrupted blocks
-    with jetliner.open("tests/data/generated/partially-corrupted.avro", strict=False) as reader:
+    with jetliner.AvroReader("tests/data/generated/partially-corrupted.avro", ignore_errors=True) as reader:
         dfs = list(reader)
 
         # Should have read some data
@@ -868,7 +868,7 @@ def test_large_file_streaming():
     """Test memory efficiency with large file"""
     # Read 10,000 record file
     total_records = 0
-    with jetliner.open("tests/data/generated/large-multiblock.avro", batch_size=1000) as reader:
+    with jetliner.AvroReader("tests/data/generated/large-multiblock.avro", batch_size=1000) as reader:
         for df in reader:
             total_records += len(df)
             # Verify batch size respected (roughly)
