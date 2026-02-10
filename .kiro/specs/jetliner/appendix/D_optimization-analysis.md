@@ -186,9 +186,9 @@ for window in offsets.windows(2) {
 ## References
 
 ### Internal
-- `/Users/nat.noordanus/jetstream/src/reader/record_decoder.rs` - Current implementation
-- `/Users/nat.noordanus/jetstream/benches/python/compare.py` - Benchmark suite
-- `/Users/nat.noordanus/jetstream/benches/python/generate_data.py` - Test data generation
+- `src/reader/record_decoder.rs` - Current implementation
+- `benches/python/compare.py` - Benchmark suite
+- `benches/python/generate_data.py` - Test data generation
 
 ### External
 - [Polars arrow2 avro reader](https://github.com/jorgecarleitao/arrow2/tree/main/src/io/avro)

@@ -85,7 +85,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 proptest = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
-ctor = "0.2"
+ctor = "0.6.3"
 
 [[bench]]
 name = "read_throughput"

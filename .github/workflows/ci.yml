@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Install poe
+        run: uv tool install poethepoet
+      - name: Install dependencies
+        run: uv sync
+      - name: Check formatting
+        run: poe style-rust
+      - name: Checking linter
+        run: poe lint-rust
+      - name: Run tests
+        run: poe test-rust
+
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    env:
+      TESTCONTAINERS_HOST_OVERRIDE: localhost
+      TESTCONTAINERS_RYUK_DISABLED: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Install poe
+        run: uv tool install poethepoet
+      - name: Install dependencies
+        run: uv sync
+      - name: Build extension
+        run: poe build-dev
+      - name: Check types
+        run: poe types
+      - name: Checking linter
+        run: poe lint-python
+      - name: Run tests
+        run: poe test-python

@@ -14,6 +14,16 @@ Jetliner is a high-performance Polars plugin for streaming Avro files into DataF
 - **Zero-copy techniques**: Uses `bytes::Bytes` for efficient memory handling
 - **Full codec support**: Handles null, snappy, deflate, zstd, bzip2, and xz compression
 
+### Performance benchmarks
+
+Jetliner is built for speed. Benchmarks against other Python Avro readers show significant performance gains, especially on complex schemas and wide tables.
+
+<iframe src="assets/benchmark_performance.html" width="100%" height="500" frameborder="0"></iframe>
+
+Yes, that's a log scale. The chart compares read times across four scenarios using 1M-row Avro files. Note that Polars' built-in Avro reader is missing from the "Complex" scenario entirely—it doesn't support maps. Jetliner handles complex nested schemas with arrays, maps, and nullable fields without breaking a sweat.
+
+For detailed methodology and additional comparisons, see [Performance Benchmarks](performance/benchmarks.md).
+
 ## Installation
 
 === "pip"

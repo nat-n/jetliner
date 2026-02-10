@@ -47,7 +47,10 @@ dev = [
   "testcontainers[minio]>=4.14.1",
   "ty>=0.0.14",
 ]
-docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "plotly>=6.5.2", "kaleido>=0.4"]
+
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.maturin]
 features = ["extension-module"]
@@ -213,6 +216,16 @@ help = "Output complete JSON report file path"
 options = ["--output"]
 type = "string"
 
+[tool.poe.tasks.bench-plot]
+help = "Generate comparison benchmark visualization plots from JSON report"
+script = "plot:generate_plots"
+executor = { group = "docs" }
+env = { PYTHONPATH = "${POE_ROOT}/benches/python" }
+args.input_file = { options = ["--input", "-i"], help = "Input benchmark JSON file", default = "benchmark.json" }
+args.output_dir = { options = ["--output-dir", "-o"], help = "Output directory for generated files", default = "docs/assets" }
+args.html_only = { options = ["--html-only"], type = "boolean", help = "Only generate HTML (skip PNG)", default = false }
+args.png_only = { options = ["--png-only"], type = "boolean", help = "Only generate PNG (skip HTML)", default = false }
+
 [tool.poe.tasks.bench-data]
 help = "Generate benchmark data files"
 cmd = "python benches/python/generate_data.py"
@@ -240,7 +253,7 @@ cmd = "ruff check python/ benches/python/ scripts/"
 
 [tool.poe.tasks.types]
 help = "Check python types"
-cmd = "uvx ty check python/ benches/python/ scripts/"
+cmd = "ty check python/ benches/python/ scripts/"
 
 [tool.poe.tasks.check-rust]
 help = "Run all Rust checks (format, lint, test)"
@@ -293,7 +306,9 @@ imports = ["json", "fastavro", "itertools", "pprint"]
 [tool.poe.tasks.docs-serve]
 help = "Start local documentation server for preview"
 cmd = "mkdocs serve"
+executor = { "group" = "docs" }
 
 [tool.poe.tasks.docs-build]
 help = "Build documentation site"
 cmd = "mkdocs build --strict"
+executor = { "group" = "docs" }

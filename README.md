@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="docs/assets/jetliner_logo.png" alt="Jetliner" width="400">
+  <img src="https://raw.githubusercontent.com/nat-n/jetliner/main/docs/assets/jetliner_logo.png" alt="Jetliner" width="400">
 </p>
 
 <p align="center">
   <a href="https://pypi.org/project/jetliner/"><img src="https://img.shields.io/pypi/v/jetliner.svg" alt="PyPI version"></a>
   <a href="https://pypi.org/project/jetliner/"><img src="https://img.shields.io/pypi/pyversions/jetliner.svg" alt="Python versions"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
-  <a href="https://github.com/jetliner/jetliner/actions/workflows/ci.yml"><img src="https://github.com/jetliner/jetliner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://jetliner.github.io/jetliner/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
 </p>
 
@@ -29,9 +28,13 @@ This library was created to serve performance critical scenarios around processi
 
 ## Benchmarks
 
-Jetliner is built for speed.
+Jetliner is built for speed. Benchmarks against other Python Avro readers show significant performance gains, especially on complex schemas and wide tables.
 
-TODO: insert benchmarks plot
+<p align="center">
+  <img src="https://raw.githubusercontent.com/nat-n/jetliner/main/docs/assets/benchmark_performance.png" alt="Benchmark comparison" width="800">
+</p>
+
+Yes, that's a log scale. The chart compares read times across four scenarios using 1M-row Avro files. Note that Polars' built-in Avro reader is missing from the "Complex" scenario entirely—it doesn't support maps. Jetliner handles complex nested schemas with arrays, maps, and nullable fields without breaking a sweat.
 
 ## Installation
 

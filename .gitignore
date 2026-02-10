@@ -1,4 +1,5 @@
 .serena
+benchmark*.json
 
 # Rust
 /target/

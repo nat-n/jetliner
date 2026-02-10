@@ -45,35 +45,34 @@ use crate::source::{BoxedSource, LocalSource, S3Config, S3Source};
 // This class exposes recoverable errors that occurred during skip-mode reading.
 // Requirements: 7.3, 7.4, 7.7
 
-/// A structured error that occurred during Avro block reading.
+/// Structured error information from skip mode reading.
 ///
-/// In skip mode, errors are accumulated rather than causing immediate failure.
-/// This class provides structured access to error details for inspection
-/// after reading completes.
+/// When reading with `ignore_errors=True`, errors are accumulated rather than
+/// causing immediate failure. After iteration completes, errors are accessible
+/// via the reader's `.errors` property as a list of `BadBlockError` objects.
 ///
 /// # Properties
-/// * `kind` - The type of error (e.g., "InvalidSyncMarker", "DecompressionFailed")
-/// * `block_index` - The block number where the error occurred
-/// * `record_index` - The record number within the block (if applicable)
-/// * `file_offset` - The file offset where the error occurred
-/// * `message` - A human-readable error message
+/// - `kind`: Error type string (e.g., "InvalidSyncMarker", "DecompressionFailed",
+///   "BlockParseFailed", "RecordDecodeFailed", "SchemaViolation")
+/// - `block_index`: Block number where the error occurred (0-based)
+/// - `record_index`: Record number within the block, if applicable (0-based)
+/// - `file_offset`: Byte offset in the file where the error occurred
+/// - `message`: Human-readable error description
+/// - `filepath`: Source file path, if known (useful for multi-file reads)
 ///
-/// # Requirements
-/// - 7.3: Track error counts and positions
-/// - 7.4: Provide summary of skipped errors
-/// - 7.7: Include sufficient detail to diagnose issues
+/// # Methods
+/// - `to_dict()`: Convert to a Python dict for logging/serialization
 ///
 /// # Example
 /// ```python
-/// with jetliner.open("file.avro", strict=False) as reader:
+/// with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
 ///     for df in reader:
 ///         process(df)
 ///
-///     if reader.error_count > 0:
-///         for err in reader.errors:
-///             print(f"[{err.kind}] Block {err.block_index}: {err.message}")
-///             # Or as dict for logging/serialization
-///             log_error(err.to_dict())
+///     for err in reader.errors:
+///         print(f"[{err.kind}] Block {err.block_index}: {err.message}")
+///         # Or as dict for logging/serialization
+///         log_error(err.to_dict())
 /// ```
 #[pyclass(name = "BadBlockError")]
 #[derive(Clone)]
@@ -189,35 +188,61 @@ impl PyBadBlockError {
 // MultiAvroReader - Multi-file reader with row_index and file_paths support
 // =============================================================================
 
-/// Multi-file Avro reader for reading from multiple Avro files.
+/// Multi-file Avro reader for batch iteration over DataFrames.
 ///
-/// This reader handles:
-/// - Sequential file reading
+/// Use this class when you need to read multiple Avro files with batch-level control:
+/// - Progress tracking across files and batches
 /// - Row index continuity across files
-/// - File path injection
-/// - Error accumulation in ignore_errors mode
-/// - n_rows limit across all files
-/// - Both local files and S3 sources
+/// - File path tracking per row
+/// - Per-batch error inspection (with `ignore_errors=True`)
 ///
-/// # Requirements
-/// - 2.7: Read files in sequence
-/// - 4.5: n_rows limit applies to total across all files
-/// - 5.6: Row index is continuous across files
-/// - 12.4: Accumulate errors in ignore_errors mode
+/// For most use cases, prefer `scan_avro()` (lazy with query optimization) or
+/// `read_avro()` (eager loading) — both support multiple files. Use `MultiAvroReader`
+/// when you need explicit iteration control over multi-file reads.
+///
+/// For single-file batch iteration, use `AvroReader`.
+///
+/// # Protocols
+/// - Iterator: `for df in reader` yields DataFrames
+/// - Context manager: `with MultiAvroReader(...) as reader` for automatic cleanup
+///
+/// # Properties
+/// - `schema`: Avro schema as JSON string (unified across files)
+/// - `schema_dict`: Avro schema as Python dict
+/// - `rows_read`: Total rows read so far
+/// - `total_sources`: Number of source files
+/// - `current_source_index`: Index of file currently being read (0-based)
+/// - `is_finished`: Whether iteration is complete
+/// - `errors`: List of `BadBlockError` from skip mode (after iteration)
+/// - `error_count`: Number of errors encountered
 ///
 /// # Example
 /// ```python
 /// from jetliner import MultiAvroReader
 ///
-/// # Read from multiple files with row index
-/// reader = MultiAvroReader(
-///     ["file1.avro", "file2.avro"],
-///     row_index_name="idx",
-///     row_index_offset=0,
-///     include_file_paths="source_file"
-/// )
+/// # Basic multi-file iteration
+/// reader = MultiAvroReader(["file1.avro", "file2.avro"])
 /// for df in reader:
 ///     print(f"Batch: {df.shape}")
+///
+/// # With row tracking and file path injection
+/// with MultiAvroReader(
+///     ["file1.avro", "file2.avro"],
+///     row_index_name="idx",
+///     include_file_paths="source_file"
+/// ) as reader:
+///     for df in reader:
+///         print(f"File {reader.current_source_index + 1}/{reader.total_sources}")
+///         process(df)
+///
+/// # With row limit across all files
+/// with MultiAvroReader(
+///     ["file1.avro", "file2.avro"],
+///     n_rows=100_000
+/// ) as reader:
+///     for df in reader:
+///         process(df)
+///     print(f"Read {reader.rows_read} rows total")
 /// ```
 #[pyclass]
 pub struct MultiAvroReader {
@@ -236,21 +261,31 @@ impl MultiAvroReader {
     /// Create a new MultiAvroReader.
     ///
     /// # Arguments
-    /// * `paths` - List of pre-resolved paths to read (glob expansion should be done before)
+    /// * `paths` - List of paths to read. Glob patterns should be expanded before passing.
+    ///   Supports local paths and s3:// URIs (all paths must use the same source type).
     /// * `batch_size` - Target number of rows per DataFrame (default: 100,000)
     /// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
     /// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
-    /// * `ignore_errors` - If True, skip bad records and continue; if False, fail on first error
-    /// * `projected_columns` - Optional list of column names to read
-    /// * `n_rows` - Maximum number of rows to read across all files
-    /// * `row_index_name` - If provided, adds a row index column with this name
-    /// * `row_index_offset` - Starting value for the row index
+    /// * `ignore_errors` - If True, skip bad records and continue; if False, fail on first error (default: False)
+    /// * `projected_columns` - Optional list of column names to read (default: all columns)
+    /// * `n_rows` - Maximum number of rows to read across all files (default: None, read all)
+    /// * `row_index_name` - If provided, adds a row index column with this name, continuous across files
+    /// * `row_index_offset` - Starting value for the row index (default: 0)
     /// * `include_file_paths` - If provided, adds a column with this name containing the source file path
-    /// * `storage_options` - Optional dict for S3 configuration
-    /// * `read_chunk_size` - Optional read buffer chunk size in bytes
+    /// * `storage_options` - Optional dict for S3 configuration (endpoint, credentials, region)
+    /// * `read_chunk_size` - Optional read buffer chunk size in bytes. When None, auto-detects:
+    ///   64KB for local files, 4MB for S3.
+    /// * `max_block_size` - Maximum decompressed block size in bytes (default: 512MB).
+    ///   Blocks exceeding this limit are rejected. Set to None to disable.
     ///
     /// # Returns
     /// A new MultiAvroReader instance ready for iteration.
+    ///
+    /// # Raises
+    /// * `FileNotFoundError` - If any file does not exist
+    /// * `PermissionError` - If access is denied
+    /// * `SchemaError` - If file schemas are incompatible
+    /// * `RuntimeError` - For other errors (S3, parsing, etc.)
     #[new]
     #[pyo3(signature = (
         paths,
@@ -685,42 +720,58 @@ fn json_value_to_py_dict<'py>(
     }
 }
 
-/// User-facing Avro reader for the `open()` API.
+/// Single-file Avro reader for batch iteration over DataFrames.
 ///
-/// This is the primary class for reading Avro files in Python. It provides:
-/// - Python iterator protocol (__iter__, __next__)
-/// - Context manager protocol (__enter__, __exit__)
-/// - Schema inspection
-/// - Projection pushdown via projected_columns parameter
+/// Use this class when you need control over batch processing:
+/// - Progress tracking between batches
+/// - Per-batch error inspection (with `ignore_errors=True`)
+/// - Writing batches to external sinks (database, API, etc.)
+/// - Early termination based on content
 ///
-/// # Requirements
-/// - 6.1: Implement Python iterator protocol (__iter__, __next__)
-/// - 6.2: Properly release resources when iteration completes
-/// - 6.6: Support context manager protocol for resource cleanup
+/// For most use cases, prefer `scan_avro()` (lazy with query optimization) or
+/// `read_avro()` (eager loading). Use `AvroReader` when you need explicit
+/// iteration control.
+///
+/// For reading multiple files with batch control, use `MultiAvroReader`.
+///
+/// # Protocols
+/// - Iterator: `for df in reader` yields DataFrames
+/// - Context manager: `with AvroReader(...) as reader` for automatic cleanup
+///
+/// # Properties
+/// - `schema`: Avro schema as JSON string
+/// - `schema_dict`: Avro schema as Python dict
+/// - `batch_size`: Target rows per batch
+/// - `pending_records`: Records buffered for next batch
+/// - `is_finished`: Whether iteration is complete
+/// - `errors`: List of `BadBlockError` from skip mode (after iteration)
+/// - `error_count`: Number of errors encountered
 ///
 /// # Example
 /// ```python
 /// import jetliner
 ///
 /// # Basic iteration
-/// reader = jetliner.AvroReader("data.avro")
-/// for df in reader:
+/// for df in jetliner.AvroReader("data.avro"):
 ///     print(df.shape)
 ///
 /// # With context manager (recommended)
-/// with jetliner.AvroReader("s3://bucket/data.avro") as reader:
+/// with jetliner.AvroReader("data.avro") as reader:
 ///     for df in reader:
 ///         process(df)
 ///
-/// # With configuration
-/// with jetliner.AvroReader(
-///     "data.avro",
-///     batch_size=50000,
-///     buffer_blocks=8,
-///     ignore_errors=True
-/// ) as reader:
+/// # Error inspection in skip mode
+/// with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
 ///     for df in reader:
 ///         process(df)
+///     if reader.error_count > 0:
+///         print(f"Skipped {reader.error_count} errors")
+///         for err in reader.errors:
+///             print(f"  [{err.kind}] Block {err.block_index}: {err.message}")
+///
+/// # Schema inspection
+/// with jetliner.AvroReader("data.avro") as reader:
+///     print(reader.schema_dict["fields"])
 /// ```
 #[pyclass]
 pub struct AvroReader {
@@ -753,6 +804,9 @@ impl AvroReader {
     /// * `read_chunk_size` - Optional read buffer chunk size in bytes. When None, auto-detects:
     ///   64KB for local files, 4MB for S3. Larger values reduce I/O operations but use more memory.
     ///   For S3, larger chunks (1-8MB) reduce HTTP round-trips significantly.
+    /// * `max_block_size` - Maximum decompressed block size in bytes (default: 512MB).
+    ///   Blocks exceeding this limit are rejected. Set to None to disable. Protects against
+    ///   decompression bombs where small compressed blocks expand to consume excessive memory.
     ///
     /// # Returns
     /// A new AvroReader instance ready for iteration.
