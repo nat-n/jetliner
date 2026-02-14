@@ -23,7 +23,7 @@ class TestErrorHandlingRealFiles:
         """Test that ignore_errors=True works on valid files without errors."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should read successfully
@@ -37,7 +37,7 @@ class TestErrorHandlingRealFiles:
         """Test that ignore_errors=False works on valid files."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, ignore_errors=False) as reader:
+        with jetliner.AvroReader(path, ignore_errors=False) as reader:
             dfs = list(reader)
 
             # Should read successfully

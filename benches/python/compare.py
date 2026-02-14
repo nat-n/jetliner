@@ -2,9 +2,8 @@
 """
 Comparative benchmarks for Avro reading libraries.
 
-Compares jetliner (open and scan APIs) against:
-- jetliner_open: Iterator API (streaming, no projection pushdown)
-- jetliner_scan: Lazy API (full collect, supports projection pushdown)
+Compares jetliner against:
+- jetliner: Lazy API (full collect, supports projection pushdown)
 - polars.read_avro (built-in)
 - polars-avro (IO plugin)
 - fastavro
@@ -35,7 +34,7 @@ Usage:
     python benches/python/compare.py --scenario large_simple
 
     # Specific readers
-    python benches/python/compare.py --readers jetliner_scan jetliner_open polars
+    python benches/python/compare.py --readers jetliner polars
 
     # Save complete JSON report for plotting/analysis
     python benches/python/compare.py --output results.json
@@ -89,28 +88,7 @@ from generate_data import BENCH_FILES, ensure_benchmark_files_exist  # noqa: E40
 # =============================================================================
 
 
-def read_jetliner_open(path: Path, columns: list[str] | None = None):
-    """Read with jetliner.open() - iterator API, measures streaming performance.
-
-    For projection scenarios, reads all columns then filters - shows cost of no pushdown.
-    Compare against jetliner_scan which pushes projection down for better performance.
-    """
-    import jetliner
-    import polars as pl
-
-    # Iterate through and consume the data
-    # If columns specified, select after reading (no pushdown optimization)
-    last_df = None
-    with jetliner.open(str(path)) as reader:
-        for df in reader:
-            if columns:
-                df = df.select(columns)
-            last_df = df  # Keep reference so it's not optimized away
-
-    return last_df if last_df is not None else pl.DataFrame()
-
-
-def read_jetliner_scan(path: Path, columns: list[str] | None = None):
+def read_jetliner(path: Path, columns: list[str] | None = None):
     """Read with jetliner.scan_avro() - lazy API, measures full collect performance."""
     import jetliner
 
@@ -181,8 +159,7 @@ def read_avro(path: Path, columns: list[str] | None = None):
 
 
 READERS = {
-    "jetliner_open": read_jetliner_open,
-    "jetliner_scan": read_jetliner_scan,
+    "jetliner": read_jetliner,
     "polars": read_polars,
     "polars_avro": read_polars_avro,
     "fastavro": read_fastavro,
@@ -196,22 +173,7 @@ READERS = {
 # =============================================================================
 
 
-def read_jetliner_open_s3(s3_uri: str, storage_options: dict, columns: list[str] | None = None):
-    """Read from S3 with jetliner.open() - iterator API."""
-    import jetliner
-    import polars as pl
-
-    last_df = None
-    with jetliner.open(s3_uri, storage_options=storage_options) as reader:
-        for df in reader:
-            if columns:
-                df = df.select(columns)
-            last_df = df
-
-    return last_df if last_df is not None else pl.DataFrame()
-
-
-def read_jetliner_scan_s3(s3_uri: str, storage_options: dict, columns: list[str] | None = None):
+def read_jetliner_s3(s3_uri: str, storage_options: dict, columns: list[str] | None = None):
     """Read from S3 with jetliner.scan_avro() - lazy API."""
     import jetliner
 
@@ -462,8 +424,6 @@ def validate_scenario_results(
     """Validate that all successful readers produce the same output.
 
     Only prints warnings if mismatches are found.
-    For jetliner_open (which returns only last chunk), validates columns but skips
-    row count and data hash comparison.
     """
     file_path = BENCH_FILES[scenario.file_key]
 
@@ -496,17 +456,8 @@ def validate_scenario_results(
     if len(reader_outputs) < 2:
         return
 
-    # Use first non-jetliner_open reader as baseline
-    # (prefer full-dataset readers for baseline comparison)
-    baseline_name = None
-    for name in reader_outputs.keys():
-        if name != "jetliner_open":
-            baseline_name = name
-            break
-    if baseline_name is None:
-        # Only jetliner_open succeeded, can't validate
-        return
-
+    # Use first reader as baseline
+    baseline_name = next(iter(reader_outputs.keys()))
     baseline = reader_outputs[baseline_name]
 
     # Check for mismatches
@@ -515,19 +466,11 @@ def validate_scenario_results(
         if reader_name == baseline_name:
             continue
 
-        is_streaming = reader_name == "jetliner_open"
-
-        # Check shape (skip row count for streaming readers)
-        if not is_streaming and output["shape"] != baseline["shape"]:
+        # Check shape
+        if output["shape"] != baseline["shape"]:
             mismatches.append(
                 f"  Shape mismatch: {reader_name} has {output['shape'][0]:,} rows × {output['shape'][1]} cols, "
                 f"expected {baseline['shape'][0]:,} rows × {baseline['shape'][1]} cols"
-            )
-        elif is_streaming and output["shape"][1] != baseline["shape"][1]:
-            # For streaming readers, only check column count
-            mismatches.append(
-                f"  Column count mismatch: {reader_name} has {output['shape'][1]} cols, "
-                f"expected {baseline['shape'][1]} cols"
             )
 
         # Check columns (always validate)
@@ -539,8 +482,8 @@ def validate_scenario_results(
             if extra:
                 mismatches.append(f"  {reader_name} has extra columns: {extra}")
 
-        # Check data hash (skip for streaming readers since they return partial data)
-        if not is_streaming and output["hash"] != baseline["hash"]:
+        # Check data hash
+        if output["hash"] != baseline["hash"]:
             mismatches.append(
                 f"  Data mismatch: {reader_name} produces different values than {baseline_name}"
             )
@@ -678,8 +621,7 @@ def run_s3_benchmarks(
     """Run S3 benchmarks comparing local vs S3 reads for jetliner.
 
     Uploads benchmark files to MinIO and compares:
-    - jetliner_open (local) vs jetliner_open_s3
-    - jetliner_scan (local) vs jetliner_scan_s3
+    - jetliner (local) vs jetliner_s3
     """
     all_results = {}
     storage_options = minio_ctx.get_storage_options()
@@ -697,10 +639,8 @@ def run_s3_benchmarks(
 
     # Define S3 readers to benchmark
     s3_readers = {
-        "jetliner_open_local": lambda path, cols: read_jetliner_open(path, cols),
-        "jetliner_open_s3": lambda s3_uri, cols: read_jetliner_open_s3(s3_uri, storage_options, cols),
-        "jetliner_scan_local": lambda path, cols: read_jetliner_scan(path, cols),
-        "jetliner_scan_s3": lambda s3_uri, cols: read_jetliner_scan_s3(s3_uri, storage_options, cols),
+        "jetliner_local": lambda path, cols: read_jetliner(path, cols),
+        "jetliner_s3": lambda s3_uri, cols: read_jetliner_s3(s3_uri, storage_options, cols),
     }
 
     for i, scenario in enumerate(scenarios, 1):
@@ -719,54 +659,54 @@ def run_s3_benchmarks(
             console=console,
             transient=True,
         ) as progress:
-            task = progress.add_task("", total=4)
+            task = progress.add_task("", total=2)
 
-            # Benchmark local readers
-            for reader_name in ["jetliner_open_local", "jetliner_scan_local"]:
-                progress.update(task, description=f"Benchmarking {reader_name}...")
-                try:
-                    result = benchmark_reader(
-                        s3_readers[reader_name],
-                        file_path,
-                        scenario.columns,
-                        warmup_runs=warmup_runs,
-                        timed_runs=timed_runs,
-                    )
-                    results[reader_name] = result
-                    console.print(
-                        f"  [cyan]{reader_name:<22}[/] "
-                        f"[green]{result['mean_sec']:.3f}s[/] ± {result['stdev_sec']:.3f}s"
-                    )
-                except Exception as e:
-                    if fail_fast:
-                        raise
-                    results[reader_name] = {"error": str(e)}
-                    console.print(f"  [cyan]{reader_name:<22}[/] [red]ERROR: {e}[/]")
-                progress.advance(task)
+            # Benchmark local reader
+            reader_name = "jetliner_local"
+            progress.update(task, description=f"Benchmarking {reader_name}...")
+            try:
+                result = benchmark_reader(
+                    s3_readers[reader_name],
+                    file_path,
+                    scenario.columns,
+                    warmup_runs=warmup_runs,
+                    timed_runs=timed_runs,
+                )
+                results[reader_name] = result
+                console.print(
+                    f"  [cyan]{reader_name:<22}[/] "
+                    f"[green]{result['mean_sec']:.3f}s[/] ± {result['stdev_sec']:.3f}s"
+                )
+            except Exception as e:
+                if fail_fast:
+                    raise
+                results[reader_name] = {"error": str(e)}
+                console.print(f"  [cyan]{reader_name:<22}[/] [red]ERROR: {e}[/]")
+            progress.advance(task)
 
-            # Benchmark S3 readers
-            for reader_name in ["jetliner_open_s3", "jetliner_scan_s3"]:
-                progress.update(task, description=f"Benchmarking {reader_name}...")
-                try:
-                    result = benchmark_s3_reader(
-                        read_jetliner_open_s3 if "open" in reader_name else read_jetliner_scan_s3,
-                        s3_uri,
-                        storage_options,
-                        scenario.columns,
-                        warmup_runs=warmup_runs,
-                        timed_runs=timed_runs,
-                    )
-                    results[reader_name] = result
-                    console.print(
-                        f"  [cyan]{reader_name:<22}[/] "
-                        f"[green]{result['mean_sec']:.3f}s[/] ± {result['stdev_sec']:.3f}s"
-                    )
-                except Exception as e:
-                    if fail_fast:
-                        raise
-                    results[reader_name] = {"error": str(e)}
-                    console.print(f"  [cyan]{reader_name:<22}[/] [red]ERROR: {e}[/]")
-                progress.advance(task)
+            # Benchmark S3 reader
+            reader_name = "jetliner_s3"
+            progress.update(task, description=f"Benchmarking {reader_name}...")
+            try:
+                result = benchmark_s3_reader(
+                    read_jetliner_s3,
+                    s3_uri,
+                    storage_options,
+                    scenario.columns,
+                    warmup_runs=warmup_runs,
+                    timed_runs=timed_runs,
+                )
+                results[reader_name] = result
+                console.print(
+                    f"  [cyan]{reader_name:<22}[/] "
+                    f"[green]{result['mean_sec']:.3f}s[/] ± {result['stdev_sec']:.3f}s"
+                )
+            except Exception as e:
+                if fail_fast:
+                    raise
+                results[reader_name] = {"error": str(e)}
+                console.print(f"  [cyan]{reader_name:<22}[/] [red]ERROR: {e}[/]")
+            progress.advance(task)
 
         all_results[scenario.name] = results
 
@@ -784,14 +724,12 @@ def print_s3_comparison_table(all_results: dict):
         show_header=True,
     )
     table.add_column("Scenario", style="cyan", no_wrap=True)
-    table.add_column("open (local)", justify="right")
-    table.add_column("open (S3)", justify="right")
     table.add_column("scan (local)", justify="right")
     table.add_column("scan (S3)", justify="right")
 
     for scenario_name, results in all_results.items():
         row = [scenario_name]
-        for reader in ["jetliner_open_local", "jetliner_open_s3", "jetliner_scan_local", "jetliner_scan_s3"]:
+        for reader in ["jetliner_local", "jetliner_s3"]:
             if reader in results and "error" not in results[reader]:
                 r = results[reader]
                 row.append(f"[green]{r['mean_sec']:.3f}s[/] ± {r['stdev_sec']:.3f}s")
@@ -810,32 +748,16 @@ def print_s3_comparison_table(all_results: dict):
         show_header=True,
     )
     overhead_table.add_column("Scenario", style="cyan", no_wrap=True)
-    overhead_table.add_column("open() overhead", justify="right")
     overhead_table.add_column("scan() overhead", justify="right")
 
     for scenario_name, results in all_results.items():
         row = [scenario_name]
 
-        # open() overhead
-        if ("jetliner_open_local" in results and "error" not in results["jetliner_open_local"] and
-            "jetliner_open_s3" in results and "error" not in results["jetliner_open_s3"]):
-            local_time = results["jetliner_open_local"]["mean_sec"]
-            s3_time = results["jetliner_open_s3"]["mean_sec"]
-            overhead = s3_time / local_time
-            if overhead < 1.1:
-                row.append(f"[bold green]{overhead:.2f}x[/]")
-            elif overhead < 1.5:
-                row.append(f"[yellow]{overhead:.2f}x[/]")
-            else:
-                row.append(f"[red]{overhead:.2f}x[/]")
-        else:
-            row.append("-")
-
         # scan() overhead
-        if ("jetliner_scan_local" in results and "error" not in results["jetliner_scan_local"] and
-            "jetliner_scan_s3" in results and "error" not in results["jetliner_scan_s3"]):
-            local_time = results["jetliner_scan_local"]["mean_sec"]
-            s3_time = results["jetliner_scan_s3"]["mean_sec"]
+        if ("jetliner_local" in results and "error" not in results["jetliner_local"] and
+            "jetliner_s3" in results and "error" not in results["jetliner_s3"]):
+            local_time = results["jetliner_local"]["mean_sec"]
+            s3_time = results["jetliner_s3"]["mean_sec"]
             overhead = s3_time / local_time
             if overhead < 1.1:
                 row.append(f"[bold green]{overhead:.2f}x[/]")
@@ -888,11 +810,11 @@ def print_comparison_table(
 
     console.print(table)
 
-    # Speedup comparison table (relative to jetliner_scan)
-    if "jetliner_scan" in readers:
+    # Speedup comparison table (relative to jetliner)
+    if "jetliner" in readers:
         console.print()
         speedup_table = Table(
-            title="Speedup vs jetliner_scan (baseline)",
+            title="Speedup vs jetliner (baseline)",
             caption="[dim]< 1.0 = faster than baseline | > 1.0 = slower than baseline[/dim]",
             box=box.ROUNDED,
             show_header=True,
@@ -903,16 +825,16 @@ def print_comparison_table(
             speedup_table.add_column(reader, justify="right")
 
         for scenario_name, results in all_results.items():
-            if "jetliner_scan" not in results or "error" in results.get(
-                "jetliner_scan", {}
+            if "jetliner" not in results or "error" in results.get(
+                "jetliner", {}
             ):
                 continue
 
-            jetliner_time = results["jetliner_scan"]["mean_sec"]
+            jetliner_time = results["jetliner"]["mean_sec"]
             row = [scenario_name]
 
             for reader in readers:
-                if reader == "jetliner_scan":
+                if reader == "jetliner":
                     row.append("[bold]1.00x[/]")
                 elif reader in results and "error" not in results[reader]:
                     speedup = results[reader]["mean_sec"] / jetliner_time
@@ -935,10 +857,10 @@ def print_comparison_table(
         console.print(speedup_table)
 
     # Comparison with previous run (if provided)
-    if previous_results and "jetliner_scan" in readers:
+    if previous_results and "jetliner" in readers:
         console.print()
         prev_table = Table(
-            title="jetliner_scan: Current vs Previous Run",
+            title="jetliner: Current vs Previous Run",
             caption="[dim]> 1.0 = faster than previous | < 1.0 = slower than previous[/dim]",
             box=box.ROUNDED,
             show_header=True,
@@ -949,23 +871,23 @@ def print_comparison_table(
         prev_table.add_column("Change", justify="right")
 
         for scenario_name, results in all_results.items():
-            # Check if current run has jetliner_scan results
-            if "jetliner_scan" not in results or "error" in results.get(
-                "jetliner_scan", {}
+            # Check if current run has jetliner results
+            if "jetliner" not in results or "error" in results.get(
+                "jetliner", {}
             ):
                 continue
 
-            # Check if previous run has this scenario and jetliner_scan
+            # Check if previous run has this scenario and jetliner
             if scenario_name not in previous_results:
                 continue
             prev_scenario = previous_results[scenario_name]
-            if "jetliner_scan" not in prev_scenario or "error" in prev_scenario.get(
-                "jetliner_scan", {}
+            if "jetliner" not in prev_scenario or "error" in prev_scenario.get(
+                "jetliner", {}
             ):
                 continue
 
-            current_time = results["jetliner_scan"]["mean_sec"]
-            previous_time = prev_scenario["jetliner_scan"]["mean_sec"]
+            current_time = results["jetliner"]["mean_sec"]
+            previous_time = prev_scenario["jetliner"]["mean_sec"]
             speedup = previous_time / current_time
 
             # Format the change

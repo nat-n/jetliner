@@ -335,7 +335,7 @@ class TestOpenErrors:
     def test_file_not_found_raises_file_not_found_error(self, nonexistent_path):
         """Test that missing file raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
-            with jetliner.open(nonexistent_path) as reader:
+            with jetliner.AvroReader(nonexistent_path) as reader:
                 list(reader)
 
     def test_invalid_magic_raises_parse_error(self, get_test_data_path):
@@ -343,7 +343,7 @@ class TestOpenErrors:
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         err = exc_info.value
@@ -359,7 +359,7 @@ class TestOpenErrors:
         """
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, projected_columns=["nonexistent_column"]) as reader:
+        with jetliner.AvroReader(path, projected_columns=["nonexistent_column"]) as reader:
             dfs = list(reader)
             # The reader should complete without error
             # but may return empty DataFrames or DataFrames without the column
@@ -371,7 +371,7 @@ class TestOpenErrors:
         A zero-byte file cannot be read - there's no header to parse.
         """
         with pytest.raises(jetliner.SourceError) as exc_info:
-            with jetliner.open(empty_zero_byte_file) as reader:
+            with jetliner.AvroReader(empty_zero_byte_file) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()
@@ -382,7 +382,7 @@ class TestOpenErrors:
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
         with pytest.raises(jetliner.CodecError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         err = exc_info.value
@@ -579,7 +579,7 @@ class TestUnknownCodecErrors:
         file_path.write_bytes(create_avro_with_unknown_codec(codec_name))
 
         with pytest.raises(jetliner.CodecError) as exc_info:
-            with jetliner.open(str(file_path)) as reader:
+            with jetliner.AvroReader(str(file_path)) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()
@@ -633,7 +633,7 @@ class TestComplexUnionErrors:
     def test_open_complex_union_raises_schema_error(self, complex_union_file):
         """Test that open() raises SchemaError for complex union."""
         with pytest.raises(jetliner.SchemaError) as exc_info:
-            with jetliner.open(complex_union_file) as reader:
+            with jetliner.AvroReader(complex_union_file) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()
@@ -670,7 +670,7 @@ class TestNonRecordSchemaErrors:
         path = get_test_data_path("fastavro/array-toplevel.avro")
 
         with pytest.raises(jetliner.SchemaError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()

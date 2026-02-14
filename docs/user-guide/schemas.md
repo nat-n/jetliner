@@ -6,7 +6,7 @@ Jetliner provides multiple ways to inspect Avro schemas and understand how they 
 
 ### From an Open Reader
 
-The `open()` API provides schema access before reading data:
+The `AvroReader` API provides schema access before reading data:
 
 ```python
 import jetliner

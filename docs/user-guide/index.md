@@ -10,7 +10,7 @@ Jetliner provides three APIs for reading Avro files:
 | ------------- | --------- | ------------------------------------ |
 | `scan_avro()` | LazyFrame | Query optimization, most use cases   |
 | `read_avro()` | DataFrame | Eager loading with column selection  |
-| `open()`      | Iterator  | Streaming control, progress tracking |
+| `AvroReader`  | Iterator  | Streaming control, progress tracking |
 
 All APIs share the same high-performance Rust core and support local files and S3.
 

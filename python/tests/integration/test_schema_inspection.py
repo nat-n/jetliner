@@ -18,7 +18,7 @@ class TestSchemaInspection:
         """Test schema JSON extraction from weather file."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             schema_json = reader.schema
 
             assert isinstance(schema_json, str)
@@ -31,7 +31,7 @@ class TestSchemaInspection:
         """Test schema dict extraction from weather file."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             schema_dict = reader.schema_dict
 
             assert isinstance(schema_dict, dict)

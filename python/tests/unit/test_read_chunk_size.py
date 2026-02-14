@@ -23,7 +23,7 @@ class TestReadChunkSizeParameter:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Should not raise - parameter is accepted
-        with jetliner.open(path, read_chunk_size=1024 * 1024) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=1024 * 1024) as reader:
             dfs = list(reader)
             assert len(dfs) > 0
 
@@ -40,7 +40,7 @@ class TestReadChunkSizeParameter:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Default should auto-select appropriate chunk size
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0
 
@@ -56,7 +56,7 @@ class TestReadChunkSizeParameter:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Very small chunk size - should still work, just more reads
-        with jetliner.open(path, read_chunk_size=4096) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=4096) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
             assert df.height > 0
@@ -66,7 +66,7 @@ class TestReadChunkSizeParameter:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Large chunk size - should read entire file in one or two reads
-        with jetliner.open(path, read_chunk_size=16 * 1024 * 1024) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=16 * 1024 * 1024) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
             assert df.height > 0
@@ -76,11 +76,11 @@ class TestReadChunkSizeParameter:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Read with small chunk size
-        with jetliner.open(path, read_chunk_size=4096) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=4096) as reader:
             df_small = pl.concat(list(reader))
 
         # Read with large chunk size
-        with jetliner.open(path, read_chunk_size=4 * 1024 * 1024) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=4 * 1024 * 1024) as reader:
             df_large = pl.concat(list(reader))
 
         # Data should be identical
@@ -107,7 +107,7 @@ class TestReadChunkSizeWithMultiBlock:
         path = get_test_data_path("large/weather-large.avro")
 
         # Small chunks - many I/O operations
-        with jetliner.open(path, read_chunk_size=8192) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=8192) as reader:
             total_rows = sum(df.height for df in reader)
             assert total_rows == 10000  # weather-large has 10K records
 
@@ -116,7 +116,7 @@ class TestReadChunkSizeWithMultiBlock:
         path = get_test_data_path("large/weather-large.avro")
 
         # Large chunks - fewer I/O operations
-        with jetliner.open(path, read_chunk_size=4 * 1024 * 1024) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=4 * 1024 * 1024) as reader:
             total_rows = sum(df.height for df in reader)
             assert total_rows == 10000
 
@@ -141,7 +141,7 @@ class TestReadChunkSizeEdgeCases:
 
         # Minimum practical chunk size - must be large enough for header + schema
         # The weather.avro header is ~500 bytes, use 1KB to be safe
-        with jetliner.open(path, read_chunk_size=1024) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=1024) as reader:
             dfs = list(reader)
             assert len(dfs) > 0
 
@@ -152,7 +152,7 @@ class TestReadChunkSizeEdgeCases:
         path = get_test_data_path("apache-avro/weather.avro")
         file_size = os.path.getsize(path)
 
-        with jetliner.open(path, read_chunk_size=file_size) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=file_size) as reader:
             dfs = list(reader)
             assert len(dfs) > 0
 
@@ -161,6 +161,6 @@ class TestReadChunkSizeEdgeCases:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Chunk size much larger than file - should read entire file in one go
-        with jetliner.open(path, read_chunk_size=100 * 1024 * 1024) as reader:
+        with jetliner.AvroReader(path, read_chunk_size=100 * 1024 * 1024) as reader:
             dfs = list(reader)
             assert len(dfs) > 0

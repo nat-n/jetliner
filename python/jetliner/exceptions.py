@@ -487,7 +487,7 @@ class ConfigurationError(JetlinerError, builtins.ValueError):
     idiomatic Python exception handling:
 
         try:
-            reader = jetliner.open("file.avro", batch_size=-1)
+            reader = jetliner.AvroReader("file.avro", batch_size=-1)
         except ValueError:
             print("Invalid configuration!")
 

@@ -43,7 +43,7 @@ class TestEdgeCaseValues:
         """Test that edge case file can be read without errors."""
         path = get_test_data_path("edge-cases/edge-cases.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 

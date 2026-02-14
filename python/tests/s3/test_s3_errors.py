@@ -75,7 +75,7 @@ class TestNonExistentKeyError:
         non_existent_uri = f"s3://{mock_s3_minio.bucket}/missing-file.avro"
 
         with pytest.raises(jetliner.SourceError) as exc_info:
-            with jetliner.open(
+            with jetliner.AvroReader(
                 non_existent_uri, storage_options=storage_options
             ) as reader:
                 list(reader)
@@ -149,7 +149,7 @@ class TestNonExistentBucketError:
         non_existent_bucket_uri = "s3://bucket-that-does-not-exist-abc789/data.avro"
 
         with pytest.raises(jetliner.SourceError) as exc_info:
-            with jetliner.open(
+            with jetliner.AvroReader(
                 non_existent_bucket_uri, storage_options=storage_options
             ) as reader:
                 list(reader)
@@ -201,7 +201,7 @@ class TestInvalidS3UriError:
         invalid_uri = "s3://"
 
         with pytest.raises((jetliner.SourceError, ValueError)):
-            with jetliner.open(invalid_uri) as reader:
+            with jetliner.AvroReader(invalid_uri) as reader:
                 list(reader)
 
     def test_open_invalid_s3_uri_empty_bucket(self):
@@ -213,7 +213,7 @@ class TestInvalidS3UriError:
         invalid_uri = "s3:///key-without-bucket.avro"
 
         with pytest.raises((jetliner.SourceError, ValueError)):
-            with jetliner.open(invalid_uri) as reader:
+            with jetliner.AvroReader(invalid_uri) as reader:
                 list(reader)
 
     def test_scan_invalid_s3_uri_malformed_scheme(self):

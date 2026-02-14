@@ -29,7 +29,7 @@ class TestIgnoreErrorsFalseFailure:
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify descriptive error message
@@ -50,7 +50,7 @@ class TestIgnoreErrorsFalseFailure:
         # With ignore_errors=False, truncated file should raise an error
         # The error could be ParseError (unexpected EOF) or another error type
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 # Consume all batches - error should occur during iteration
                 list(reader)
 
@@ -68,7 +68,7 @@ class TestIgnoreErrorsFalseFailure:
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify descriptive error message mentions sync marker
@@ -87,7 +87,7 @@ class TestIgnoreErrorsFalseFailure:
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
         with pytest.raises((jetliner.CodecError, jetliner.ParseError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify descriptive error message mentions decompression or codec
@@ -106,7 +106,7 @@ class TestIgnoreErrorsFalseFailure:
         path = get_test_data_path("corrupted/invalid-record-data.avro")
 
         with pytest.raises((jetliner.DecodeError, jetliner.ParseError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify we got an error
@@ -123,7 +123,7 @@ class TestIgnoreErrorsFalseFailure:
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Verify we got an error
@@ -143,7 +143,7 @@ class TestIgnoreErrorsFalseErrorMessages:
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value)
@@ -164,7 +164,7 @@ class TestIgnoreErrorsFalseErrorMessages:
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value)
@@ -182,7 +182,7 @@ class TestIgnoreErrorsFalseErrorMessages:
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
         with pytest.raises((jetliner.CodecError, jetliner.ParseError, jetliner.JetlinerError)) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value)
@@ -204,14 +204,14 @@ class TestIgnoreErrorsModeComparison:
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
         # ignore_errors=True (skip mode) should recover some data
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
             skip_mode_rows = sum(df.height for df in dfs) if dfs else 0
             skip_mode_errors = reader.error_count
 
         # ignore_errors=False (strict mode) should fail
         with pytest.raises((jetliner.ParseError, jetliner.DecodeError, jetliner.JetlinerError)):
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Skip mode should have recovered some data and tracked errors
@@ -228,13 +228,13 @@ class TestIgnoreErrorsModeComparison:
         path = get_test_data_path("apache-avro/weather.avro")
 
         # Read with ignore_errors=True (skip mode)
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             skip_dfs = list(reader)
             skip_rows = sum(df.height for df in skip_dfs)
             skip_errors = reader.error_count
 
         # Read with ignore_errors=False (strict mode)
-        with jetliner.open(path, ignore_errors=False) as reader:
+        with jetliner.AvroReader(path, ignore_errors=False) as reader:
             strict_dfs = list(reader)
             strict_rows = sum(df.height for df in strict_dfs)
 

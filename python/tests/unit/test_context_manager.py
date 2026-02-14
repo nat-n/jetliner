@@ -18,7 +18,7 @@ class TestContextManager:
 
     def test_context_manager_enter_exit(self, temp_avro_file):
         """Test that context manager protocol works correctly."""
-        with jetliner.open(temp_avro_file) as reader:
+        with jetliner.AvroReader(temp_avro_file) as reader:
             assert reader is not None
             # Should be able to iterate
             dfs = list(reader)
@@ -26,7 +26,7 @@ class TestContextManager:
 
     def test_context_manager_releases_resources(self, temp_avro_file):
         """Test that context manager releases resources on exit."""
-        with jetliner.open(temp_avro_file) as reader:
+        with jetliner.AvroReader(temp_avro_file) as reader:
             for _ in reader:
                 pass
 
@@ -36,7 +36,7 @@ class TestContextManager:
     def test_context_manager_on_exception(self, temp_avro_file):
         """Test that context manager releases resources even on exception."""
         try:
-            with jetliner.open(temp_avro_file) as reader:
+            with jetliner.AvroReader(temp_avro_file) as reader:
                 for df in reader:
                     raise ValueError("Test exception")
         except ValueError:

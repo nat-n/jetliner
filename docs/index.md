@@ -62,7 +62,7 @@ print(df)
 df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
 ```
 
-## Three APIs: scan_avro() vs read_avro() vs open()
+## Three APIs: scan_avro() vs read_avro() vs AvroReader
 
 Jetliner provides three complementary APIs for reading Avro files:
 
@@ -114,7 +114,7 @@ df = jetliner.read_avro("data/*.avro")
 - When you need a DataFrame immediately
 - Multi-file reading with schema validation
 
-### open() - Iterator for Streaming Control
+### AvroReader - Iterator for Streaming Control
 
 Use when you need fine-grained control over batch processing:
 

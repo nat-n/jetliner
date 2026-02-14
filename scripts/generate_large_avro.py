@@ -174,7 +174,7 @@ def main():
 
         total_rows = 0
         batch_count = 0
-        with jetliner.open(str(output_path)) as reader:
+        with jetliner.AvroReader(str(output_path)) as reader:
             for df in reader:
                 total_rows += len(df)
                 batch_count += 1

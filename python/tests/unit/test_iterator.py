@@ -23,27 +23,27 @@ class TestIteratorProtocol:
 
     def test_open_returns_iterator(self, temp_avro_file):
         """Test that open() returns an iterable object."""
-        reader = jetliner.open(temp_avro_file)
+        reader = jetliner.AvroReader(temp_avro_file)
         assert hasattr(reader, "__iter__")
         assert hasattr(reader, "__next__")
 
     def test_iteration_yields_dataframes(self, temp_avro_file):
         """Test that iteration yields Polars DataFrames."""
-        reader = jetliner.open(temp_avro_file)
+        reader = jetliner.AvroReader(temp_avro_file)
         for df in reader:
             assert isinstance(df, pl.DataFrame)
 
     def test_iteration_reads_all_records(self, temp_avro_file):
         """Test that iteration reads all records from the file."""
         total_rows = 0
-        for df in jetliner.open(temp_avro_file):
+        for df in jetliner.AvroReader(temp_avro_file):
             total_rows += df.height
 
         assert total_rows == 5  # 5 records in fixture
 
     def test_iteration_correct_data(self, temp_avro_file):
         """Test that iteration returns correct data values."""
-        dfs = list(jetliner.open(temp_avro_file))
+        dfs = list(jetliner.AvroReader(temp_avro_file))
         df = pl.concat(dfs)
 
         assert df.height == 5
@@ -60,19 +60,19 @@ class TestIteratorProtocol:
     def test_iteration_multiple_blocks(self, temp_multi_block_file):
         """Test iteration over file with multiple blocks."""
         total_rows = 0
-        for df in jetliner.open(temp_multi_block_file):
+        for df in jetliner.AvroReader(temp_multi_block_file):
             total_rows += df.height
 
         assert total_rows == 7  # 2 + 2 + 3 records
 
     def test_iteration_empty_file(self, temp_empty_avro_file):
         """Test iteration over empty file yields no DataFrames."""
-        dfs = list(jetliner.open(temp_empty_avro_file))
+        dfs = list(jetliner.AvroReader(temp_empty_avro_file))
         assert len(dfs) == 0
 
     def test_resources_released_after_iteration(self, temp_avro_file):
         """Test that resources are released after iteration completes."""
-        reader = jetliner.open(temp_avro_file)
+        reader = jetliner.AvroReader(temp_avro_file)
 
         # Consume all data
         for _ in reader:
@@ -88,19 +88,19 @@ class TestPathObjectSupport:
     def test_open_accepts_path_object(self, temp_avro_file):
         """Test that open() accepts pathlib.Path objects."""
         path = Path(temp_avro_file)
-        reader = jetliner.open(path)
+        reader = jetliner.AvroReader(path)
         assert hasattr(reader, "__iter__")
         assert hasattr(reader, "__next__")
 
     def test_open_path_reads_same_data_as_string(self, temp_avro_file):
         """Test that Path and string produce identical results."""
         # Read with string path
-        dfs_str = list(jetliner.open(temp_avro_file))
+        dfs_str = list(jetliner.AvroReader(temp_avro_file))
         df_str = pl.concat(dfs_str)
 
         # Read with Path object
         path = Path(temp_avro_file)
-        dfs_path = list(jetliner.open(path))
+        dfs_path = list(jetliner.AvroReader(path))
         df_path = pl.concat(dfs_path)
 
         # Results should be identical
@@ -110,7 +110,7 @@ class TestPathObjectSupport:
         """Test that Path works with context manager."""
         path = Path(temp_avro_file)
         total_rows = 0
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             for df in reader:
                 total_rows += df.height
         assert total_rows == 5
@@ -118,7 +118,7 @@ class TestPathObjectSupport:
     def test_open_path_with_options(self, temp_avro_file):
         """Test that Path works with additional options."""
         path = Path(temp_avro_file)
-        reader = jetliner.open(
+        reader = jetliner.AvroReader(
             path,
             batch_size=50_000,
             buffer_blocks=2,
@@ -186,7 +186,7 @@ class TestErrorFilepathTrackingAvroReader:
         corrupt_file = tmp_path / "corrupt.avro"
         create_corrupt_avro_file(corrupt_file)
 
-        with jetliner.open(str(corrupt_file), ignore_errors=True) as reader:
+        with jetliner.AvroReader(str(corrupt_file), ignore_errors=True) as reader:
             list(reader)  # Consume the iterator
 
             assert reader.error_count > 0
@@ -199,7 +199,7 @@ class TestErrorFilepathTrackingAvroReader:
         corrupt_file = tmp_path / "corrupt.avro"
         create_corrupt_avro_file(corrupt_file)
 
-        with jetliner.open(str(corrupt_file), ignore_errors=True) as reader:
+        with jetliner.AvroReader(str(corrupt_file), ignore_errors=True) as reader:
             list(reader)
 
             assert reader.error_count > 0
@@ -212,7 +212,7 @@ class TestErrorFilepathTrackingAvroReader:
         corrupt_file = tmp_path / "corrupt.avro"
         create_corrupt_avro_file(corrupt_file)
 
-        with jetliner.open(str(corrupt_file), ignore_errors=True) as reader:
+        with jetliner.AvroReader(str(corrupt_file), ignore_errors=True) as reader:
             list(reader)
 
             assert reader.error_count > 0
@@ -227,7 +227,7 @@ class TestErrorFilepathTrackingAvroReader:
         corrupt_file = tmp_path / "corrupt.avro"
         create_corrupt_avro_file(corrupt_file)
 
-        with jetliner.open(str(corrupt_file), ignore_errors=True) as reader:
+        with jetliner.AvroReader(str(corrupt_file), ignore_errors=True) as reader:
             list(reader)
 
             assert reader.error_count > 0

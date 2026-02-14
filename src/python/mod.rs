@@ -4,7 +4,7 @@
 //! enabling Python users to stream Avro data into Polars DataFrames.
 //!
 //! # Classes
-//! - `AvroReader`: User-facing class for the `open()` API with context manager support
+//! - `AvroReader`: User-facing class for streaming iteration with context manager support
 //! - `BadBlockError`: Structured error information for skip mode reading
 //!
 //! # Exception Types
@@ -20,7 +20,6 @@
 //! - `scan_avro`: Scan Avro files returning a LazyFrame
 //! - `read_avro`: Read Avro files returning a DataFrame
 //! - `read_avro_schema`: Extract Polars schema from an Avro file
-//! - `open`: Open an Avro file for streaming iteration
 //!
 //! # Requirements
 //! - 1.1: Expose `scan_avro()` function that returns `pl.LazyFrame`
@@ -46,7 +45,7 @@ pub mod errors;
 mod reader;
 pub mod types;
 
-pub use reader::{open, AvroReader, MultiAvroReader, PyBadBlockError};
+pub use reader::{AvroReader, MultiAvroReader, PyBadBlockError};
 
 // Note: Exception types (JetlinerError, DecodeError, etc.) are now defined
 // in Python (jetliner.exceptions). The errors module provides mapping functions

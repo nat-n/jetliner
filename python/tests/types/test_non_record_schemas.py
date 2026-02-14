@@ -45,7 +45,7 @@ class TestNonRecordTopLevelSchemas:
         """
         path = get_test_data_path("fastavro/array-toplevel.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -78,7 +78,7 @@ class TestNonRecordTopLevelSchemas:
         """
         path = get_test_data_path("fastavro/map-toplevel.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -103,7 +103,7 @@ class TestNonRecordTopLevelSchemas:
         """
         path = get_test_data_path("fastavro/int-toplevel.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -131,7 +131,7 @@ class TestNonRecordTopLevelSchemas:
         """
         path = get_test_data_path("fastavro/string-toplevel.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -177,9 +177,9 @@ class TestNonRecordTopLevelSchemas:
         """Test that array top-level gives a helpful error message."""
         path = get_test_data_path("fastavro/array-toplevel.avro")
 
-        # Test with open() API - raises SchemaError directly
+        # Test with AvroReader API - raises SchemaError directly
         with pytest.raises(jetliner.SchemaError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()
@@ -202,9 +202,9 @@ class TestNonRecordTopLevelSchemas:
         """Test that map top-level gives a helpful error message."""
         path = get_test_data_path("fastavro/map-toplevel.avro")
 
-        # Test with open() API - raises SchemaError directly
+        # Test with AvroReader API - raises SchemaError directly
         with pytest.raises(jetliner.SchemaError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()

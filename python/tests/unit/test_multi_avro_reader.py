@@ -185,7 +185,7 @@ class TestMultiAvroReaderBasic:
         # Read each file individually
         individual_totals = []
         for f in temp_avro_files:
-            total = sum(df.height for df in jetliner.open(f))
+            total = sum(df.height for df in jetliner.AvroReader(f))
             individual_totals.append(total)
 
         # Read all files together

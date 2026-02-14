@@ -27,15 +27,15 @@ class TestStreamingBehavior:
         path = get_test_data_path("large/weather-large.avro")
 
         # Small batch size
-        with jetliner.open(path, batch_size=100) as reader:
+        with jetliner.AvroReader(path, batch_size=100) as reader:
             small_batches = list(reader)
 
         # Medium batch size
-        with jetliner.open(path, batch_size=1000) as reader:
+        with jetliner.AvroReader(path, batch_size=1000) as reader:
             medium_batches = list(reader)
 
         # Large batch size
-        with jetliner.open(path, batch_size=10000) as reader:
+        with jetliner.AvroReader(path, batch_size=10000) as reader:
             large_batches = list(reader)
 
         # Verify batch counts are inversely related to batch size
@@ -64,7 +64,7 @@ class TestStreamingBehavior:
         bulk_df = jetliner.scan_avro(path).collect()
 
         # Streaming read with small batches
-        with jetliner.open(path, batch_size=500) as reader:
+        with jetliner.AvroReader(path, batch_size=500) as reader:
             streaming_dfs = list(reader)
 
         streaming_df = pl.concat(streaming_dfs)
@@ -79,7 +79,7 @@ class TestStreamingBehavior:
         path = get_test_data_path("large/weather-large.avro")
 
         # Open and partially consume
-        with jetliner.open(path, batch_size=1000) as reader:
+        with jetliner.AvroReader(path, batch_size=1000) as reader:
             # Read just a few batches
             for i, batch in enumerate(reader):
                 if i >= 3:
@@ -88,6 +88,6 @@ class TestStreamingBehavior:
 
         # Context manager should clean up - no resource leak
         # Opening again should work fine
-        with jetliner.open(path, batch_size=1000) as reader:
+        with jetliner.AvroReader(path, batch_size=1000) as reader:
             batches = list(reader)
             assert len(batches) > 0

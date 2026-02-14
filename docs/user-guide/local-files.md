@@ -41,9 +41,9 @@ df = jetliner.read_avro("data.avro", columns=[0, 2, 5])
 df = jetliner.read_avro("data.avro", n_rows=1000)
 ```
 
-### Using open() for Streaming
+### Using AvroReader for Streaming
 
-The `open()` function returns an iterator for batch-by-batch processing:
+The `AvroReader` class returns an iterator for batch-by-batch processing:
 
 ```python
 import jetliner
@@ -124,9 +124,9 @@ df = jetliner.read_avro(["file1.avro", "file2.avro"])
 # SchemaError: Schema mismatch between 'file1.avro' and 'file2.avro'. All files must have identical schemas.
 ```
 
-## Batch Processing with open()
+## Batch Processing with AvroReader
 
-The `open()` API gives you control over batch processing:
+The `AvroReader` API gives you control over batch processing:
 
 ```python
 import jetliner
@@ -213,7 +213,7 @@ except jetliner.SchemaError as e:
 1. **Use scan_avro() for queries**: Enables projection and predicate pushdown
 2. **Use read_avro() with columns**: For eager loading with column selection
 3. **Adjust buffer settings**: For very large files, tune `buffer_blocks` and `buffer_bytes`
-4. **Process in batches**: Use `open()` when memory is constrained
+4. **Process in batches**: Use `AvroReader` when memory is constrained
 5. **Select only needed columns**: Reduces I/O and memory usage
 
 ```python

@@ -137,8 +137,8 @@ class TestEnumType:
         assert df["priority"].dtype == pl.Enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
 
     def test_enum_dtype_open_api(self, enum_avro_file):
-        """Test enum is read as Enum type via open() API (not just scan())."""
-        with jetliner.open(enum_avro_file) as reader:
+        """Test enum is read as Enum type via AvroReader API (not just scan())."""
+        with jetliner.AvroReader(enum_avro_file) as reader:
             dfs = list(reader)
         df = pl.concat(dfs)
 
@@ -312,7 +312,7 @@ class TestEnumEdgeCases:
 
         try:
             # Use small batch size to force multiple batches
-            with jetliner.open(temp_path, batch_size=1000) as reader:
+            with jetliner.AvroReader(temp_path, batch_size=1000) as reader:
                 dfs = list(reader)
 
             # Should have multiple batches
@@ -682,7 +682,7 @@ class TestEnumEdgeCases:
 
         try:
             # Use small batch size to force multiple batches
-            with jetliner.open(temp_path, batch_size=500) as reader:
+            with jetliner.AvroReader(temp_path, batch_size=500) as reader:
                 dfs = list(reader)
 
             assert len(dfs) >= 2  # Should have multiple batches
@@ -992,7 +992,7 @@ class TestFixedEdgeCases:
             temp_path = f.name
 
         try:
-            with jetliner.open(temp_path) as reader:
+            with jetliner.AvroReader(temp_path) as reader:
                 dfs = list(reader)
             df = pl.concat(dfs)
 
@@ -1102,7 +1102,7 @@ class TestFixedEdgeCases:
 
         try:
             # Use small batch size to force multiple batches
-            with jetliner.open(temp_path, batch_size=1000) as reader:
+            with jetliner.AvroReader(temp_path, batch_size=1000) as reader:
                 dfs = list(reader)
 
             # Should have multiple batches

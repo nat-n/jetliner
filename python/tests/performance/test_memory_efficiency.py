@@ -40,7 +40,7 @@ class TestMemoryEfficiency:
         total_rows = 0
         batch_count = 0
 
-        with jetliner.open(path, batch_size=batch_size) as reader:
+        with jetliner.AvroReader(path, batch_size=batch_size) as reader:
             for df in reader:
                 batch_count += 1
                 rows = df.height
@@ -75,7 +75,7 @@ class TestMemoryEfficiency:
         # Count batches with small batch size
         small_batch_count = 0
         small_total = 0
-        with jetliner.open(path, batch_size=100) as reader:
+        with jetliner.AvroReader(path, batch_size=100) as reader:
             for df in reader:
                 small_batch_count += 1
                 small_total += df.height
@@ -83,7 +83,7 @@ class TestMemoryEfficiency:
         # Count batches with large batch size
         large_batch_count = 0
         large_total = 0
-        with jetliner.open(path, batch_size=10000) as reader:
+        with jetliner.AvroReader(path, batch_size=10000) as reader:
             for df in reader:
                 large_batch_count += 1
                 large_total += df.height
@@ -111,7 +111,7 @@ class TestMemoryEfficiency:
 
         # Test with minimal buffer config
         total_minimal = 0
-        with jetliner.open(
+        with jetliner.AvroReader(
             path,
             batch_size=1000,
             buffer_blocks=1,
@@ -122,7 +122,7 @@ class TestMemoryEfficiency:
 
         # Test with larger buffer config
         total_large = 0
-        with jetliner.open(
+        with jetliner.AvroReader(
             path,
             batch_size=1000,
             buffer_blocks=8,
@@ -153,7 +153,7 @@ class TestMemoryEfficiency:
         # Read the file multiple times
         for _ in range(3):
             total = 0
-            with jetliner.open(path, batch_size=1000) as reader:
+            with jetliner.AvroReader(path, batch_size=1000) as reader:
                 for df in reader:
                     total += df.height
             totals.append(total)
@@ -179,7 +179,7 @@ class TestMemoryEfficiency:
         cumulative_rows = []
         running_total = 0
 
-        with jetliner.open(path, batch_size=500) as reader:
+        with jetliner.AvroReader(path, batch_size=500) as reader:
             for df in reader:
                 rows = df.height
                 batch_sizes.append(rows)
@@ -270,7 +270,7 @@ class TestMemoryEfficiency:
         # Simulate processing: compute stats per batch
         batch_stats = []
 
-        with jetliner.open(path, batch_size=500) as reader:
+        with jetliner.AvroReader(path, batch_size=500) as reader:
             for df in reader:
                 # Process this batch
                 stats = {

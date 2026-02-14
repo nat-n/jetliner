@@ -15,14 +15,14 @@ class TestSchemaAccess:
 
     def test_schema_property_returns_json(self, temp_avro_file):
         """Test that schema property returns JSON string."""
-        with jetliner.open(temp_avro_file) as reader:
+        with jetliner.AvroReader(temp_avro_file) as reader:
             schema = reader.schema
             assert isinstance(schema, str)
             assert "TestRecord" in schema
 
     def test_schema_dict_property(self, temp_avro_file):
         """Test that schema_dict property returns Python dict."""
-        with jetliner.open(temp_avro_file) as reader:
+        with jetliner.AvroReader(temp_avro_file) as reader:
             schema_dict = reader.schema_dict
             assert isinstance(schema_dict, dict)
             assert schema_dict.get("name") == "TestRecord"

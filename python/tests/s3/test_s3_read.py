@@ -115,7 +115,7 @@ class TestMinioOpenOperations:
         """Test that open() can read an Avro file from mock S3.
 
         Uploads weather.avro to MinIO mock S3 and verifies that
-        jetliner.open() can iterate batches via s3:// URI.
+        jetliner.AvroReader() can iterate batches via s3:// URI.
         """
         storage_options = {
             "endpoint": mock_s3_minio.endpoint_url,
@@ -123,7 +123,7 @@ class TestMinioOpenOperations:
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             batches = list(reader)
@@ -152,7 +152,7 @@ class TestMinioOpenOperations:
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             schema = reader.schema
@@ -176,7 +176,7 @@ class TestMinioOpenOperations:
         }
 
         # Should work without errors
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             # Iterate through batches
@@ -243,12 +243,12 @@ class TestLocalS3Equivalence:
         }
 
         # Read from local
-        with jetliner.open(local_path) as reader:
+        with jetliner.AvroReader(local_path) as reader:
             local_batches = list(reader)
         local_df = pl.concat(local_batches) if local_batches else pl.DataFrame()
 
         # Read from S3
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             s3_batches = list(reader)
@@ -353,11 +353,11 @@ class TestLocalS3EquivalenceProperty:
         assert local_df.equals(s3_df), "DataFrames are not equal"
 
         # Also verify open() produces identical results
-        with jetliner.open(str(local_path)) as reader:
+        with jetliner.AvroReader(str(local_path)) as reader:
             local_batches = list(reader)
         local_open_df = pl.concat(local_batches) if local_batches else pl.DataFrame()
 
-        with jetliner.open(s3_uri, storage_options=storage_options) as reader:
+        with jetliner.AvroReader(s3_uri, storage_options=storage_options) as reader:
             s3_batches = list(reader)
         s3_open_df = pl.concat(s3_batches) if s3_batches else pl.DataFrame()
 

@@ -15,9 +15,9 @@ Jetliner reads Avro files block-by-block rather than loading entire files into m
 
 This streaming architecture enables processing files larger than available RAM.
 
-## Using open() for Streaming Control
+## Using AvroReader for Streaming Control
 
-The `open()` API gives you direct control over batch processing:
+The `AvroReader` API gives you direct control over batch processing:
 
 ```python
 import jetliner
@@ -189,7 +189,7 @@ import polars as pl
 df = jetliner.scan_avro("large_file.avro").collect()
 ```
 
-For truly large results, use `open()` or write results incrementally:
+For truly large results, use `AvroReader` or write results incrementally:
 
 ```python
 import jetliner
@@ -252,7 +252,7 @@ print(f"Total matching rows: {sum(results)}")
 
 ## Best Practices
 
-1. **Use open() for large files**: When you can't fit results in memory
+1. **Use AvroReader for large files**: When you can't fit results in memory
 2. **Process incrementally**: Aggregate or write results as you go
 3. **Tune buffer settings**: Match your memory constraints
 4. **Monitor memory**: Use tools like `psutil` to track usage

@@ -46,7 +46,7 @@ class TestEdgeCasesAndRobustness:
         def read_file(thread_id):
             """Read the file and return the DataFrame."""
             try:
-                with jetliner.open(path) as reader:
+                with jetliner.AvroReader(path) as reader:
                     dfs = list(reader)
                     df = pl.concat(dfs) if dfs else pl.DataFrame()
                     return (thread_id, df)
@@ -77,7 +77,7 @@ class TestEdgeCasesAndRobustness:
         """Test behavior when trying to reuse exhausted reader."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             # Exhaust the reader
             dfs = list(reader)
             assert len(dfs) > 0

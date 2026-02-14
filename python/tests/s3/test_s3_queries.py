@@ -433,7 +433,7 @@ class TestS3BatchIteration:
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             batches = list(reader)
@@ -462,12 +462,12 @@ class TestS3BatchIteration:
         }
 
         # Read batches from local
-        with jetliner.open(local_path) as reader:
+        with jetliner.AvroReader(local_path) as reader:
             local_batches = list(reader)
         local_df = pl.concat(local_batches) if local_batches else pl.DataFrame()
 
         # Read batches from S3
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             s3_batches = list(reader)
@@ -619,11 +619,11 @@ class TestQueryOperationEquivalenceProperty:
         )
 
         # Test 5: Batch iteration equivalence (Requirement 4.4)
-        with jetliner.open(str(local_path)) as reader:
+        with jetliner.AvroReader(str(local_path)) as reader:
             local_batches = list(reader)
         local_open_df = pl.concat(local_batches) if local_batches else pl.DataFrame()
 
-        with jetliner.open(s3_uri, storage_options=storage_options) as reader:
+        with jetliner.AvroReader(s3_uri, storage_options=storage_options) as reader:
             s3_batches = list(reader)
         s3_open_df = pl.concat(s3_batches) if s3_batches else pl.DataFrame()
 

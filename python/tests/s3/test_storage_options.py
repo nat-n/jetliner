@@ -34,7 +34,7 @@ class TestMinioEndpoint:
     def test_open_with_minio_endpoint(
         self, mock_s3_minio, s3_weather_file_minio, minio_container
     ):
-        """Test jetliner.open() with MinIO endpoint in storage_options.
+        """Test jetliner.AvroReader() with MinIO endpoint in storage_options.
 
         Verifies that we can read an Avro file from MinIO by providing
         the endpoint in storage_options.
@@ -45,7 +45,7 @@ class TestMinioEndpoint:
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             dfs = list(reader)
@@ -108,7 +108,7 @@ class TestCredentialOverride:
                 "aws_secret_access_key": minio_container.secret_key,
             }
 
-            with jetliner.open(
+            with jetliner.AvroReader(
                 s3_weather_file_minio, storage_options=storage_options
             ) as reader:
                 dfs = list(reader)
@@ -129,7 +129,7 @@ class TestCredentialOverride:
             "region": "us-east-1",
         }
 
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             dfs = list(reader)
@@ -169,7 +169,7 @@ class TestStorageOptionsPrecedence:
             }
 
             # This should succeed because storage_options takes precedence
-            with jetliner.open(
+            with jetliner.AvroReader(
                 s3_weather_file_minio, storage_options=storage_options
             ) as reader:
                 dfs = list(reader)
@@ -201,7 +201,7 @@ class TestStorageOptionsPrecedence:
             }
 
             # This should succeed because storage_options takes precedence
-            with jetliner.open(
+            with jetliner.AvroReader(
                 s3_weather_file_minio, storage_options=storage_options
             ) as reader:
                 dfs = list(reader)
@@ -233,7 +233,7 @@ class TestS3CompatibleServiceIntegration:
             "aws_secret_access_key": minio_container.secret_key,
         }
 
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_weather_file_minio, storage_options=storage_options
         ) as reader:
             # Verify schema is accessible
@@ -308,7 +308,7 @@ class TestS3CompatibleServiceIntegration:
         }
 
         with pytest.raises(jetliner.SourceError):
-            with jetliner.open(
+            with jetliner.AvroReader(
                 s3_weather_file_minio, storage_options=storage_options
             ) as reader:
                 list(reader)
@@ -329,7 +329,7 @@ class TestS3CompatibleServiceIntegration:
 
         # MinIO should reject invalid credentials
         with pytest.raises((jetliner.SourceError, PermissionError)):
-            with jetliner.open(
+            with jetliner.AvroReader(
                 s3_weather_file_minio, storage_options=storage_options
             ) as reader:
                 list(reader)

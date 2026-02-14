@@ -123,7 +123,7 @@ class TestLargeFileStress:
         batch_count = 0
         start_time = time.time()
 
-        with jetliner.open(str(test_file), batch_size=10000) as reader:
+        with jetliner.AvroReader(str(test_file), batch_size=10000) as reader:
             for df in reader:
                 current_rss = process.memory_info().rss
                 peak_rss = max(peak_rss, current_rss)
@@ -193,7 +193,7 @@ class TestLargeFileStress:
             peak_rss = baseline_rss
             total_rows = 0
 
-            with jetliner.open(str(test_file), batch_size=batch_size) as reader:
+            with jetliner.AvroReader(str(test_file), batch_size=batch_size) as reader:
                 for df in reader:
                     current_rss = process.memory_info().rss
                     peak_rss = max(peak_rss, current_rss)
@@ -242,7 +242,7 @@ class TestLargeFileStress:
 
         # Read the file
         total_rows = 0
-        with jetliner.open(str(test_file), batch_size=10000) as reader:
+        with jetliner.AvroReader(str(test_file), batch_size=10000) as reader:
             for df in reader:
                 total_rows += df.height
 
@@ -279,7 +279,7 @@ class TestLargeFileStress:
         time_sum = 0
         temp_sum = 0
 
-        with jetliner.open(str(test_file), batch_size=10000) as reader:
+        with jetliner.AvroReader(str(test_file), batch_size=10000) as reader:
             for df in reader:
                 total_rows += df.height
                 # Simple integrity checks

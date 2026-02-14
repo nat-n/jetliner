@@ -33,8 +33,7 @@ import plotly.graph_objects as go
 
 # Muted rainbow palette - based on Wong 2011, desaturated for a softer look
 COLORS = {
-    "jetliner_scan": "#1a5a8a",  # Muted strong blue - primary
-    "jetliner_open": "#4a90b8",  # Muted light blue - secondary jetliner
+    "jetliner": "#1a5a8a",  # Muted strong blue - primary
     "polars": "#2a7a5a",  # Muted teal
     "polars_avro": "#c4b840",  # Muted yellow
     "fastavro": "#c08030",  # Muted orange
@@ -44,8 +43,7 @@ COLORS = {
 
 # Display names for readers (cleaner labels)
 READER_LABELS = {
-    "jetliner_scan": "jetliner (scan)",
-    "jetliner_open": "jetliner (open)",
+    "jetliner": "jetliner",
     "polars": "polars",
     "polars_avro": "polars-avro",
     "fastavro": "fastavro",
@@ -63,8 +61,7 @@ SCENARIO_LABELS = {
 
 # Preferred order for readers in legend and bars
 READER_ORDER = [
-    "jetliner_scan",
-    "jetliner_open",
+    "jetliner",
     "polars",
     "polars_avro",
     "fastavro",
@@ -237,14 +234,14 @@ def create_performance_chart(data: dict) -> go.Figure:
 
 
 def create_speedup_chart(data: dict) -> go.Figure:
-    """Create a bar chart showing speedup relative to jetliner_scan."""
+    """Create a bar chart showing speedup relative to jetliner."""
     results = data["results"]
 
     scenarios = [s for s in SCENARIO_ORDER if s in results]
     readers = [
         r
         for r in READER_ORDER
-        if r != "jetliner_scan" and any(r in results[s] for s in scenarios)
+        if r != "jetliner" and any(r in results[s] for s in scenarios)
     ]
 
     fig = go.Figure()
@@ -256,7 +253,7 @@ def create_speedup_chart(data: dict) -> go.Figure:
 
         for scenario in scenarios:
             scenario_results = results.get(scenario, {})
-            baseline = scenario_results.get("jetliner_scan", {})
+            baseline = scenario_results.get("jetliner", {})
             reader_results = scenario_results.get(reader, {})
 
             if (

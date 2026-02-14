@@ -42,7 +42,7 @@ import jetliner
 # Skip mode - skip bad records
 df = jetliner.scan_avro("data.avro", ignore_errors=True).collect()
 
-# Or with open()
+# Or with AvroReader
 with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
     for batch in reader:
         process(batch)
@@ -50,7 +50,7 @@ with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
 
 ### Checking for Errors
 
-With `open()`, you can check if any records were skipped:
+With `AvroReader`, you can check if any records were skipped:
 
 ```python
 import jetliner

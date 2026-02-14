@@ -124,11 +124,11 @@ class TestLargeFileHandling:
         }
 
         # Read batches from S3
-        with jetliner.open(s3_uri, storage_options=storage_options) as reader:
+        with jetliner.AvroReader(s3_uri, storage_options=storage_options) as reader:
             s3_batches = list(reader)
 
         # Read batches from local
-        with jetliner.open(str(local_path)) as reader:
+        with jetliner.AvroReader(str(local_path)) as reader:
             local_batches = list(reader)
 
         # Verify same number of batches and total rows
@@ -475,12 +475,12 @@ class TestRangeRequestEdgeCases:
         }
 
         # Read with very small batch size
-        with jetliner.open(
+        with jetliner.AvroReader(
             s3_uri, storage_options=storage_options, batch_size=1
         ) as reader:
             s3_batches = list(reader)
 
-        with jetliner.open(str(local_path), batch_size=1) as reader:
+        with jetliner.AvroReader(str(local_path), batch_size=1) as reader:
             local_batches = list(reader)
 
         # Should have same number of batches

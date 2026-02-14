@@ -41,7 +41,7 @@ pub use schema::{
 pub use source::{BoxedSource, LocalSource, S3Source, StreamSource};
 
 // Re-export Python bindings
-pub use python::{open, AvroReader, MultiAvroReader, PyBadBlockError};
+pub use python::{AvroReader, MultiAvroReader, PyBadBlockError};
 // Re-export new Python API functions
 pub use python::api::_resolve_avro_sources;
 pub use python::{read_avro, read_avro_schema, scan_avro};
@@ -60,7 +60,6 @@ use tracing_subscriber::EnvFilter;
 /// - `scan_avro`: Scan Avro files returning a LazyFrame
 /// - `read_avro`: Read Avro files returning a DataFrame
 /// - `read_avro_schema`: Extract Polars schema from an Avro file
-/// - `open`: Open an Avro file for streaming iteration
 ///
 /// # Exception Types
 /// The module provides custom exception types for specific error conditions:
@@ -104,9 +103,6 @@ fn jetliner(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(python::api::read_avro, m)?)?;
     m.add_function(wrap_pyfunction!(python::api::read_avro_schema, m)?)?;
     m.add_function(wrap_pyfunction!(python::api::_resolve_avro_sources, m)?)?;
-
-    // Register open function for streaming iteration
-    m.add_function(wrap_pyfunction!(open, m)?)?;
 
     Ok(())
 }

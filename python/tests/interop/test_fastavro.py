@@ -46,7 +46,7 @@ class TestFastavroEdgeCases:
         """
         path = get_test_data_path("fastavro/no-fields.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             # Verify schema is accessible and has no fields
             schema = reader.schema
             assert schema is not None, "Schema should be accessible"
@@ -70,7 +70,7 @@ class TestFastavroEdgeCases:
         """
         path = get_test_data_path("fastavro/null.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             # Should read without error
             assert len(dfs) > 0, "Should yield at least one DataFrame"
@@ -92,7 +92,7 @@ class TestFastavroEdgeCases:
         """
         path = get_test_data_path("fastavro/recursive.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -133,7 +133,7 @@ class TestFastavroEdgeCases:
 
         path = get_test_data_path("fastavro/java-generated-uuid.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 

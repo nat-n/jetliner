@@ -95,7 +95,7 @@ class TestPerformanceSanity:
 
         # Streaming read timing
         start = time.time()
-        with jetliner.open(path, batch_size=1000) as reader:
+        with jetliner.AvroReader(path, batch_size=1000) as reader:
             streaming_dfs = list(reader)
         streaming_elapsed = time.time() - start
 

@@ -33,7 +33,7 @@ class TestSkipModeRecovery:
 
         # Invalid magic is a fatal error - cannot recover
         with pytest.raises(jetliner.ParseError):
-            with jetliner.open(path, ignore_errors=True) as reader:
+            with jetliner.AvroReader(path, ignore_errors=True) as reader:
                 list(reader)
 
     def test_truncated_file_recovery(self, get_test_data_path):
@@ -45,7 +45,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/truncated.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read some data before truncation
@@ -68,7 +68,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read some data
@@ -100,7 +100,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/corrupted-compressed.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             _dfs = list(reader)
 
             # Should have at least one error for decompression failure
@@ -126,7 +126,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/invalid-record-data.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read some data
@@ -148,7 +148,7 @@ class TestSkipModeRecovery:
         """
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             # Should have read data from valid blocks
@@ -180,7 +180,7 @@ class TestErrorTracking:
         """Test that error objects have the expected structure."""
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             list(reader)
 
             if reader.error_count > 0:
@@ -204,7 +204,7 @@ class TestErrorTracking:
         """Test that error objects can be converted to dict."""
         path = get_test_data_path("corrupted/corrupted-sync-marker.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             list(reader)
 
             if reader.error_count > 0:
@@ -223,7 +223,7 @@ class TestErrorTracking:
         """Test that error_count matches len(errors)."""
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             list(reader)
 
             assert reader.error_count == len(
@@ -234,7 +234,7 @@ class TestErrorTracking:
         """Test that valid files produce no errors with ignore_errors=True."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             assert len(dfs) > 0, "Should read data from valid file"
@@ -249,7 +249,7 @@ class TestDataIntegrityAfterRecovery:
         """Test that recovered data has the correct schema."""
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             if len(dfs) > 0:
@@ -270,7 +270,7 @@ class TestDataIntegrityAfterRecovery:
         """Test that recovered data values are valid (not corrupted)."""
         path = get_test_data_path("corrupted/multi-block-one-corrupted.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             dfs = list(reader)
 
             if len(dfs) > 0:

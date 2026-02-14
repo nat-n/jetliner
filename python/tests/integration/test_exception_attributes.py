@@ -325,15 +325,15 @@ class TestExceptionAttributesFromRealErrors:
             assert d["file_offset"] == file_offset
             assert d["message"] == message
 
-    def test_open_raises_structured_exceptions(self, get_test_data_path):
-        """Test that open() raises structured exceptions with attributes.
+    def test_avro_reader_raises_structured_exceptions(self, get_test_data_path):
+        """Test that AvroReader raises structured exceptions with attributes.
 
-        The open() function now uses the same structured exception types.
+        The AvroReader class uses the same structured exception types.
         """
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path, ignore_errors=False) as reader:
+            with jetliner.AvroReader(path, ignore_errors=False) as reader:
                 list(reader)
 
         # Structured exceptions have attributes

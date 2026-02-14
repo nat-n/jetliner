@@ -305,7 +305,7 @@ impl MultiAvroReader {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        paths: Vec<String>,
+        paths: Vec<PyPathLike>,
         batch_size: usize,
         buffer_blocks: usize,
         buffer_bytes: usize,
@@ -319,6 +319,7 @@ impl MultiAvroReader {
         read_chunk_size: Option<usize>,
         max_block_size: Option<usize>,
     ) -> PyResult<Self> {
+        let paths: Vec<String> = paths.into_iter().map(|p| p.into_path()).collect();
         let first_path = paths.first().cloned().unwrap_or_default();
 
         // Create tokio runtime
@@ -867,7 +868,7 @@ impl AvroReader {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        path: String,
+        path: PyPathLike,
         batch_size: usize,
         buffer_blocks: usize,
         buffer_bytes: usize,
@@ -877,6 +878,8 @@ impl AvroReader {
         read_chunk_size: Option<usize>,
         max_block_size: Option<usize>,
     ) -> PyResult<Self> {
+        let path = path.into_path();
+
         // Create tokio runtime
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -1210,145 +1213,6 @@ impl AvroReader {
             guard.len()
         })
     }
-}
-
-/// Open an Avro file for streaming into Polars DataFrames.
-///
-/// This is the main entry point for reading Avro files. It returns an iterator
-/// that yields DataFrames containing batches of records.
-///
-/// # Arguments
-/// * `path` - Path to the Avro file. Supports:
-///   - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
-///   - S3 URIs: `s3://bucket/key.avro`
-///   - pathlib.Path objects
-/// * `batch_size` - Target number of rows per DataFrame (default: 100,000)
-/// * `buffer_blocks` - Number of blocks to prefetch (default: 4)
-/// * `buffer_bytes` - Maximum bytes to buffer (default: 64MB)
-/// * `strict` - If True, fail on first error; if False, skip bad records (default: False)
-/// * `storage_options` - Optional dict for S3 configuration. Supported keys:
-///   - `endpoint`: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-///   - `aws_access_key_id`: AWS access key (overrides environment)
-///   - `aws_secret_access_key`: AWS secret key (overrides environment)
-///   - `region`: AWS region (overrides environment)
-///
-/// # Returns
-/// An `AvroReader` instance that can be iterated to get DataFrames.
-///
-/// # Raises
-/// * `FileNotFoundError` - If the file does not exist
-/// * `PermissionError` - If access is denied
-/// * `jetliner.ParseError` - If the file is not a valid Avro file
-/// * `jetliner.SchemaError` - If the schema is invalid
-/// * `jetliner.SourceError` - For S3 or filesystem errors
-///
-/// # Example
-/// ```python
-/// import jetliner
-/// from pathlib import Path
-///
-/// # Basic usage - iterate over DataFrames
-/// for df in jetliner.open("data.avro"):
-///     print(df.shape)
-///
-/// # Using pathlib.Path
-/// for df in jetliner.open(Path("data.avro")):
-///     print(df.shape)
-///
-/// # With context manager (recommended)
-/// with jetliner.open("s3://bucket/data.avro") as reader:
-///     for df in reader:
-///         process(df)
-///
-/// # With configuration
-/// with jetliner.open(
-///     "data.avro",
-///     batch_size=50000,
-///     buffer_blocks=8,
-///     strict=True
-/// ) as reader:
-///     for df in reader:
-///         process(df)
-///
-/// # S3-compatible services (MinIO, LocalStack, R2)
-/// with jetliner.open(
-///     "s3://bucket/data.avro",
-///     storage_options={
-///         "endpoint": "http://localhost:9000",
-///         "aws_access_key_id": "minioadmin",
-///         "aws_secret_access_key": "minioadmin",
-///     }
-/// ) as reader:
-///     for df in reader:
-///         process(df)
-///
-/// # Custom read chunk size for S3 optimization
-/// with jetliner.open(
-///     "s3://bucket/data.avro",
-///     read_chunk_size=8 * 1024 * 1024  # 8MB chunks for fewer HTTP requests
-/// ) as reader:
-///     for df in reader:
-///         process(df)
-///
-/// # Access schema
-/// with jetliner.open("data.avro") as reader:
-///     print(reader.schema)  # JSON string
-///     print(reader.schema_dict)  # Python dict
-///
-/// # Error handling in skip mode
-/// with jetliner.open("data.avro", strict=False) as reader:
-///     for df in reader:
-///         process(df)
-///     if reader.error_count > 0:
-///         print(f"Skipped {reader.error_count} errors")
-///         for err in reader.errors:
-///             print(f"  [{err.kind}] Block {err.block_index}: {err.message}")
-/// ```
-///
-/// # Requirements
-/// - 1.7: Accept `str` or `Path` for the source parameter
-/// - 4.1: Unified interface for S3 and local filesystem access
-/// - 4.2: S3 URI support (s3://bucket/key)
-/// - 4.3: Local filesystem path support
-/// - 4.8: Accept optional `storage_options` parameter
-/// - 4.11: `storage_options` takes precedence over environment variables
-/// - 3.13: Expose read_chunk_size for tuning
-#[pyfunction]
-#[pyo3(signature = (
-    path,
-    batch_size = 100_000,
-    buffer_blocks = 4,
-    buffer_bytes = 67_108_864,
-    ignore_errors = false,
-    projected_columns = None,
-    storage_options = None,
-    read_chunk_size = None,
-    max_block_size = 536_870_912
-))]
-#[allow(clippy::too_many_arguments)]
-pub fn open(
-    path: PyPathLike,
-    batch_size: usize,
-    buffer_blocks: usize,
-    buffer_bytes: usize,
-    ignore_errors: bool,
-    projected_columns: Option<Vec<String>>,
-    storage_options: Option<std::collections::HashMap<String, String>>,
-    read_chunk_size: Option<usize>,
-    max_block_size: Option<usize>,
-) -> PyResult<AvroReader> {
-    let path_str = path.into_path();
-    AvroReader::new(
-        path_str,
-        batch_size,
-        buffer_blocks,
-        buffer_bytes,
-        ignore_errors,
-        projected_columns,
-        storage_options,
-        read_chunk_size,
-        max_block_size,
-    )
 }
 
 #[cfg(test)]

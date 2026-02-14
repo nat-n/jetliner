@@ -615,23 +615,23 @@ class TestPathAttributeFromRealOperations:
         err = exc_info.value
         assert err.path == path, f"Expected path '{path}', got '{err.path}'"
 
-    def test_open_file_not_found_path_matches_input(self, tmp_path):
-        """FileNotFoundError from open() should have correct path."""
+    def test_avro_reader_file_not_found_path_matches_input(self, tmp_path):
+        """FileNotFoundError from AvroReader should have correct path."""
         nonexistent = str(tmp_path / "open_does_not_exist.avro")
 
         with pytest.raises(jetliner.FileNotFoundError) as exc_info:
-            with jetliner.open(nonexistent) as reader:
+            with jetliner.AvroReader(nonexistent) as reader:
                 list(reader)
 
         err = exc_info.value
         assert err.path == nonexistent, f"Expected path '{nonexistent}', got '{err.path}'"
 
-    def test_open_parse_error_path_matches_input(self, get_test_data_path):
-        """ParseError from open() iterator should have correct path."""
+    def test_avro_reader_parse_error_path_matches_input(self, get_test_data_path):
+        """ParseError from AvroReader iterator should have correct path."""
         path = get_test_data_path("corrupted/invalid-magic.avro")
 
         with pytest.raises(jetliner.ParseError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         err = exc_info.value
@@ -759,17 +759,17 @@ class TestDecodeErrorPositionAttributes:
         assert "block" in msg.lower(), f"Error message should include block info: {msg}"
         assert "record" in msg.lower(), f"Error message should include record info: {msg}"
 
-    def test_decode_error_from_open_has_position(self, get_test_data_path):
-        """DecodeError from open() iterator should have position attributes."""
+    def test_decode_error_from_avro_reader_has_position(self, get_test_data_path):
+        """DecodeError from AvroReader iterator should have position attributes."""
         path = get_test_data_path("corrupted/invalid-record-data.avro")
 
         with pytest.raises(jetliner.DecodeError) as exc_info:
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 list(reader)
 
         err = exc_info.value
         # block_index should always be populated
-        assert err.block_index is not None, "block_index should not be None from open()"
+        assert err.block_index is not None, "block_index should not be None from AvroReader"
         # record_index may be None for batch finalization errors, but for
         # record-level decode errors it should be populated
         if err.record_index is not None:

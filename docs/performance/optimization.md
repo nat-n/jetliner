@@ -142,7 +142,7 @@ Accept slower reads for smaller files:
 
 ## Batch Size Tuning
 
-For `open()` API, adjust batch size:
+For `AvroReader` API, adjust batch size:
 
 ```python
 # Smaller batches: lower memory, more Python overhead

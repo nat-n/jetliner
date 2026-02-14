@@ -174,7 +174,7 @@ class TestNestedComplexTypes:
 
     def test_read_nested_complex_file(self, nested_complex_avro_file):
         """Test that nested complex type file can be read without errors."""
-        with jetliner.open(nested_complex_avro_file) as reader:
+        with jetliner.AvroReader(nested_complex_avro_file) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 

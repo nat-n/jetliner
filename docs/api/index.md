@@ -44,7 +44,7 @@ df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
 
 [Full documentation →](reference.md#read_avro)
 
-### open()
+### AvroReader
 
 Iterator API for streaming control. Returns a context manager yielding DataFrame batches.
 
@@ -63,7 +63,7 @@ with jetliner.AvroReader("data.avro") as reader:
 - Error tracking in skip mode
 - Memory-efficient streaming
 
-[Full documentation →](reference.md#open)
+[Full documentation →](reference.md#avroreader)
 
 ### read_avro_schema()
 
@@ -82,7 +82,7 @@ schema = jetliner.read_avro_schema("data.avro")
 
 ### AvroReader
 
-Context manager returned by `open()`. Provides iteration and schema access.
+Context manager for iteration and schema access.
 
 ```python
 with jetliner.AvroReader("data.avro") as reader:
@@ -95,7 +95,7 @@ with jetliner.AvroReader("data.avro") as reader:
 
 ### AvroReaderCore
 
-Low-level reader used internally. Most users should use `open()` instead.
+Low-level reader used internally. Most users should use `AvroReader` instead.
 
 [Full documentation →](reference.md#avroreadercore)
 

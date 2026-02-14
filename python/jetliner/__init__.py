@@ -18,15 +18,15 @@ This module provides three complementary APIs for reading Avro files:
    - Supports column selection via `columns` parameter
    - Equivalent to `scan_avro(...).collect()` with eager projection
 
-3. **open()** - Iterator for Streaming Control
-   - Returns an AvroReader iterator yielding DataFrame batches
-   - Full control over batch processing
+3. **AvroReader** - Iterator for Streaming Control
+   - Directly instantiate the class for streaming iteration
+   - Yields DataFrame batches with full control over processing
    - Error inspection via `.errors` and `.error_count` properties
    - Schema access via `.schema` and `.schema_dict` properties
    - Useful for custom streaming pipelines, progress tracking, or error handling
 
 Classes:
-    AvroReader: Single-file iterator returned by open()
+    AvroReader: Directly instantiated iterator for streaming control over single files
     MultiAvroReader: Multi-file iterator (used internally by scan/read)
     BadBlockError: Structured error information from skip mode reading
 
@@ -50,8 +50,8 @@ Example usage:
     >>> # Using read_avro() for eager loading with column selection
     >>> df = jetliner.read_avro("data.avro", columns=["col1", "col2"], n_rows=1000)
     >>>
-    >>> # Using open() for streaming control with error handling
-    >>> with jetliner.open("data.avro", ignore_errors=True) as reader:
+    >>> # Using AvroReader for streaming control with error handling
+    >>> with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
     ...     for df in reader:
     ...         process(df)
     ...     if reader.error_count > 0:
@@ -70,8 +70,6 @@ from .jetliner import (
     scan_avro as _scan_avro,
     read_avro as _read_avro,
     read_avro_schema as _read_avro_schema,
-    # Streaming iterator function
-    open as _open,
     # Internal functions (underscore prefix, not in __all__)
     # Used by scan_avro's generated Python code
     _resolve_avro_sources,  # noqa: F401
@@ -428,150 +426,11 @@ def read_avro_schema(
     return _read_avro_schema(source, storage_options=storage_options)
 
 
-def open(
-    path: str | Path,
-    *,
-    batch_size: int = 100_000,
-    buffer_blocks: int = 4,
-    buffer_bytes: int = 64 * 1024 * 1024,
-    ignore_errors: bool = False,
-    projected_columns: Sequence[str] | None = None,
-    storage_options: dict[str, str] | None = None,
-    read_chunk_size: int | None = None,
-    max_block_size: int | None = 512 * 1024 * 1024,
-) -> AvroReader:
-    """
-    Open an Avro file for streaming iteration over DataFrame batches.
-
-    Returns an iterator that yields DataFrame batches. Use this when you need
-    fine-grained control over batch processing, progress tracking, or error
-    inspection. For most use cases, `scan_avro()` is recommended instead.
-
-    Parameters
-    ----------
-    path : str | Path
-        Path to Avro file. Supports:
-        - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
-        - S3 URIs: `s3://bucket/key.avro`
-        - pathlib.Path objects
-        Note: Unlike scan_avro/read_avro, this does not support multiple files
-        or glob patterns. Use MultiAvroReader for multi-file iteration.
-    batch_size : int, default 100,000
-        Minimum rows per DataFrame batch. Rows accumulate until this threshold
-        is reached, then yield. Batches may exceed this since blocks are processed
-        whole. Final batch may be smaller if fewer rows remain.
-    buffer_blocks : int, default 4
-        Number of blocks to prefetch asynchronously for better I/O performance.
-    buffer_bytes : int, default 64MB
-        Maximum bytes to buffer during prefetching. Prefetching stops when this
-        limit is reached.
-    ignore_errors : bool, default False
-        Error handling mode:
-        - False (strict): Fail immediately on first error
-        - True (skip): Skip corrupted blocks/records and continue reading
-        In skip mode, errors are accumulated and accessible via `.errors` and
-        `.error_count` properties after iteration completes.
-    projected_columns : Sequence[str] | None, default None
-        List of column names to read. Projection happens during decoding for
-        efficiency. None reads all columns.
-    storage_options : dict[str, str] | None, default None
-        Configuration for S3 connections. Supported keys:
-        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-        - aws_access_key_id: AWS access key (overrides environment)
-        - aws_secret_access_key: AWS secret key (overrides environment)
-        - region: AWS region (overrides environment)
-        Values here take precedence over environment variables.
-    read_chunk_size : int | None, default None
-        Read buffer chunk size in bytes. If None, auto-detects based on source:
-        64KB for local files, 4MB for S3. Larger values (e.g., 8MB for S3)
-        reduce I/O operations but use more memory.
-    max_block_size : int | None, default 512MB
-        Maximum decompressed block size in bytes. Blocks that would decompress
-        to more than this limit are rejected. Set to None to disable the limit.
-        Default: 512MB (536870912 bytes).
-
-        This protects against decompression bombs - maliciously crafted files
-        where a small compressed block expands to consume excessive memory.
-
-    Returns
-    -------
-    AvroReader
-        An iterator yielding DataFrame batches. Supports context manager protocol
-        for automatic resource cleanup.
-
-    Examples
-    --------
-    >>> import jetliner
-    >>> from pathlib import Path
-    >>>
-    >>> # Basic iteration
-    >>> for df in jetliner.open("data.avro"):
-    ...     print(f"Batch: {df.shape}")
-    >>>
-    >>> # With context manager (recommended)
-    >>> with jetliner.open("data.avro") as reader:
-    ...     for df in reader:
-    ...         process(df)
-    >>>
-    >>> # Using pathlib.Path
-    >>> with jetliner.open(Path("data.avro")) as reader:
-    ...     for df in reader:
-    ...         process(df)
-    >>>
-    >>> # With projection
-    >>> with jetliner.open("data.avro", projected_columns=["col1", "col2"]) as reader:
-    ...     for df in reader:
-    ...         process(df)
-    >>>
-    >>> # Error handling in skip mode
-    >>> with jetliner.open("data.avro", ignore_errors=True) as reader:
-    ...     for df in reader:
-    ...         process(df)
-    ...
-    ...     # Inspect errors after iteration
-    ...     if reader.error_count > 0:
-    ...         print(f"Skipped {reader.error_count} errors")
-    ...         for err in reader.errors:
-    ...             print(f"[{err.kind}] Block {err.block_index}: {err.message}")
-    >>>
-    >>> # Access schema
-    >>> with jetliner.open("data.avro") as reader:
-    ...     print(reader.schema)  # JSON string
-    ...     print(reader.schema_dict)  # Python dict
-    ...     for df in reader:
-    ...         process(df)
-    >>>
-    >>> # S3 with custom endpoint
-    >>> with jetliner.open(
-    ...     "s3://bucket/data.avro",
-    ...     storage_options={
-    ...         "endpoint": "http://localhost:9000",
-    ...         "aws_access_key_id": "minioadmin",
-    ...         "aws_secret_access_key": "minioadmin",
-    ...     }
-    ... ) as reader:
-    ...     for df in reader:
-    ...         process(df)
-    """
-    return _open(
-        path,
-        batch_size=batch_size,
-        buffer_blocks=buffer_blocks,
-        buffer_bytes=buffer_bytes,
-        ignore_errors=ignore_errors,
-        projected_columns=projected_columns,
-        storage_options=storage_options,
-        read_chunk_size=read_chunk_size,
-        max_block_size=max_block_size,
-    )
-
-
 __all__ = [
     # API functions
     "scan_avro",
     "read_avro",
     "read_avro_schema",
-    "open",
     # Classes
     "AvroReader",
     "MultiAvroReader",

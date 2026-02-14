@@ -22,7 +22,7 @@ class TestErrorHandling:
     def test_file_not_found_error(self):
         """Test that FileNotFoundError is raised for missing files."""
         with pytest.raises(FileNotFoundError):
-            jetliner.open("/nonexistent/path/to/file.avro")
+            jetliner.AvroReader("/nonexistent/path/to/file.avro")
 
     def test_invalid_avro_file(self):
         """Test that ParseError is raised for invalid Avro files."""
@@ -32,7 +32,7 @@ class TestErrorHandling:
 
         try:
             with pytest.raises(jetliner.ParseError):
-                jetliner.open(temp_path)
+                jetliner.AvroReader(temp_path)
         finally:
             os.unlink(temp_path)
 

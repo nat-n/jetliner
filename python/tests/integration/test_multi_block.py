@@ -32,12 +32,12 @@ class TestMultiBlockRecordCount:
     Requirements: 3.1 (block-by-block reading)
     """
 
-    def test_total_record_count_open_api(self, get_test_data_path):
-        """Test that open() API reads all records from multi-block file."""
+    def test_total_record_count_avro_reader_api(self, get_test_data_path):
+        """Test that AvroReader API reads all records from multi-block file."""
         path = get_test_data_path("large/weather-large.avro")
 
         total_rows = 0
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             for df in reader:
                 total_rows += df.height
 
@@ -112,7 +112,7 @@ class TestBatchSizeAcrossBlocks:
         path = get_test_data_path("large/weather-large.avro")
 
         batch_sizes = []
-        with jetliner.open(path, batch_size=100) as reader:
+        with jetliner.AvroReader(path, batch_size=100) as reader:
             for df in reader:
                 batch_sizes.append(df.height)
 
@@ -133,7 +133,7 @@ class TestBatchSizeAcrossBlocks:
 
         batch_count = 0
         total_rows = 0
-        with jetliner.open(path, batch_size=1000) as reader:
+        with jetliner.AvroReader(path, batch_size=1000) as reader:
             for df in reader:
                 batch_count += 1
                 total_rows += df.height
@@ -147,7 +147,7 @@ class TestBatchSizeAcrossBlocks:
         path = get_test_data_path("large/weather-large.avro")
 
         batches = []
-        with jetliner.open(path, batch_size=100000) as reader:
+        with jetliner.AvroReader(path, batch_size=100000) as reader:
             for df in reader:
                 batches.append(df)
 
@@ -161,12 +161,12 @@ class TestBatchSizeAcrossBlocks:
 
         # Read with small batches
         small_batch_dfs = []
-        with jetliner.open(path, batch_size=500) as reader:
+        with jetliner.AvroReader(path, batch_size=500) as reader:
             for df in reader:
                 small_batch_dfs.append(df)
 
         # Read with large batch
-        with jetliner.open(path, batch_size=100000) as reader:
+        with jetliner.AvroReader(path, batch_size=100000) as reader:
             large_batch_df = pl.concat(list(reader))
 
         # Concatenate small batches
@@ -203,7 +203,7 @@ class TestSyncMarkerValidation:
         path = get_test_data_path("large/weather-large.avro")
 
         # Should read without errors
-        with jetliner.open(path, ignore_errors=False) as reader:
+        with jetliner.AvroReader(path, ignore_errors=False) as reader:
             dfs = list(reader)
             total = sum(df.height for df in dfs)
 
@@ -213,7 +213,7 @@ class TestSyncMarkerValidation:
         """Test that valid file produces no errors with ignore_errors=True."""
         path = get_test_data_path("large/weather-large.avro")
 
-        with jetliner.open(path, ignore_errors=True) as reader:
+        with jetliner.AvroReader(path, ignore_errors=True) as reader:
             for _ in reader:
                 pass
 
@@ -260,7 +260,7 @@ class TestMultiBlockStreaming:
         rows_seen = 0
         batch_count = 0
 
-        with jetliner.open(path, batch_size=1000) as reader:
+        with jetliner.AvroReader(path, batch_size=1000) as reader:
             for df in reader:
                 batch_count += 1
                 rows_seen += df.height
@@ -277,7 +277,7 @@ class TestMultiBlockStreaming:
         path = get_test_data_path("large/weather-large.avro")
 
         rows_read = 0
-        with jetliner.open(path, batch_size=100) as reader:
+        with jetliner.AvroReader(path, batch_size=100) as reader:
             for df in reader:
                 rows_read += df.height
                 if rows_read >= 500:
@@ -409,20 +409,20 @@ def test_various_batch_sizes(batch_size, get_test_data_path):
     path = get_test_data_path("large/weather-large.avro")
 
     total = 0
-    with jetliner.open(path, batch_size=batch_size) as reader:
+    with jetliner.AvroReader(path, batch_size=batch_size) as reader:
         for df in reader:
             total += df.height
 
     assert total == 10000, f"batch_size={batch_size}: expected 10000, got {total}"
 
 
-@pytest.mark.parametrize("api", ["open", "scan_avro"])
+@pytest.mark.parametrize("api", ["AvroReader", "scan_avro"])
 def test_both_apis_read_all_blocks(api, get_test_data_path):
     """Test that both APIs read all blocks correctly."""
     path = get_test_data_path("large/weather-large.avro")
 
-    if api == "open":
-        with jetliner.open(path) as reader:
+    if api == "AvroReader":
+        with jetliner.AvroReader(path) as reader:
             df = pl.concat(list(reader))
     else:
         df = jetliner.scan_avro(path).collect()

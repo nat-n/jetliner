@@ -43,7 +43,7 @@ class TestApacheAvroWeatherFiles:
         """Test reading uncompressed weather.avro file."""
         path = get_test_data_path("apache-avro/weather.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -61,7 +61,7 @@ class TestApacheAvroWeatherFiles:
         """Test reading deflate-compressed weather file."""
         path = get_test_data_path("apache-avro/weather-deflate.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
 
@@ -74,7 +74,7 @@ class TestApacheAvroWeatherFiles:
         """Test reading snappy-compressed weather file with CRC32 validation."""
         path = get_test_data_path("apache-avro/weather-snappy.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
 
@@ -85,7 +85,7 @@ class TestApacheAvroWeatherFiles:
         """Test reading zstd-compressed weather file."""
         path = get_test_data_path("apache-avro/weather-zstd.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
 
@@ -96,7 +96,7 @@ class TestApacheAvroWeatherFiles:
         """Test reading sorted weather file."""
         path = get_test_data_path("apache-avro/weather-sorted.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
 
@@ -120,7 +120,7 @@ class TestApacheAvroWeatherFiles:
         dataframes = []
         for variant in variants:
             path = get_test_data_path(f"apache-avro/{variant}")
-            with jetliner.open(path) as reader:
+            with jetliner.AvroReader(path) as reader:
                 dfs = list(reader)
                 df = pl.concat(dfs)
                 dataframes.append((variant, df))

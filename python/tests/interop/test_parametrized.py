@@ -2,7 +2,7 @@
 Parametrized interoperability tests for comprehensive file coverage.
 
 Uses pytest parametrization to test multiple Apache Avro and fastavro files
-in a systematic way. Ensures both open() and scan_avro() APIs work with all files.
+in a systematic way. Ensures AvroReader and scan_avro() APIs work with all files.
 
 Test data sources:
 - tests/data/apache-avro/: All weather file variants
@@ -13,7 +13,6 @@ Requirements tested:
 """
 
 
-import polars as pl
 import pytest
 
 import jetliner
@@ -66,22 +65,6 @@ def test_fastavro_file_readable(filename, xfail_reason, get_test_data_path):
     path = get_test_data_path(f"fastavro/{filename}")
 
     # Should not raise an exception
-    with jetliner.open(path) as reader:
+    with jetliner.AvroReader(path) as reader:
         list(reader)
         # May have 0 records but should not crash
-
-
-@pytest.mark.parametrize("api", ["open", "scan_avro"])
-def test_both_apis_work(api, get_test_data_path):
-    """Test that both open() and scan_avro() APIs work with real files."""
-    path = get_test_data_path("apache-avro/weather.avro")
-
-    if api == "open":
-        with jetliner.open(path) as reader:
-            dfs = list(reader)
-            df = pl.concat(dfs)
-    else:
-        df = jetliner.scan_avro(path).collect()
-
-    assert df.height > 0
-    assert "station" in df.columns

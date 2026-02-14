@@ -40,7 +40,7 @@ class TestComplexRecursiveStructures:
         """
         path = get_test_data_path("fastavro/tree-recursive.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -78,7 +78,7 @@ class TestComplexRecursiveStructures:
         """
         path = get_test_data_path("fastavro/graph-recursive.avro")
 
-        with jetliner.open(path) as reader:
+        with jetliner.AvroReader(path) as reader:
             dfs = list(reader)
             assert len(dfs) > 0, "Should yield at least one DataFrame"
 
@@ -156,10 +156,10 @@ class TestComplexRecursiveStructures:
         assert "value" not in df.columns
 
     def test_tree_projection_with_open_api(self, get_test_data_path):
-        """Test projection on recursive structure using open() API."""
+        """Test projection on recursive structure using AvroReader API."""
         path = get_test_data_path("fastavro/tree-recursive.avro")
 
-        with jetliner.open(path, projected_columns=["value"]) as reader:
+        with jetliner.AvroReader(path, projected_columns=["value"]) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
 
@@ -168,10 +168,10 @@ class TestComplexRecursiveStructures:
             assert "left" not in df.columns
 
     def test_tree_projection_recursive_with_open_api(self, get_test_data_path):
-        """Test projecting recursive fields using open() API."""
+        """Test projecting recursive fields using AvroReader API."""
         path = get_test_data_path("fastavro/tree-recursive.avro")
 
-        with jetliner.open(path, projected_columns=["left"]) as reader:
+        with jetliner.AvroReader(path, projected_columns=["left"]) as reader:
             dfs = list(reader)
             df = pl.concat(dfs)
 

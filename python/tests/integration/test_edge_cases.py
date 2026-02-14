@@ -517,10 +517,10 @@ class TestZeroFieldSchemaRejection:
         error_msg = str(exc_info.value).lower()
         assert "zero fields" in error_msg
 
-    def test_open_zero_fields_raises_error(self, zero_fields_file: str):
-        """Test open() rejects zero-field record schema with clear error."""
+    def test_avro_reader_zero_fields_raises_error(self, zero_fields_file: str):
+        """Test AvroReader rejects zero-field record schema with clear error."""
         with pytest.raises(jetliner.SchemaError) as exc_info:
-            with jetliner.open(zero_fields_file) as reader:
+            with jetliner.AvroReader(zero_fields_file) as reader:
                 list(reader)
 
         error_msg = str(exc_info.value).lower()
@@ -565,9 +565,9 @@ class TestBlocksWithZeroRecords:
         assert df.height == 0
         assert "id" in df.columns
 
-    def test_open_file_with_zero_record_block(self, file_with_zero_record_block: str):
-        """Test open() iterator handles files where blocks yield zero records."""
-        with jetliner.open(file_with_zero_record_block) as reader:
+    def test_avro_reader_file_with_zero_record_block(self, file_with_zero_record_block: str):
+        """Test AvroReader iterator handles files where blocks yield zero records."""
+        with jetliner.AvroReader(file_with_zero_record_block) as reader:
             dfs = list(reader)
 
         # Should yield no DataFrames (or empty ones)
