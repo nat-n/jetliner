@@ -31,11 +31,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install mkdocs-material mkdocstrings[python]
+        run: pip install mkdocs-material mkdocstrings[python]
 
       - name: Build documentation
         run: mkdocs build --strict
+        env:
+          PYTHONPATH: python
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

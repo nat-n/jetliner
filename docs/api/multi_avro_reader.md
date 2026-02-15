@@ -1,0 +1,3 @@
+# MultiAvroReader
+
+::: jetliner.MultiAvroReader

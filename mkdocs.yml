@@ -38,11 +38,13 @@ plugins:
       handlers:
         python:
           options:
-            show_source: true
+            show_source: false
             show_root_heading: true
             show_category_heading: true
-            docstring_style: google
+            docstring_style: numpy
             merge_init_into_class: true
+            find_stubs_package: true
+            allow_inspection: false
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -62,22 +64,19 @@ markdown_extensions:
       permalink: true
 
 nav:
-  - Getting Started: index.md
-  - Installation: installation.md
-  - User Guide:
+  - Getting started: index.md
+  - User guide:
       - Overview: user-guide/index.md
-      - Local Files: user-guide/local-files.md
-      - S3 Access: user-guide/s3-access.md
-      - Query Optimization: user-guide/query-optimization.md
-      - Streaming Large Files: user-guide/streaming.md
-      - Error Handling: user-guide/error-handling.md
-      - Schema Inspection: user-guide/schemas.md
-      - Codec Support: user-guide/codecs.md
-  - API Reference:
-      - Overview: api/index.md
-      - Reference: api/reference.md
-  - Performance:
-      - Overview: performance/index.md
-      - Benchmarks: performance/benchmarks.md
-      - Optimization Tips: performance/optimization.md
+      - Data sources: user-guide/data-sources.md
+      - Query optimization: user-guide/query-optimization.md
+      - Streaming: user-guide/streaming.md
+      - Error handling: user-guide/error-handling.md
+      - Schemas: user-guide/schemas.md
+  - API reference:
+      - scan_avro: api/scan_avro.md
+      - read_avro: api/read_avro.md
+      - read_avro_schema: api/read_avro_schema.md
+      - AvroReader: api/avro_reader.md
+      - MultiAvroReader: api/multi_avro_reader.md
+      - Exceptions: api/exceptions.md
   - Contributing: contributing.md

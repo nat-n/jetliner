@@ -17,7 +17,7 @@ Jetliner is designed for data pipelines where Avro files live on S3 or local dis
 - **High-performance streaming** — Supports block-by-block processing with minimal memory footprint, ideal for large files
 - **Idiomatic polars integration** — Feels like a Polars native API
 - **Query optimization** — Projection pushdown (select columns) and predicate pushdown (filter rows) at the source via Polars LazyFrames
-- **S3 and local file support** — Read Avro files from Amazon S3 or local disk with the same API
+- **S3 and local file support** — Read Avro files from Amazon S3 or local disk with the same API, including glob patterns
 - **All standard codecs** — null, snappy, deflate, zstd, bzip2, and xz compression out of the box
 - **(Almost) complete avro schema support** — reads almost any valid avro (see limitations)
 - **Flexible error handling** — Optionally skip bad blocks for resilience to data corruption
@@ -45,7 +45,107 @@ pip install jetliner
 
 ## Quick Start
 
-TODO:...
+### Lazy Reading with Query Optimization
+
+Use `scan_avro()` for the best performance — Polars pushes projections and predicates down to the reader:
+
+```python
+import jetliner
+import polars as pl
+
+df = (
+    jetliner.scan_avro("s3://bucket/events/*.avro")
+    .select("user_id", "event_type", "timestamp") # Only these columns are loaded
+    .filter(pl.col("event_type") == "purchase")   # Filter rows as they're loaded
+    .head(10_000)                                 # Stops reading after 10k matches
+    .collect()
+)
+```
+
+### Eager Reading with Column Selection
+
+Use `read_avro()` when you want a DataFrame immediately:
+
+```python
+df = jetliner.read_avro("data.avro", columns=["id", "name"], n_rows=1000)
+```
+
+### Streaming Iteration
+
+Use `AvroReader` or `MultiAvroReader` for batch-by-batch control — useful for progress tracking, memory management, or custom pipelines:
+
+```python
+for batch in jetliner.AvroReader("huge_file.avro", batch_size=50_000):
+    process(batch)  # each batch is a DataFrame
+
+# MultiAvroReader handles multiple files with continuous row indexing
+reader = jetliner.MultiAvroReader(
+    ["file1.avro", "file2.avro"],
+    row_index_name="idx",           # Continuous index across files
+    include_file_paths="source",    # Track which file each row came from
+)
+for batch in reader:
+    process(batch)
+```
+
+### Schema Inspection
+
+Inspect the schema without reading data:
+
+```python
+schema = jetliner.read_avro_schema("data.avro")
+print(schema)  # Polars Schema showing column names and types
+```
+
+### Reading from S3 and Local Files
+
+All APIs work with local paths, S3 URIs, and glob patterns:
+
+```python
+# Local files
+df = jetliner.read_avro("./data/events.avro")
+df = jetliner.read_avro("./data/**/*.avro")  # Recursive glob
+
+# S3 (credentials from environment or explicit)
+df = jetliner.read_avro("s3://bucket/path/to/file.avro")
+df = jetliner.read_avro(
+    "s3://bucket/data/*.avro",
+    storage_options={
+        "endpoint": "http://localhost:9000",  # MinIO, LocalStack, R2
+        "aws_access_key_id": "...",
+        "aws_secret_access_key": "...",
+    }
+)
+```
+
+### Error Recovery
+
+Skip corrupted blocks instead of failing — errors are collected for inspection:
+
+```python
+reader = jetliner.AvroReader("suspect_file.avro", ignore_errors=True)
+for batch in reader:
+    process(batch)
+
+if reader.error_count > 0:
+    print(f"Skipped {reader.error_count} bad blocks")
+    for err in reader.errors:
+        print(f"  Block {err.block_index}: {err.message}")
+```
+
+### Performance Tuning
+
+Fine-tune for your workload:
+
+```python
+df = jetliner.scan_avro(
+    "s3://bucket/data/*.avro",
+    batch_size=100_000,        # Rows per batch (default: 100k)
+    buffer_blocks=8,           # Prefetch buffer depth (default: 4)
+    buffer_bytes=128*1024*1024,# Prefetch buffer size (default: 64MB)
+    read_chunk_size=8*1024*1024,# S3 read chunks (default: 4MB for S3)
+).collect()
+```
 
 ## Development
 

@@ -2,7 +2,21 @@
 
 Thank you for your interest in contributing to Jetliner!
 
-## Development Setup
+## Get in touch
+
+If you think you've found a bug in Jetliner, or you think it's missing a feature, get in touch via the [GitHub Issues](https://github.com/nat-n/jetliner/issues).
+
+### Reporting issues
+
+When reporting issues, please try to include:
+
+- Jetliner version
+- Python version
+- Operating system
+- Minimal reproduction case
+- Error messages and stack traces
+
+## Development setup
 
 ### Tools
 
@@ -13,12 +27,15 @@ Thank you for your interest in contributing to Jetliner!
 
 This project was mostly implemented via Spec Driven Development with [kiro](https://kiro.dev/), so requirements, design, and tasks are tracked permanently under the .kiro/specs
 
-### Getting Started
+### Getting started
 
 ```bash
 # Clone the repository
 git clone https://github.com/jetliner/jetliner.git
 cd jetliner
+
+# See all available tasks
+poe
 
 # Install Rust toolchain
 poe rustup
@@ -33,7 +50,7 @@ poe build-dev
 uv run python -c "import jetliner; print('OK')"
 ```
 
-## Running Tests
+## Running tests
 
 ```bash
 # Run all checks (formatting, linting, tests)
@@ -44,7 +61,7 @@ poe test-rust      # Rust unit tests
 poe test-python    # Python e2e tests
 ```
 
-## Code Style
+## Code style
 
 The following tasks are available to help with ensuring rust code meets formatting and linting standards:
 
@@ -60,7 +77,7 @@ poe format-python
 poe lint-python
 ```
 
-## Project Structure
+## Project structure
 
 ```
 jetliner/
@@ -78,16 +95,6 @@ jetliner/
 ├── benches/               # Benchmarks
 └── docs/                  # Documentation
 ```
-
-## Reporting Issues
-
-When reporting issues, please include:
-
-- Jetliner version
-- Python version
-- Operating system
-- Minimal reproduction case
-- Error messages and stack traces
 
 ## Documentation
 

@@ -1,10 +1,10 @@
-# Schema Inspection
+# Schema inspection
 
 Jetliner provides multiple ways to inspect Avro schemas and understand how they map to Polars types.
 
-## Accessing Schemas
+## Accessing schemas
 
-### From an Open Reader
+### From an open reader
 
 The `AvroReader` API provides schema access before reading data:
 
@@ -48,9 +48,9 @@ polars_schema = jetliner.read_avro_schema(
 )
 ```
 
-## Schema Formats
+## Schema formats
 
-### JSON String
+### JSON string
 
 The raw Avro schema as a JSON string:
 
@@ -73,7 +73,7 @@ Output:
 }
 ```
 
-### Python Dictionary
+### Python dictionary
 
 Parsed schema as a Python dictionary:
 
@@ -85,7 +85,7 @@ with jetliner.AvroReader("data.avro") as reader:
     print(f"Fields: {[f['name'] for f in schema['fields']]}")
 ```
 
-### Polars Schema
+### Polars schema
 
 Column names mapped to Polars data types:
 
@@ -97,11 +97,11 @@ for name, dtype in schema.items():
     print(f"{name}: {dtype}")
 ```
 
-## Type Mapping
+## Type mapping
 
 Jetliner maps Avro types to Polars types:
 
-### Primitive Types
+### Primitive types
 
 | Avro Type | Polars Type |
 | --------- | ----------- |
@@ -114,7 +114,7 @@ Jetliner maps Avro types to Polars types:
 | `bytes`   | `Binary`    |
 | `string`  | `String`    |
 
-### Logical Types
+### Logical types
 
 | Avro Logical Type  | Polars Type    |
 | ------------------ | -------------- |
@@ -126,7 +126,7 @@ Jetliner maps Avro types to Polars types:
 | `uuid`             | `String`       |
 | `decimal`          | `Decimal`      |
 
-### Complex Types
+### Complex types
 
 | Avro Type | Polars Type                      |
 | --------- | -------------------------------- |
@@ -137,7 +137,7 @@ Jetliner maps Avro types to Polars types:
 | `fixed`   | `Binary`                         |
 | `union`   | Depends on variants              |
 
-### Union Types
+### Union types
 
 Unions are handled based on their variants:
 
@@ -146,9 +146,9 @@ Unions are handled based on their variants:
 # ["null", "int", "string"] -> Struct with type indicator
 ```
 
-## Working with Schemas
+## Working with schemas
 
-### Validate Schema Before Processing
+### Validate schema before processing
 
 ```python
 import jetliner
@@ -165,7 +165,7 @@ def validate_schema(path, required_columns):
 schema = validate_schema("data.avro", ["user_id", "amount"])
 ```
 
-### Schema-Driven Processing
+### Schema-driven processing
 
 ```python
 import jetliner
@@ -188,7 +188,7 @@ def process_by_schema(path):
     )
 ```
 
-### Compare Schemas
+### Compare schemas
 
 ```python
 import jetliner
@@ -210,9 +210,9 @@ def schemas_compatible(path1, path2):
     return True
 ```
 
-## Nested Schemas
+## Nested schemas
 
-### Records (Structs)
+### Records
 
 Nested records become Polars Structs:
 
@@ -232,7 +232,7 @@ df = jetliner.scan_avro("events.avro").collect()
 df.select(pl.col("user").struct.field("name"))
 ```
 
-### Arrays (Lists)
+### Arrays
 
 Arrays become Polars Lists:
 
@@ -258,7 +258,7 @@ df = jetliner.scan_avro("data.avro").collect()
 df.select(pl.col("metadata"))
 ```
 
-## Recursive Types
+## Recursive types
 
 Avro supports recursive types (self-referencing records). Since Polars doesn't support recursive structures, Jetliner serializes recursive fields to JSON strings:
 
@@ -274,9 +274,9 @@ df = jetliner.scan_avro("tree.avro").collect()
 # Parse with: df.select(pl.col("children").str.json_decode())
 ```
 
-## Known Limitations
+## Known limitations
 
-### Top-Level Non-Record Schemas
+### Top-level non-record schemas
 
 Jetliner handles some non-record top-level schemas:
 
@@ -287,12 +287,12 @@ Jetliner handles some non-record top-level schemas:
 | `array`                       | ❌ Not yet supported     |
 | `map`                         | ❌ Not yet supported     |
 
-### Schema Evolution
+### Schema evolution
 
 Jetliner reads the writer schema embedded in the file. Schema evolution (reader schema different from writer schema) is not currently supported.
 
-## Next Steps
+## Next steps
 
-- [Codec Support](codecs.md) - Compression options
+- [Data Sources](data-sources.md) - Paths, S3, codecs
 - [Error Handling](error-handling.md) - Handle schema errors
 - [Query Optimization](query-optimization.md) - Use schema for efficient queries

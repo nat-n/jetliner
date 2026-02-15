@@ -1,17 +1,17 @@
-# Error Handling
+# Error handling
 
-Jetliner provides flexible error handling modes for dealing with corrupted or malformed Avro data.
+Jetliner supports error recovery and reporting, to enable optimistic recovery of data from corrupted files, with detailed reporting of data corruption.
 
-## Error Modes
+## Error modes
 
 Jetliner supports two error handling modes:
 
-| Mode             | Parameter             | Behavior                           |
-| ---------------- | --------------------- | ---------------------------------- |
-| Strict (default) | `ignore_errors=False` | Fail immediately on first error    |
-| Skip             | `ignore_errors=True`  | Skip bad records, continue reading |
+| Mode             | Parameter             | Behavior                          |
+| ---------------- | --------------------- | --------------------------------- |
+| Strict (default) | `ignore_errors=False` | Fail immediately on first error   |
+| Recovery         | `ignore_errors=True`  | Skip bad blocks, continue reading |
 
-## Strict Mode (Default)
+### Strict mode
 
 Strict mode is the default behavior. When a corrupted record is encountered, reading fails immediately:
 
@@ -25,21 +25,14 @@ except jetliner.DecodeError as e:
     print(f"Failed to decode record: {e}")
 ```
 
-### When to Use Strict Mode
+### Recovery mode
 
-- Data validation pipelines
-- When data integrity is critical
-- Testing and development
-- When you need to know about every error
-
-## Skip Mode
-
-Skip mode continues reading when errors are encountered, skipping bad records:
+Recovery mode continues reading when errors are encountered. Unreadable blocks are skipped:
 
 ```python
 import jetliner
 
-# Skip mode - skip bad records
+# Skip mode - skip bad blocks
 df = jetliner.scan_avro("data.avro", ignore_errors=True).collect()
 
 # Or with AvroReader
@@ -48,9 +41,9 @@ with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
         process(batch)
 ```
 
-### Checking for Errors
+#### Checking for errors
 
-With `AvroReader`, you can check if any records were skipped:
+With `AvroReader` or `MultiAvroReader`, you can check if any blocks were skipped:
 
 ```python
 import jetliner
@@ -62,19 +55,12 @@ with jetliner.AvroReader("data.avro", ignore_errors=True) as reader:
     if reader.error_count > 0:
         print(f"Skipped {reader.error_count} bad records")
 
-        # Get error details
+        # Get error details, including block details
         for error in reader.errors:
             print(f"  - {error}")
 ```
 
-### When to Use Skip Mode
-
-- Processing data from unreliable sources
-- When partial results are acceptable
-- Batch processing where some failures are expected
-- Data exploration and debugging
-
-## Exception Types
+## Exception types
 
 Jetliner defines specific exception types for different error conditions:
 
@@ -87,7 +73,7 @@ Jetliner defines specific exception types for different error conditions:
 | `DecodeError`   | Record decoding failure                            |
 | `SourceError`   | File/S3 access errors                              |
 
-### Structured Exception Types
+### Structured exception types
 
 For programmatic error handling, use the structured exception types with metadata attributes:
 
@@ -106,7 +92,7 @@ except jetliner.PyParseError as e:
     print(f"Parse error at offset {e.offset}: {e.message}")
 ```
 
-### Handling Specific Errors
+### Handling specific errors
 
 ```python
 import jetliner
@@ -129,7 +115,7 @@ except jetliner.JetlinerError as e:
     print(f"Other Jetliner error: {e}")
 ```
 
-### Simplified Error Handling
+### Simplified error handling
 
 For most cases, catching the base class is sufficient:
 
@@ -144,9 +130,9 @@ except jetliner.JetlinerError as e:
     print(f"Error reading Avro file: {e}")
 ```
 
-## Error Recovery Patterns
+## Error recovery patterns
 
-### Retry with Fallback
+### Retry with fallback
 
 ```python
 import jetliner
@@ -160,7 +146,7 @@ def read_with_fallback(path):
         return jetliner.scan_avro(path, ignore_errors=True).collect()
 ```
 
-### Validate Before Processing
+### Validate before processing
 
 ```python
 import jetliner
@@ -177,7 +163,7 @@ def validate_and_read(path):
     return jetliner.scan_avro(path).collect()
 ```
 
-### Batch Error Handling
+### Batch error handling
 
 ```python
 import jetliner
@@ -203,9 +189,9 @@ def process_directory(dir_path):
     return results
 ```
 
-## Debugging Corrupted Files
+## Debugging corrupted files
 
-### Inspect File Header
+### Inspect file header
 
 ```python
 import jetliner
@@ -217,7 +203,7 @@ except jetliner.ParseError as e:
     print(f"Header is corrupted: {e}")
 ```
 
-### Read with Error Details
+### Read with error details
 
 ```python
 import jetliner
@@ -232,7 +218,7 @@ with jetliner.AvroReader("suspect.avro", ignore_errors=True) as reader:
             print(f"  {error}")
 ```
 
-### Compare with Reference Implementation
+### Compare with reference implementation
 
 ```python
 import jetliner
@@ -254,7 +240,7 @@ def compare_readers(path):
     print(f"Jetliner: {jetliner_rows} rows, {errors} errors")
 ```
 
-## Best Practices
+## Best practices
 
 1. **Use strict mode for production**: Ensures data integrity
 2. **Use skip mode for exploration**: More resilient to data issues
@@ -263,9 +249,9 @@ def compare_readers(path):
 5. **Handle exceptions gracefully**: Catch specific exceptions when possible
 6. **Use structured exceptions**: Access error metadata for detailed debugging
 
-## Common Error Scenarios
+## Common error scenarios
 
-### Truncated Files
+### Truncated files
 
 Files that were incompletely written:
 
@@ -274,7 +260,7 @@ Files that were incompletely written:
 df = jetliner.scan_avro("truncated.avro", ignore_errors=True).collect()
 ```
 
-### Corrupted Compression
+### Corrupted compression
 
 Blocks with invalid compressed data:
 
@@ -283,7 +269,7 @@ Blocks with invalid compressed data:
 df = jetliner.scan_avro("bad_compression.avro", ignore_errors=True).collect()
 ```
 
-### Invalid Records
+### Invalid records
 
 Individual records with encoding errors:
 
@@ -292,8 +278,8 @@ Individual records with encoding errors:
 df = jetliner.scan_avro("bad_records.avro", ignore_errors=True).collect()
 ```
 
-## Next Steps
+## Next steps
 
-- [Schema Inspection](schemas.md) - Understand your data structure
-- [Streaming Large Files](streaming.md) - Handle large files gracefully
-- [Local Files](local-files.md) - Basic file reading
+- [Schemas](schemas.md) - Understand your data structure
+- [Streaming](streaming.md) - Handle large files gracefully
+- [Data Sources](data-sources.md) - Paths, S3, codecs

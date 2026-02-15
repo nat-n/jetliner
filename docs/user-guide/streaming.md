@@ -1,4 +1,4 @@
-# Streaming Large Files
+# Streaming large files
 
 Jetliner is designed for streaming large Avro files with minimal memory overhead. This guide covers memory-efficient processing techniques.
 
@@ -15,7 +15,7 @@ Jetliner reads Avro files block-by-block rather than loading entire files into m
 
 This streaming architecture enables processing files larger than available RAM.
 
-## Using AvroReader for Streaming Control
+## Using AvroReader for streaming control
 
 The `AvroReader` API gives you direct control over batch processing:
 
@@ -29,7 +29,7 @@ with jetliner.AvroReader("large_file.avro") as reader:
         process(batch)
 ```
 
-### Processing Without Accumulation
+### Processing without accumulation
 
 For true streaming (constant memory usage):
 
@@ -48,7 +48,7 @@ with jetliner.AvroReader("huge_file.avro") as reader:
 print(f"Total: {total_amount}, Rows: {row_count}")
 ```
 
-### Writing Results Incrementally
+### Writing results incrementally
 
 Stream results to disk without accumulating in memory:
 
@@ -62,7 +62,7 @@ with jetliner.AvroReader("input.avro") as reader:
         processed.write_parquet(f"output/part_{i:04d}.parquet")
 ```
 
-## Buffer Configuration
+## Buffer configuration
 
 Jetliner uses prefetching to overlap I/O with processing. Configure buffers based on your environment:
 
@@ -73,7 +73,7 @@ Jetliner uses prefetching to overlap I/O with processing. Configure buffers base
 | `buffer_blocks` | 4       | Number of Avro blocks to prefetch |
 | `buffer_bytes`  | 64MB    | Maximum bytes to buffer           |
 
-### High-Throughput Settings
+### High-throughput settings
 
 For maximum speed when memory is available:
 
@@ -88,7 +88,7 @@ df = jetliner.scan_avro(
 ).collect()
 ```
 
-### Memory-Constrained Settings
+### Memory-constrained settings
 
 For environments with limited memory (Lambda, containers):
 
@@ -105,7 +105,7 @@ with jetliner.AvroReader(
         process(batch)
 ```
 
-### Batch Size Control
+### Batch size control
 
 Control the number of records per batch:
 
@@ -124,7 +124,7 @@ with jetliner.AvroReader("data.avro", batch_size=500_000) as reader:
         process(batch)
 ```
 
-## Progress Tracking
+## Progress tracking
 
 Track progress during streaming:
 
@@ -158,123 +158,30 @@ with jetliner.AvroReader("large_file.avro") as reader:
         process(batch)
 ```
 
-## Memory Estimation
-
-Estimate memory requirements for your data:
-
-```python
-import jetliner
-
-# Check schema to estimate row size
-with jetliner.AvroReader("data.avro") as reader:
-    schema = reader.schema_dict
-
-    # Get first batch to estimate memory per row
-    first_batch = next(iter(reader))
-    bytes_per_row = first_batch.estimated_size() / first_batch.height
-
-    print(f"Estimated bytes per row: {bytes_per_row:.0f}")
-    print(f"For 1M rows: {bytes_per_row * 1_000_000 / 1024**2:.0f} MB")
-```
-
 ## Streaming with scan_avro()
 
-The `scan_avro()` API also streams internally, but collects results at the end:
+The `scan_avro()` API streams internally and collects results at the end. When combined with a selective filter, [predicate pushdown](query-optimization.md) keeps memory usage low by discarding filtered rows during reading:
 
 ```python
 import jetliner
 import polars as pl
 
-# Streaming happens internally, but collect() accumulates results
-df = jetliner.scan_avro("large_file.avro").collect()
+# Memory-efficient: only matching rows are accumulated
+df = (
+    jetliner.scan_avro("large_file.avro")
+    .filter(pl.col("status") == "active")  # Selective filter
+    .collect()
+)
 ```
 
-For truly large results, use `AvroReader` or write results incrementally:
+To write large results without accumulating in memory, use Polars' streaming sink:
 
 ```python
-import jetliner
-
-# Stream and write without full accumulation
-lf = jetliner.scan_avro("large_file.avro")
-lf.sink_parquet("output.parquet")  # Polars streaming sink
+jetliner.scan_avro("large_file.avro").sink_parquet("output.parquet")
 ```
 
-## AWS Lambda Considerations
-
-Lambda has limited memory (128MB - 10GB). Optimize for Lambda:
-
-```python
-import jetliner
-
-def lambda_handler(event, context):
-    # Conservative settings for Lambda
-    with jetliner.AvroReader(
-        event["s3_uri"],
-        storage_options={"region": "us-east-1"},
-        buffer_blocks=2,
-        buffer_bytes=32 * 1024 * 1024,  # 32MB
-        batch_size=50_000,
-    ) as reader:
-        results = []
-        for batch in reader:
-            # Process and aggregate, don't accumulate raw data
-            summary = batch.group_by("category").agg(
-                pl.col("amount").sum()
-            )
-            results.append(summary)
-
-        return pl.concat(results).to_dicts()
-```
-
-## Parallel Processing
-
-Process batches in parallel (when order doesn't matter):
-
-```python
-import jetliner
-from concurrent.futures import ThreadPoolExecutor
-
-def process_batch(batch):
-    # CPU-bound processing
-    return batch.filter(batch["amount"] > 0).height
-
-with jetliner.AvroReader("data.avro") as reader:
-    batches = list(reader)
-
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(process_batch, batches))
-
-print(f"Total matching rows: {sum(results)}")
-```
-
-!!! warning "Memory"
-    Collecting all batches into a list defeats streaming benefits. Use this pattern only when batches fit in memory.
-
-## Best Practices
-
-1. **Use AvroReader for large files**: When you can't fit results in memory
-2. **Process incrementally**: Aggregate or write results as you go
-3. **Tune buffer settings**: Match your memory constraints
-4. **Monitor memory**: Use tools like `psutil` to track usage
-5. **Combine with projection**: Select only needed columns to reduce memory
-
-## Troubleshooting
-
-### Out of Memory
-
-- Reduce `buffer_blocks` and `buffer_bytes`
-- Use smaller `batch_size`
-- Process batches without accumulating
-- Select fewer columns with projection pushdown
-
-### Slow Performance
-
-- Increase `buffer_blocks` for more prefetching
-- Increase `batch_size` for fewer Python iterations
-- Use projection pushdown to read fewer columns
-
-## Next Steps
+## Next steps
 
 - [Query Optimization](query-optimization.md) - Reduce data read
-- [S3 Access](s3-access.md) - Stream from cloud storage
+- [Data Sources](data-sources.md) - Paths, S3, codecs
 - [Error Handling](error-handling.md) - Handle failures gracefully

@@ -1,28 +1,27 @@
-# Getting Started
+# Overview
 
 <p align="center">
   <img src="assets/jetliner_logo.png" alt="Jetliner Logo" width="200">
 </p>
 
-Jetliner is a high-performance Polars plugin for streaming Avro files into DataFrames with minimal memory overhead. Built in Rust with Python bindings, it's designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast.
+Jetliner is a high-performance [Polars](https://pola.rs/) plugin for reading Avro files into DataFrames. Built in Rust with Python bindings, it streams data block-by-block with minimal memory overhead.
 
-## Why Jetliner?
+## Features
 
-- **Streaming architecture**: Reads data block-by-block rather than loading entire files into memory
-- **Query optimization**: Projection pushdown, predicate pushdown, and early stopping via Polars' IO plugin system
-- **S3-native**: First-class support for reading directly from S3 with configurable authentication
-- **Zero-copy techniques**: Uses `bytes::Bytes` for efficient memory handling
-- **Full codec support**: Handles null, snappy, deflate, zstd, bzip2, and xz compression
+- **High-performance streaming** — Block-by-block processing with minimal memory footprint
+- **(Almost) complete Avro spec support** — Reads almost any valid Avro (see [limitations](#known-limitations))
+- **Query optimization** — Projection pushdown, predicate pushdown, and early stopping via Polars LazyFrames
+- **S3 and local file support** — Same API for Amazon S3 and local disk, with glob resolution
+- **All standard codecs** — null, snappy, deflate, zstd, bzip2, and xz compression
+- **Flexible error handling** — Optionally skip bad blocks for resilience to data corruption
 
-### Performance benchmarks
+## Benchmarks
 
-Jetliner is built for speed. Benchmarks against other Python Avro readers show significant performance gains, especially on complex schemas and wide tables.
+Jetliner significantly outperforms the alternatives. Yes, that's a log scale.
 
 <iframe src="assets/benchmark_performance.html" width="100%" height="500" frameborder="0"></iframe>
 
-Yes, that's a log scale. The chart compares read times across four scenarios using 1M-row Avro files. Note that Polars' built-in Avro reader is missing from the "Complex" scenario entirely—it doesn't support maps. Jetliner handles complex nested schemas with arrays, maps, and nullable fields without breaking a sweat.
-
-For detailed methodology and additional comparisons, see [Performance Benchmarks](performance/benchmarks.md).
+The chart compares read times across four scenarios using 1M-row Avro files. Polars' built-in Avro reader is missing from "Complex" because it doesn't support maps.
 
 ## Installation
 
@@ -40,162 +39,74 @@ For detailed methodology and additional comparisons, see [Performance Benchmarks
 
 === "From source"
 
+    Requires [Rust](https://rustup.rs/).
+
     ```bash
-    git clone https://github.com/jetliner/jetliner.git
+    git clone https://github.com/nat-n/jetliner.git
     cd jetliner
     pip install maturin
-    maturin develop
+    maturin develop --release
     ```
 
-## Quick Start
+## Quick start
 
-Here's a minimal example to verify your installation:
+### Lazy reading with query optimization
 
-```python
-import jetliner
-
-# Read an Avro file into a DataFrame
-df = jetliner.scan_avro("data.avro").collect()
-print(df)
-
-# Or use read_avro() for eager loading with column selection
-df = jetliner.read_avro("data.avro", columns=["col1", "col2"])
-```
-
-## Three APIs: scan_avro() vs read_avro() vs AvroReader
-
-Jetliner provides three complementary APIs for reading Avro files:
-
-### scan_avro() - LazyFrame with Query Optimization
-
-The recommended API for most use cases. Returns a Polars LazyFrame that enables query optimizations:
+Use `scan_avro()` for best performance—Polars pushes projections and predicates down to the reader:
 
 ```python
 import jetliner
 import polars as pl
 
-# Query with automatic optimization
-result = (
-    jetliner.scan_avro("data.avro")
-    .select(["user_id", "amount"])      # Projection pushdown
-    .filter(pl.col("amount") > 100)     # Predicate pushdown
-    .head(1000)                         # Early stopping
+df = (
+    jetliner.scan_avro("s3://bucket/events/*.avro")
+    .select("user_id", "event_type", "timestamp")  # Only these columns are read
+    .filter(pl.col("event_type") == "purchase")    # Filters during reading
+    .head(10_000)                                  # Stops after 10k matches
     .collect()
 )
 ```
 
-**Benefits:**
+### Eager reading
 
-- Only reads columns you actually use (projection pushdown)
-- Filters data during reading, not after (predicate pushdown)
-- Stops reading once you have enough rows (early stopping)
-- Integrates with Polars streaming engine
-
-### read_avro() - Eager DataFrame Loading
-
-Use when you want to load data directly into a DataFrame with column selection:
+Use `read_avro()` when you want a DataFrame immediately:
 
 ```python
-import jetliner
-
-# Load specific columns eagerly
-df = jetliner.read_avro("data.avro", columns=["user_id", "amount"], n_rows=1000)
-
-# Load from multiple files
-df = jetliner.read_avro(["file1.avro", "file2.avro"])
-
-# Load with glob pattern
-df = jetliner.read_avro("data/*.avro")
+df = jetliner.read_avro("data.avro", columns=["id", "name"], n_rows=1000)
 ```
 
-**Use cases:**
+### Streaming iteration
 
-- Quick data loading with column selection
-- When you need a DataFrame immediately
-- Multi-file reading with schema validation
-
-### AvroReader - Iterator for Streaming Control
-
-Use when you need fine-grained control over batch processing:
+Use `AvroReader` for batch-by-batch control:
 
 ```python
-import jetliner
-
-# Process batches with full control
-with jetliner.AvroReader("data.avro") as reader:
-    print(f"Schema: {reader.schema}")
-
-    for batch in reader:
-        # Process each batch individually
-        process(batch)
+for batch in jetliner.AvroReader("huge_file.avro", batch_size=50_000):
+    process(batch)  # each batch is a DataFrame
 ```
 
-**Use cases:**
+### Error recovery
 
-- Progress tracking during iteration
-- Custom memory management
-- Streaming pipelines with backpressure
-- Accessing schema before reading data
-
-## Reading from S3
-
-All APIs support reading directly from S3:
+Skip corrupted blocks instead of failing:
 
 ```python
-import jetliner
+reader = jetliner.AvroReader("suspect_file.avro", ignore_errors=True)
+for batch in reader:
+    process(batch)
 
-# Using default AWS credentials (environment variables, IAM role, etc.)
-df = jetliner.scan_avro("s3://bucket/path/to/file.avro").collect()
-
-# With explicit credentials
-df = jetliner.scan_avro(
-    "s3://bucket/path/to/file.avro",
-    storage_options={
-        "aws_access_key_id": "your-key",
-        "aws_secret_access_key": "your-secret",
-        "region": "us-east-1",
-    }
-).collect()
-
-# S3-compatible services (MinIO, LocalStack, R2)
-df = jetliner.scan_avro(
-    "s3://bucket/file.avro",
-    storage_options={
-        "endpoint": "http://localhost:9000",
-        "aws_access_key_id": "minioadmin",
-        "aws_secret_access_key": "minioadmin",
-    }
-).collect()
+if reader.error_count > 0:
+    print(f"Skipped {reader.error_count} bad blocks")
+    for err in reader.errors:
+        print(f"  Block {err.block_index}: {err.message}")
 ```
 
-## Verification
+## Known limitations
 
-To verify your installation is working correctly:
+- **Read-only** — Jetliner does not write Avro files
+- **Object container files only** — Reads `.avro` files with embedded schemas; does not support single-object encoding (schema registries) or bare Avro encoding
+- **Recursive types** — Serialized to JSON strings (Arrow/Polars don't support recursive structures)
+- **Complex top-level schemas** — Arrays and maps as top-level types are not yet supported
 
-```python
-import jetliner
+## Next steps
 
-# Check that the module loads
-print(f"Jetliner version: {jetliner.__name__}")
-
-# List available exports
-print(f"Available: {jetliner.__all__}")
-```
-
-Expected output:
-```
-Jetliner version: jetliner
-Available: ['scan_avro', 'read_avro', 'read_avro_schema', 'AvroReader', 'MultiAvroReader', 'BadBlockError', 'JetlinerError', 'DecodeError', 'ParseError', 'SourceError', 'SchemaError', 'CodecError', 'AuthenticationError', 'FileNotFoundError', 'PermissionError', 'ConfigurationError', 'FileSource']
-```
-
-## System Requirements
-
-- **Python**: 3.11 or later
-- **Polars**: 0.52 or later
-- **Operating Systems**: Linux, macOS, Windows
-
-## Next Steps
-
-- [Installation](installation.md) - Detailed installation options and troubleshooting
-- [User Guide](user-guide/index.md) - In-depth guides for common workflows
-- [API Reference](api/index.md) - Complete function and class documentation
+- [User Guide](user-guide/index.md) — Data sources, query optimization, streaming, error handling
+- [API Reference](api/scan_avro.md) — Complete function and class documentation

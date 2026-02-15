@@ -82,9 +82,20 @@ Check `tasks.md` for current task status - tasks 1-20 complete, 21+ pending.
 |------|-----------|
 | Add new Avro type | `src/schema/types.rs`, `src/reader/decode.rs`, `src/convert/arrow.rs` |
 | Fix decoding bug | `src/reader/record_decoder.rs`, `src/reader/decode.rs` |
-| Add Python API | `src/python/reader.rs`, `python/jetliner/__init__.py` |
+| Add Python API | `src/python/reader.rs`, `python/jetliner/__init__.py`, `python/jetliner/jetliner.pyi` |
 | Debug type mapping | `src/convert/arrow.rs` (Avro→Arrow), check Polars conversion |
 | S3 issues | `src/source/s3.rs`, `python/tests/s3/` |
+
+## Stub File Maintenance
+
+The file `python/jetliner/jetliner.pyi` contains type stubs for Rust extension classes
+(`AvroReader`, `MultiAvroReader`, `BadBlockError`). These stubs:
+
+- Provide IDE autocompletion and type checking for users
+- Enable mkdocstrings to generate API documentation
+
+**When modifying `src/python/reader.rs`**: Update the corresponding stubs in `jetliner.pyi`
+to keep signatures, defaults, and docstrings in sync.
 
 ## Performance Notes
 
