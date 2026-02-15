@@ -16,7 +16,7 @@ import tempfile
 
 import pytest
 
-from conftest import create_multi_block_avro_file, create_test_avro_file
+from conftest import create_multi_block_avro_file
 from jetliner import MultiAvroReader
 
 

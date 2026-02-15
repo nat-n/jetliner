@@ -1,4 +1,4 @@
-name: CI
+name: 🔍 CI
 
 on:
   push:
@@ -11,7 +11,7 @@ env:
 
 jobs:
   rust:
-    name: Rust checks
+    name: 🦀 Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
         run: poe test-rust
 
   python:
-    name: Python checks
+    name: 🐍 Python
     runs-on: ubuntu-latest
     env:
       TESTCONTAINERS_HOST_OVERRIDE: localhost

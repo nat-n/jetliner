@@ -1,4 +1,4 @@
-name: Documentation
+name: 📚 Docs
 
 on:
   push:
@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   build:
+    name: 📦 Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
           path: site/
 
   deploy:
+    name: 🚀 Deploy
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
