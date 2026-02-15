@@ -6,9 +6,13 @@ Tests cover:
 - Schema JSON string format
 - Schema dictionary parsing
 - read_avro_schema() function with real files
+- polars_schema property consistency with read_avro_schema()
 """
 
+import polars as pl
+
 import jetliner
+from jetliner import MultiAvroReader
 
 
 class TestSchemaInspection:
@@ -54,3 +58,49 @@ class TestSchemaInspection:
         assert "station" in polars_schema
         assert "time" in polars_schema
         assert "temp" in polars_schema
+
+
+class TestPolarsSchemaWithRealFiles:
+    """Test polars_schema property with real Avro files."""
+
+    def test_avro_reader_polars_schema_type(self, get_test_data_path):
+        """polars_schema on AvroReader should return pl.Schema."""
+        path = get_test_data_path("apache-avro/weather.avro")
+
+        with jetliner.AvroReader(path) as reader:
+            schema = reader.polars_schema
+            assert isinstance(schema, pl.Schema)
+
+    def test_avro_reader_polars_schema_matches_standalone(self, get_test_data_path):
+        """polars_schema should match read_avro_schema() for the same file."""
+        path = get_test_data_path("apache-avro/weather.avro")
+
+        standalone = jetliner.read_avro_schema(path)
+        with jetliner.AvroReader(path) as reader:
+            assert reader.polars_schema == standalone
+
+    def test_avro_reader_polars_schema_matches_dataframe(self, get_test_data_path):
+        """polars_schema should match the schema of DataFrames produced."""
+        path = get_test_data_path("apache-avro/weather.avro")
+
+        with jetliner.AvroReader(path) as reader:
+            declared = reader.polars_schema
+            for df in reader:
+                assert df.schema == declared
+
+    def test_multi_reader_polars_schema_matches_standalone(self, get_test_data_path):
+        """MultiAvroReader.polars_schema should match read_avro_schema()."""
+        path = get_test_data_path("apache-avro/weather.avro")
+
+        standalone = jetliner.read_avro_schema(path)
+        with MultiAvroReader([path]) as reader:
+            assert reader.polars_schema == standalone
+
+    def test_multi_reader_polars_schema_matches_dataframe(self, get_test_data_path):
+        """MultiAvroReader.polars_schema should match produced DataFrames."""
+        path = get_test_data_path("apache-avro/weather.avro")
+
+        with MultiAvroReader([path]) as reader:
+            declared = reader.polars_schema
+            for df in reader:
+                assert df.schema == declared

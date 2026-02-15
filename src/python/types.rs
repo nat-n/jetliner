@@ -18,6 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::PySequence;
 use std::sync::Arc;
 
+use crate::api::args::IdxSize;
 use crate::api::columns::ColumnSelection;
 
 /// Python file source type.
@@ -296,4 +297,28 @@ impl<'py> FromPyObject<'py> for PyPathLike {
 mod tests {
     // Note: These tests require Python runtime, so they're integration tests
     // Unit tests for the Rust logic are in the api::columns module
+}
+
+/// Validate and convert a Python `row_index_offset` (i64) to `IdxSize` (u32).
+///
+/// Python exposes `row_index_offset` as a signed integer for ergonomic negative
+/// value detection. This function validates the value is within the valid range
+/// `[0, u32::MAX]` and converts it to `IdxSize`.
+///
+/// # Errors
+/// - `PyValueError` if the offset is negative
+/// - `PyValueError` if the offset exceeds `u32::MAX` (4,294,967,295)
+pub fn validate_row_index_offset(offset: i64) -> PyResult<IdxSize> {
+    if offset < 0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "row_index_offset cannot be negative",
+        ));
+    }
+    IdxSize::try_from(offset).map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "row_index_offset {} exceeds maximum value of {}",
+            offset,
+            IdxSize::MAX
+        ))
+    })
 }

@@ -35,7 +35,9 @@ use crate::api::multi_source::{AvroMultiStreamReader, MultiSourceConfig};
 use crate::api::sources::ResolvedSources;
 use crate::convert::ErrorMode;
 use crate::error::{BadBlockError, BadBlockErrorKind, ReaderError};
+use crate::python::api::schema_to_py;
 use crate::python::errors::map_reader_error_acquire_gil;
+use crate::python::types::validate_row_index_offset;
 use crate::python::types::PyPathLike;
 use crate::reader::{AvroStreamReader, BufferConfig, ReadBufferConfig, ReaderConfig};
 use crate::source::{BoxedSource, LocalSource, S3Config, S3Source};
@@ -210,11 +212,12 @@ impl PyBadBlockError {
 /// # Properties
 /// - `schema`: Avro schema as JSON string (unified across files)
 /// - `schema_dict`: Avro schema as Python dict
+/// - `batch_size`: Target rows per batch
 /// - `rows_read`: Total rows read so far
 /// - `total_sources`: Number of source files
 /// - `current_source_index`: Index of file currently being read (0-based)
 /// - `is_finished`: Whether iteration is complete
-/// - `errors`: List of `BadBlockError` from skip mode (after iteration)
+/// - `errors`: List of `BadBlockError` from skip mode (available during and after iteration)
 /// - `error_count`: Number of errors encountered
 ///
 /// # Example
@@ -255,6 +258,10 @@ pub struct MultiAvroReader {
     paths: Vec<String>,
     /// Cached schema JSON (set after opening)
     schema_json: String,
+    /// Cached Polars schema (set after opening)
+    cached_polars_schema: polars::prelude::Schema,
+    /// Cached batch size
+    batch_size: usize,
 }
 
 #[pymethods]
@@ -313,12 +320,14 @@ impl MultiAvroReader {
         projected_columns: Option<Vec<String>>,
         n_rows: Option<usize>,
         row_index_name: Option<String>,
-        row_index_offset: u32,
+        row_index_offset: i64,
         include_file_paths: Option<String>,
         storage_options: Option<std::collections::HashMap<String, String>>,
         read_chunk_size: Option<usize>,
         max_block_size: Option<usize>,
     ) -> PyResult<Self> {
+        let row_index_offset = validate_row_index_offset(row_index_offset)?;
+
         let paths: Vec<String> = paths.into_iter().map(|p| p.into_path()).collect();
         let first_path = paths.first().cloned().unwrap_or_default();
 
@@ -395,13 +404,19 @@ impl MultiAvroReader {
         }
 
         // Create the multi-source reader
-        let inner = AvroMultiStreamReader::new(sources, config);
+        let inner = AvroMultiStreamReader::new(sources, config)
+            .map_err(|e| map_reader_error_acquire_gil(&first_path, e))?;
+
+        // Cache the Polars schema (already computed and cached inside the reader)
+        let cached_polars_schema = inner.polars_schema().clone();
 
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             runtime,
             paths,
             schema_json,
+            cached_polars_schema,
+            batch_size,
         })
     }
 
@@ -434,6 +449,10 @@ impl MultiAvroReader {
     }
 
     /// Exit the context manager.
+    ///
+    /// Releases the current file handle and marks the reader as finished,
+    /// preventing further iteration. Accumulated errors and metadata
+    /// (schema, rows_read, etc.) remain accessible after exit.
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __exit__(
         &mut self,
@@ -441,8 +460,11 @@ impl MultiAvroReader {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> bool {
-        // AvroMultiStreamReader doesn't need explicit cleanup
-        // Return false to not suppress exceptions
+        let inner = self.inner.clone();
+        self.runtime.block_on(async {
+            let mut guard = inner.lock().await;
+            guard.shutdown();
+        });
         false
     }
 
@@ -465,12 +487,33 @@ impl MultiAvroReader {
         json_value_to_py_dict(py, &value)
     }
 
+    /// Get the Polars schema for the DataFrames being produced.
+    ///
+    /// Returns a `polars.Schema` with column names and their Polars data types.
+    /// When projection is used, only the projected columns are included.
+    ///
+    /// # Returns
+    /// A `polars.Schema` instance.
+    #[getter]
+    fn polars_schema(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        schema_to_py(py, &self.cached_polars_schema)
+    }
+
+    /// Get the batch size being used.
+    ///
+    /// # Returns
+    /// The target number of rows per DataFrame batch.
+    #[getter]
+    fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
     /// Get accumulated errors from skip mode reading.
     #[getter]
     fn errors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let inner = self.inner.clone();
         let errors: Vec<PyBadBlockError> = self.runtime.block_on(async {
-            let guard = inner.lock().await;
+            let mut guard = inner.lock().await;
             guard
                 .errors()
                 .iter()
@@ -491,7 +534,7 @@ impl MultiAvroReader {
     fn error_count(&self) -> usize {
         let inner = self.inner.clone();
         self.runtime.block_on(async {
-            let guard = inner.lock().await;
+            let mut guard = inner.lock().await;
             guard.errors().len()
         })
     }
@@ -722,6 +765,39 @@ fn json_value_to_py_dict<'py>(
     }
 }
 
+/// Sync new errors from an `AvroStreamReader` into the cached error list.
+///
+/// Uses offset tracking to only collect errors that haven't been synced yet.
+/// Short-circuits with no allocation when there are no new errors.
+async fn sync_errors_from_reader(
+    reader: &AvroStreamReader<BoxedSource>,
+    path: &str,
+    cached_errors: &Mutex<Vec<PyBadBlockError>>,
+    error_sync_offset: &Mutex<usize>,
+) {
+    let mut offset_guard = error_sync_offset.lock().await;
+    let current_offset = *offset_guard;
+
+    // Short-circuit: no new errors since last sync
+    if reader.error_count() <= current_offset {
+        return;
+    }
+
+    let all_errors = reader.errors();
+    let new_errors: Vec<PyBadBlockError> = all_errors[current_offset..]
+        .iter()
+        .map(|e| {
+            let mut py_err = PyBadBlockError::from_bad_block_error(e);
+            py_err.filepath = Some(path.to_string());
+            py_err
+        })
+        .collect();
+    *offset_guard = all_errors.len();
+
+    let mut errors_guard = cached_errors.lock().await;
+    errors_guard.extend(new_errors);
+}
+
 /// Single-file Avro reader for batch iteration over DataFrames.
 ///
 /// Use this class when you need control over batch processing:
@@ -744,9 +820,10 @@ fn json_value_to_py_dict<'py>(
 /// - `schema`: Avro schema as JSON string
 /// - `schema_dict`: Avro schema as Python dict
 /// - `batch_size`: Target rows per batch
+/// - `rows_read`: Total rows read so far
 /// - `pending_records`: Records buffered for next batch
 /// - `is_finished`: Whether iteration is complete
-/// - `errors`: List of `BadBlockError` from skip mode (after iteration)
+/// - `errors`: List of `BadBlockError` from skip mode (available during and after iteration)
 /// - `error_count`: Number of errors encountered
 ///
 /// # Example
@@ -785,10 +862,17 @@ pub struct AvroReader {
     path: String,
     /// Cached schema JSON (set after opening)
     schema_json: String,
+    /// Cached Polars schema (set after opening, reflects projection if any)
+    cached_polars_schema: polars::prelude::Schema,
     /// Cached batch size
     batch_size: usize,
-    /// Accumulated errors from skip mode reading
-    errors: Arc<Mutex<Vec<PyBadBlockError>>>,
+    /// Cached rows read (snapshot from inner reader, updated each batch)
+    rows_read: usize,
+    /// Accumulated errors from skip mode reading.
+    /// Synced lazily from the inner reader on demand or at iteration end.
+    cached_errors: Arc<Mutex<Vec<PyBadBlockError>>>,
+    /// Offset tracking how many errors have been synced from the inner reader.
+    error_sync_offset: Arc<Mutex<usize>>,
 }
 
 #[pymethods]
@@ -928,21 +1012,26 @@ impl AvroReader {
             // Open the reader
             let reader = AvroStreamReader::open(source, config).await?;
 
-            // Cache the schema JSON
+            // Cache the schema JSON and Polars schema
             let schema_json = reader.schema().to_json();
+            let polars_schema = reader.polars_schema().clone();
 
-            Ok::<_, ReaderError>((reader, schema_json))
+            Ok::<_, ReaderError>((reader, schema_json, polars_schema))
         });
 
-        let (inner, schema_json) = result.map_err(|e| map_reader_error_acquire_gil(&path, e))?;
+        let (inner, schema_json, cached_polars_schema) =
+            result.map_err(|e| map_reader_error_acquire_gil(&path, e))?;
 
         Ok(Self {
             inner: Arc::new(Mutex::new(Some(inner))),
             runtime,
             path,
             schema_json,
+            cached_polars_schema,
             batch_size,
-            errors: Arc::new(Mutex::new(Vec::new())),
+            rows_read: 0,
+            cached_errors: Arc::new(Mutex::new(Vec::new())),
+            error_sync_offset: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -969,11 +1058,12 @@ impl AvroReader {
     /// # Raises
     /// * `StopIteration` - When all records have been read or reader is closed
     /// * `DecodeError`, `ParseError`, etc. - If an error occurs during reading (in strict mode)
-    fn __next__<'py>(slf: PyRefMut<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+    fn __next__<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
         let inner = slf.inner.clone();
         let path = slf.path.clone();
-        let errors_arc = slf.errors.clone();
+        let cached_errors = slf.cached_errors.clone();
+        let error_sync_offset = slf.error_sync_offset.clone();
 
         // Get the next batch using the runtime
         let result = slf.runtime.block_on(async {
@@ -984,43 +1074,31 @@ impl AvroReader {
             // simply stop yielding rather than raising errors
             let reader = match guard.as_mut() {
                 Some(r) => r,
-                None => return Ok((None, None)),
+                None => return Ok(None),
             };
 
             match reader.next_batch().await {
-                Ok(Some(df)) => Ok((Some(df), None)),
+                Ok(Some(df)) => Ok(Some(df)),
                 Ok(None) => {
-                    // End of iteration - collect errors before releasing the reader
-                    // Inject filepath into each error
-                    let collected_errors: Vec<PyBadBlockError> = reader
-                        .errors()
-                        .iter()
-                        .map(|e| {
-                            let mut py_err = PyBadBlockError::from_bad_block_error(e);
-                            py_err.filepath = Some(path.clone());
-                            py_err
-                        })
-                        .collect();
+                    // End of iteration — final sync of errors before releasing the reader
+                    sync_errors_from_reader(reader, &path, &cached_errors, &error_sync_offset)
+                        .await;
                     // Release the reader
                     *guard = None;
-                    Ok((None, Some(collected_errors)))
+                    Ok(None)
                 }
                 Err(e) => Err(e),
             }
         });
 
-        // Store errors outside the async block to avoid borrow issues
-        if let Ok((None, Some(ref collected_errors))) = result {
-            let errors_to_store = collected_errors.clone();
-            slf.runtime.block_on(async {
-                let mut errors_guard = errors_arc.lock().await;
-                *errors_guard = errors_to_store;
-            });
-        }
-
         match result {
-            Ok((Some(df), _)) => dataframe_to_py_with_enums(py, df),
-            Ok((None, _)) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
+            Ok(Some(df)) => {
+                let height = df.height();
+                let py_df = dataframe_to_py_with_enums(py, df)?;
+                slf.rows_read += height;
+                Ok(py_df)
+            }
+            Ok(None) => Err(PyErr::new::<pyo3::exceptions::PyStopIteration, _>(())),
             Err(e) => Err(map_reader_error_acquire_gil(&path, e)),
         }
     }
@@ -1111,6 +1189,24 @@ impl AvroReader {
         json_value_to_py_dict(py, &value)
     }
 
+    /// Get the Polars schema for the DataFrames being produced.
+    ///
+    /// Returns a `polars.Schema` with column names and their Polars data types.
+    /// When projection is used, only the projected columns are included.
+    ///
+    /// # Returns
+    /// A `polars.Schema` instance.
+    ///
+    /// # Example
+    /// ```python
+    /// reader = jetliner.AvroReader("file.avro")
+    /// print(reader.polars_schema)  # Schema({'id': Int64, 'name': String})
+    /// ```
+    #[getter]
+    fn polars_schema(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        schema_to_py(py, &self.cached_polars_schema)
+    }
+
     /// Check if the reader has finished reading.
     ///
     /// # Returns
@@ -1131,6 +1227,15 @@ impl AvroReader {
     #[getter]
     fn batch_size(&self) -> usize {
         self.batch_size
+    }
+
+    /// Get the number of rows read so far.
+    ///
+    /// # Returns
+    /// The total number of rows returned across all batches.
+    #[getter]
+    fn rows_read(&self) -> usize {
+        self.rows_read
     }
 
     /// Get the number of records currently pending in the builder.
@@ -1157,7 +1262,7 @@ impl AvroReader {
     ///
     /// # Example
     /// ```python
-    /// with jetliner.AvroReader("file.avro", strict=False) as reader:
+    /// with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
     ///     for df in reader:
     ///         process(df)
     ///
@@ -1171,9 +1276,21 @@ impl AvroReader {
     /// - 7.7: Include sufficient detail to diagnose issues
     #[getter]
     fn errors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let errors_arc = self.errors.clone();
+        let inner = self.inner.clone();
+        let path = self.path.clone();
+        let cached_errors = self.cached_errors.clone();
+        let error_sync_offset = self.error_sync_offset.clone();
+
+        // Lazily sync any new errors from the inner reader (if still alive)
+        self.runtime.block_on(async {
+            let guard = inner.lock().await;
+            if let Some(ref reader) = *guard {
+                sync_errors_from_reader(reader, &path, &cached_errors, &error_sync_offset).await;
+            }
+        });
+
         let errors = self.runtime.block_on(async {
-            let guard = errors_arc.lock().await;
+            let guard = cached_errors.lock().await;
             guard.clone()
         });
 
@@ -1195,7 +1312,7 @@ impl AvroReader {
     ///
     /// # Example
     /// ```python
-    /// with jetliner.AvroReader("file.avro", strict=False) as reader:
+    /// with jetliner.AvroReader("file.avro", ignore_errors=True) as reader:
     ///     for df in reader:
     ///         process(df)
     ///
@@ -1207,10 +1324,19 @@ impl AvroReader {
     /// - 7.3: Track error counts and positions
     #[getter]
     fn error_count(&self) -> usize {
-        let errors_arc = self.errors.clone();
+        let inner = self.inner.clone();
+        let path = self.path.clone();
+        let cached_errors = self.cached_errors.clone();
+        let error_sync_offset = self.error_sync_offset.clone();
+
         self.runtime.block_on(async {
-            let guard = errors_arc.lock().await;
-            guard.len()
+            // Lazily sync any new errors from the inner reader (if still alive)
+            let guard = inner.lock().await;
+            if let Some(ref reader) = *guard {
+                sync_errors_from_reader(reader, &path, &cached_errors, &error_sync_offset).await;
+            }
+            let errors_guard = cached_errors.lock().await;
+            errors_guard.len()
         })
     }
 }

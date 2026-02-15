@@ -716,6 +716,31 @@ class TestRowIndexSingleFile:
         with pytest.raises(ValueError, match="negative"):
             jetliner.scan_avro(temp_avro_file, row_index_name="idx", row_index_offset=-1)
 
+    def test_multi_reader_negative_offset_raises_error(self, temp_avro_file: str):
+        """Negative row_index_offset raises ValueError for MultiAvroReader."""
+        with pytest.raises(ValueError, match="negative"):
+            jetliner.MultiAvroReader(
+                [temp_avro_file], row_index_name="idx", row_index_offset=-1
+            )
+
+    def test_overflow_offset_raises_error(self, temp_avro_file: str):
+        """row_index_offset exceeding u32 max raises ValueError for all entry points."""
+        overflow_offset = 2**32  # 4_294_967_296, one above u32::MAX
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            jetliner.read_avro(
+                temp_avro_file, row_index_name="idx", row_index_offset=overflow_offset
+            )
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            jetliner.scan_avro(
+                temp_avro_file, row_index_name="idx", row_index_offset=overflow_offset
+            )
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            jetliner.MultiAvroReader(
+                [temp_avro_file],
+                row_index_name="idx",
+                row_index_offset=overflow_offset,
+            )
+
     def test_empty_file_row_index_scan_avro(self, empty_avro_file: str):
         """scan_avro with empty file includes row_index column."""
         import polars as pl

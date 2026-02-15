@@ -126,6 +126,7 @@ def scan_avro(
     Scan Avro file(s), returning a LazyFrame with query optimization support.
 
     This function uses Polars' IO plugin system to enable query optimizations:
+
     - Projection pushdown: Only read columns that are actually used in the query
     - Predicate pushdown: Apply filters during reading, not after
     - Early stopping: Stop reading after the requested number of rows
@@ -134,15 +135,19 @@ def scan_avro(
     ----------
     source : str | Path | Sequence[str] | Sequence[Path]
         Path to Avro file(s). Supports:
-        - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
-        - S3 URIs: `s3://bucket/key.avro`
+
+        - Local filesystem paths: ``/path/to/file.avro``, ``./relative/path.avro``
+        - S3 URIs: ``s3://bucket/key.avro``
         - Glob patterns with standard wildcards:
-          - `*` matches any characters except `/` (e.g., `data/*.avro`)
-          - `**` matches zero or more directories (e.g., `data/**/*.avro`)
-          - `?` matches a single character (e.g., `file?.avro`)
-          - `[...]` matches character ranges (e.g., `data/[0-9]*.avro`)
-          - `{a,b,c}` matches alternatives (e.g., `data/{2023,2024}/*.avro`)
-        - Multiple files: `["file1.avro", "file2.avro"]`
+
+          - ``*`` matches any characters except ``/`` (e.g., ``data/*.avro``)
+          - ``**`` matches zero or more directories (e.g., ``data/**/*.avro``)
+          - ``?`` matches a single character (e.g., ``file?.avro``)
+          - ``[...]`` matches character ranges (e.g., ``data/[0-9]*.avro``)
+          - ``{a,b,c}`` matches alternatives (e.g., ``data/{2023,2024}/*.avro``)
+
+        - Multiple files: ``["file1.avro", "file2.avro"]``
+
         When multiple files are provided, schemas must be compatible.
     n_rows : int | None, default None
         Maximum number of rows to read across all files. None means read all rows.
@@ -162,10 +167,12 @@ def scan_avro(
         fail immediately on first error. Errors are not accessible in scan mode.
     storage_options : dict[str, str] | None, default None
         Configuration for S3 connections. Supported keys:
-        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-        - aws_access_key_id: AWS access key (overrides environment)
-        - aws_secret_access_key: AWS secret key (overrides environment)
-        - region: AWS region (overrides environment)
+
+        - ``endpoint``: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - ``aws_access_key_id``: AWS access key (overrides environment)
+        - ``aws_secret_access_key``: AWS secret key (overrides environment)
+        - ``region``: AWS region (overrides environment)
+
         Values here take precedence over environment variables.
     buffer_blocks : int, default 4
         Number of blocks to prefetch for better I/O performance.
@@ -273,21 +280,26 @@ def read_avro(
     ----------
     source : str | Path | Sequence[str] | Sequence[Path]
         Path to Avro file(s). Supports:
-        - Local filesystem paths: `/path/to/file.avro`, `./relative/path.avro`
-        - S3 URIs: `s3://bucket/key.avro`
+
+        - Local filesystem paths: ``/path/to/file.avro``, ``./relative/path.avro``
+        - S3 URIs: ``s3://bucket/key.avro``
         - Glob patterns with standard wildcards:
-          - `*` matches any characters except `/` (e.g., `data/*.avro`)
-          - `**` matches zero or more directories (e.g., `data/**/*.avro`)
-          - `?` matches a single character (e.g., `file?.avro`)
-          - `[...]` matches character ranges (e.g., `data/[0-9]*.avro`)
-          - `{a,b,c}` matches alternatives (e.g., `data/{2023,2024}/*.avro`)
-        - Multiple files: `["file1.avro", "file2.avro"]`
+
+          - ``*`` matches any characters except ``/`` (e.g., ``data/*.avro``)
+          - ``**`` matches zero or more directories (e.g., ``data/**/*.avro``)
+          - ``?`` matches a single character (e.g., ``file?.avro``)
+          - ``[...]`` matches character ranges (e.g., ``data/[0-9]*.avro``)
+          - ``{a,b,c}`` matches alternatives (e.g., ``data/{2023,2024}/*.avro``)
+
+        - Multiple files: ``["file1.avro", "file2.avro"]``
+
         When multiple files are provided, schemas must be compatible.
     columns : Sequence[str] | Sequence[int] | None, default None
         Columns to read. Projection happens during decoding for efficiency. Can be:
-        - List of column names: `["col1", "col2"]`
-        - List of column indices (0-based): `[0, 2, 5]`
-        - None to read all columns
+
+        - List of column names: ``["col1", "col2"]``
+        - List of column indices (0-based): ``[0, 2, 5]``
+        - ``None`` to read all columns
     n_rows : int | None, default None
         Maximum number of rows to read across all files. None means read all rows.
     row_index_name : str | None, default None
@@ -306,10 +318,12 @@ def read_avro(
         fail immediately on first error. Errors are not accessible in read mode.
     storage_options : dict[str, str] | None, default None
         Configuration for S3 connections. Supported keys:
-        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-        - aws_access_key_id: AWS access key (overrides environment)
-        - aws_secret_access_key: AWS secret key (overrides environment)
-        - region: AWS region (overrides environment)
+
+        - ``endpoint``: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - ``aws_access_key_id``: AWS access key (overrides environment)
+        - ``aws_secret_access_key``: AWS secret key (overrides environment)
+        - ``region``: AWS region (overrides environment)
+
         Values here take precedence over environment variables.
     buffer_blocks : int, default 4
         Number of blocks to prefetch for better I/O performance.
@@ -396,10 +410,12 @@ def read_avro_schema(
         the first file only.
     storage_options : dict[str, str] | None, default None
         Configuration for S3 connections. Supported keys:
-        - endpoint: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
-        - aws_access_key_id: AWS access key (overrides environment)
-        - aws_secret_access_key: AWS secret key (overrides environment)
-        - region: AWS region (overrides environment)
+
+        - ``endpoint``: Custom S3 endpoint (for MinIO, LocalStack, R2, etc.)
+        - ``aws_access_key_id``: AWS access key (overrides environment)
+        - ``aws_secret_access_key``: AWS secret key (overrides environment)
+        - ``region``: AWS region (overrides environment)
+
         Values here take precedence over environment variables.
 
     Returns

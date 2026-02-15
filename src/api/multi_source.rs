@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use polars::prelude::DataFrame;
 
-use crate::convert::avro_to_arrow_schema;
+use crate::convert::{avro_to_arrow_schema, avro_to_arrow_schema_projected};
 use crate::error::{BadBlockError, ReaderError};
 use crate::reader::{AvroStreamReader, ReaderConfig};
 use crate::schema::AvroSchema;
@@ -112,6 +112,8 @@ pub struct AvroMultiStreamReader {
     sources: ResolvedSources,
     /// Configuration.
     config: MultiSourceConfig,
+    /// Cached Polars schema (computed once at construction, accounts for projection).
+    cached_polars_schema: polars::prelude::Schema,
     /// Current source index.
     current_source_index: usize,
     /// Current reader (if any) - uses BoxedSource for both local and S3.
@@ -126,6 +128,9 @@ pub struct AvroMultiStreamReader {
     finished: bool,
     /// Accumulated errors (in ignore_errors mode).
     accumulated_errors: Vec<BadBlockError>,
+    /// Offset tracking how many errors have been synced from the current reader.
+    /// Reset to 0 when switching to a new source.
+    error_sync_offset: usize,
     /// Whether we've returned any DataFrame (for empty file handling).
     returned_any_df: bool,
 }
@@ -133,13 +138,29 @@ pub struct AvroMultiStreamReader {
 impl AvroMultiStreamReader {
     /// Create a new `AvroMultiStreamReader` from resolved sources.
     ///
+    /// Eagerly converts the Avro schema to a Polars schema (respecting projection)
+    /// and caches it for the lifetime of the reader.
+    ///
     /// # Arguments
     /// * `sources` - Resolved sources (paths and unified schema)
     /// * `config` - Multi-source configuration
     ///
     /// # Returns
     /// A new `AvroMultiStreamReader` ready to read from the sources.
-    pub fn new(sources: ResolvedSources, config: MultiSourceConfig) -> Self {
+    ///
+    /// # Errors
+    /// Returns `ReaderError` if the Avro schema cannot be converted to a Polars schema.
+    pub fn new(sources: ResolvedSources, config: MultiSourceConfig) -> Result<Self, ReaderError> {
+        // Compute and cache the Polars schema once (accounts for projection)
+        let cached_polars_schema = if let Some(ref columns) = config.reader_config.projected_columns
+        {
+            let projected_names: std::collections::HashSet<String> =
+                columns.iter().cloned().collect();
+            avro_to_arrow_schema_projected(&sources.schema, &projected_names)?
+        } else {
+            avro_to_arrow_schema(&sources.schema)?
+        };
+
         // Initialize row index tracker if configured
         let row_index_tracker = config
             .row_index
@@ -152,9 +173,10 @@ impl AvroMultiStreamReader {
             .as_ref()
             .map(|name| FilePathInjector::new(name.clone()));
 
-        Self {
+        Ok(Self {
             sources,
             config,
+            cached_polars_schema,
             current_source_index: 0,
             current_reader: None,
             row_index_tracker,
@@ -162,8 +184,9 @@ impl AvroMultiStreamReader {
             rows_read: 0,
             finished: false,
             accumulated_errors: Vec::new(),
+            error_sync_offset: 0,
             returned_any_df: false,
-        }
+        })
     }
 
     /// Get the next batch of records as a DataFrame.
@@ -237,8 +260,9 @@ impl AvroMultiStreamReader {
                     return Ok(Some(df));
                 }
                 Ok(None) => {
-                    // Current source exhausted, collect errors and move to next
-                    self.collect_reader_errors();
+                    // Current source exhausted, sync remaining errors and move to next
+                    self.sync_reader_errors();
+                    self.error_sync_offset = 0;
                     self.current_reader = None;
                     // Continue loop to open next source
                 }
@@ -262,6 +286,7 @@ impl AvroMultiStreamReader {
                             )
                             .with_file_path(current_path),
                         );
+                        self.error_sync_offset = 0;
                         self.current_reader = None;
                         // Continue loop to open next source
                     } else {
@@ -386,39 +411,45 @@ impl AvroMultiStreamReader {
     /// This is used when all sources are empty to ensure we return a DataFrame
     /// with the correct column names and types.
     fn create_empty_dataframe_with_schema(&self) -> Result<DataFrame, ReaderError> {
-        let polars_schema = avro_to_arrow_schema(&self.sources.schema)?;
-        Ok(DataFrame::empty_with_schema(&polars_schema))
+        Ok(DataFrame::empty_with_schema(&self.cached_polars_schema))
     }
 
     /// Collect errors from the current reader.
-    fn collect_reader_errors(&mut self) {
+    ///
+    /// Uses offset tracking to only collect new errors since the last sync,
+    /// avoiding duplicates and unnecessary allocations when there are no new errors.
+    fn sync_reader_errors(&mut self) {
         if let Some(ref reader) = self.current_reader {
-            // Get the current file path to inject into errors
-            // current_source_index was incremented after opening, so -1 to get current file
-            let current_path = self
-                .sources
-                .paths
-                .get(self.current_source_index.saturating_sub(1))
-                .cloned()
-                .unwrap_or_default();
+            let reader_error_count = reader.error_count();
+            if reader_error_count > self.error_sync_offset {
+                // New errors since last sync — build the full list and take the tail
+                let current_path = self
+                    .sources
+                    .paths
+                    .get(self.current_source_index.saturating_sub(1))
+                    .cloned()
+                    .unwrap_or_default();
 
-            // Clone errors and inject file path
-            self.accumulated_errors.extend(
-                reader
-                    .errors()
-                    .iter()
-                    .map(|e| e.clone().with_file_path(&current_path)),
-            );
+                let all_errors = reader.errors();
+                self.accumulated_errors.extend(
+                    all_errors[self.error_sync_offset..]
+                        .iter()
+                        .map(|e| e.clone().with_file_path(&current_path)),
+                );
+                self.error_sync_offset = all_errors.len();
+            }
         }
     }
 
     /// Get accumulated errors.
     ///
     /// In ignore_errors mode, this returns all errors that occurred during reading.
+    /// Triggers a sync from the current reader to ensure the list is up-to-date.
     ///
     /// # Requirements
     /// - 12.4: Accumulated errors are accessible via the reader's `errors` property
-    pub fn errors(&self) -> &[BadBlockError] {
+    pub fn errors(&mut self) -> &[BadBlockError] {
+        self.sync_reader_errors();
         &self.accumulated_errors
     }
 
@@ -427,9 +458,27 @@ impl AvroMultiStreamReader {
         &self.sources.schema
     }
 
+    /// Get the Polars schema for the DataFrames being produced.
+    ///
+    /// Returns the cached schema computed at construction time.
+    /// When projection is configured, only the projected columns are included.
+    pub fn polars_schema(&self) -> &polars::prelude::Schema {
+        &self.cached_polars_schema
+    }
+
     /// Get the number of rows read so far.
     pub fn rows_read(&self) -> usize {
         self.rows_read
+    }
+
+    /// Shut down the reader, releasing the current source's file handle
+    /// and marking the reader as finished.
+    ///
+    /// This is idempotent — calling it on an already-finished reader is a no-op.
+    /// Accumulated errors and metadata remain accessible after shutdown.
+    pub fn shutdown(&mut self) {
+        self.current_reader = None;
+        self.finished = true;
     }
 
     /// Check if reading is finished.
@@ -452,6 +501,7 @@ impl AvroMultiStreamReader {
 mod tests {
     use super::*;
     use crate::schema::{FieldSchema, RecordSchema};
+    use polars::prelude::SchemaExt;
 
     fn create_test_record_schema(name: &str, fields: &[&str]) -> AvroSchema {
         let field_schemas: Vec<FieldSchema> = fields
@@ -498,7 +548,7 @@ mod tests {
             .with_row_index("idx", 0)
             .with_include_file_paths("source");
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         assert_eq!(reader.current_source_index(), 0);
         assert_eq!(reader.total_sources(), 2);
@@ -514,7 +564,7 @@ mod tests {
         let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema);
         let config = MultiSourceConfig::new();
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         assert!(reader.row_index_tracker.is_none());
         assert!(reader.file_path_injector.is_none());
@@ -526,7 +576,7 @@ mod tests {
         let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema);
         let config = MultiSourceConfig::new();
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         assert!(reader.errors().is_empty());
     }
@@ -552,7 +602,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new();
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Initial state checks
         assert_eq!(reader.current_source_index(), 0);
@@ -568,7 +618,7 @@ mod tests {
         let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema);
         let config = MultiSourceConfig::new().with_n_rows(100);
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         assert_eq!(reader.config.n_rows, Some(100));
     }
@@ -579,7 +629,7 @@ mod tests {
         let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema.clone());
         let config = MultiSourceConfig::new();
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Should be able to access the unified schema
         let reader_schema = reader.schema();
@@ -593,6 +643,38 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_source_reader_polars_schema() {
+        let schema = create_test_record_schema("TestRecord", &["id", "name", "value"]);
+        let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema);
+        let config = MultiSourceConfig::new();
+
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
+        let polars_schema = reader.polars_schema();
+
+        assert_eq!(polars_schema.len(), 3);
+        assert!(polars_schema.get_field("id").is_some());
+        assert!(polars_schema.get_field("name").is_some());
+        assert!(polars_schema.get_field("value").is_some());
+    }
+
+    #[test]
+    fn test_multi_source_reader_polars_schema_with_projection() {
+        let schema = create_test_record_schema("TestRecord", &["id", "name", "value"]);
+        let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema);
+        let reader_config =
+            ReaderConfig::new().with_projection(vec!["name".to_string(), "value".to_string()]);
+        let config = MultiSourceConfig::new().with_reader_config(reader_config);
+
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
+        let polars_schema = reader.polars_schema();
+
+        assert_eq!(polars_schema.len(), 2);
+        assert!(polars_schema.get_field("name").is_some());
+        assert!(polars_schema.get_field("value").is_some());
+        assert!(polars_schema.get_field("id").is_none());
+    }
+
+    #[test]
     fn test_multi_source_reader_with_all_options() {
         let schema = create_test_record_schema("Test", &["id"]);
         let sources = ResolvedSources::new(vec!["file.avro".to_string()], schema);
@@ -602,7 +684,7 @@ mod tests {
             .with_include_file_paths("source_file")
             .with_ignore_errors(true);
 
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Verify all options are set
         assert!(reader.row_index_tracker.is_some());
@@ -626,7 +708,7 @@ mod tests {
         let sources = ResolvedSources::new(vec![], schema);
         let config = MultiSourceConfig::new();
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Should return one empty DataFrame with correct schema
         let result = reader.next_batch().await.unwrap();
@@ -647,7 +729,7 @@ mod tests {
         let sources = ResolvedSources::new(vec!["nonexistent_file_12345.avro".to_string()], schema);
         let config = MultiSourceConfig::new();
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Should error for nonexistent file in strict mode
         let result = reader.next_batch().await;
@@ -660,7 +742,7 @@ mod tests {
         let sources = ResolvedSources::new(vec!["nonexistent_file_12345.avro".to_string()], schema);
         let config = MultiSourceConfig::new().with_ignore_errors(true);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Should return one empty DataFrame with correct schema (no data) and accumulate error
         let result = reader.next_batch().await.unwrap();
@@ -702,7 +784,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new();
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read all batches
         let mut total_rows = 0;
@@ -728,7 +810,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new();
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Initial state
         assert_eq!(reader.current_source_index(), 0);
@@ -759,7 +841,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_n_rows(3);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read all batches
         let mut total_rows = 0;
@@ -787,7 +869,7 @@ mod tests {
         // Set n_rows to a small number that should be reached within first file
         let config = MultiSourceConfig::new().with_n_rows(2);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read all batches
         let mut total_rows = 0;
@@ -813,7 +895,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_row_index("idx", 0);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read all batches and collect row indices
         let mut all_indices: Vec<u32> = Vec::new();
@@ -844,7 +926,7 @@ mod tests {
             .with_row_index("idx", 100)
             .with_n_rows(5);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read first batch
         let df = reader.next_batch().await.unwrap().unwrap();
@@ -864,7 +946,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_include_file_paths("source_file");
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read first batch
         let df = reader.next_batch().await.unwrap().unwrap();
@@ -893,7 +975,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_include_file_paths("source");
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Collect all file paths
         let mut all_paths: Vec<String> = Vec::new();
@@ -927,7 +1009,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_ignore_errors(true);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read all batches
         let mut total_rows = 0;
@@ -969,7 +1051,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_ignore_errors(false); // Strict mode
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Should fail on first batch attempt
         let result = reader.next_batch().await;
@@ -985,7 +1067,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new().with_n_rows(1);
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Read until finished
         while let Some(_df) = reader.next_batch().await.unwrap() {}
@@ -1010,7 +1092,7 @@ mod tests {
         );
         let config = MultiSourceConfig::new();
 
-        let mut reader = AvroMultiStreamReader::new(sources, config);
+        let mut reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         // Initial rows_read should be 0
         assert_eq!(reader.rows_read(), 0);
@@ -1100,7 +1182,7 @@ mod tests {
         // Without S3 config, S3 reading will fail at runtime
         // but the reader should be created successfully
         let config = MultiSourceConfig::new();
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         assert_eq!(reader.total_sources(), 1);
         assert!(!reader.is_finished());
@@ -1125,7 +1207,7 @@ mod tests {
             .with_secret_access_key("test");
 
         let config = MultiSourceConfig::new().with_s3_config(s3_cfg);
-        let reader = AvroMultiStreamReader::new(sources, config);
+        let reader = AvroMultiStreamReader::new(sources, config).unwrap();
 
         assert_eq!(reader.total_sources(), 2);
     }

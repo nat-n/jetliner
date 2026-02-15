@@ -781,13 +781,13 @@ pub struct AvroReader {
 #[pymethods]
 impl AvroReader {
     #[new]
-    #[pyo3(signature = (path, batch_size=100_000, buffer_blocks=4, buffer_bytes=67_108_864, strict=false))]
+    #[pyo3(signature = (path, batch_size=100_000, buffer_blocks=4, buffer_bytes=67_108_864, ignore_errors=false))]
     fn new(
         path: &str,
         batch_size: usize,
         buffer_blocks: usize,
         buffer_bytes: usize,
-        strict: bool,
+        ignore_errors: bool,
     ) -> PyResult<Self> {
         let runtime = tokio::runtime::Runtime::new()?;
         let source = runtime.block_on(create_source(path))?;
@@ -797,7 +797,7 @@ impl AvroReader {
                 max_blocks: buffer_blocks,
                 max_bytes: buffer_bytes,
             },
-            error_mode: if strict { ErrorMode::Strict } else { ErrorMode::Skip },
+            error_mode: if ignore_errors { ErrorMode::Skip } else { ErrorMode::Strict },
             reader_schema: None,
         };
         let reader = runtime.block_on(AvroStreamReader::open(source, config))?;

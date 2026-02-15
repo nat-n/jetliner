@@ -11,7 +11,6 @@
 
 use polars::prelude::*;
 
-use crate::convert::avro_to_arrow_schema;
 use crate::error::ReaderError;
 use crate::reader::ReaderConfig;
 
@@ -162,7 +161,7 @@ pub fn read_avro_sources(
     }
 
     // Create the multi-source reader
-    let mut reader = AvroMultiStreamReader::new(resolved.clone(), multi_config);
+    let mut reader = AvroMultiStreamReader::new(resolved.clone(), multi_config)?;
 
     // Read all batches
     let mut dataframes = Vec::new();
@@ -176,9 +175,8 @@ pub fn read_avro_sources(
 
     // Concatenate all DataFrames
     if dataframes.is_empty() {
-        // Return empty DataFrame with correct schema
-        let schema = avro_to_arrow_schema(&resolved.schema)?;
-        Ok(DataFrame::empty_with_schema(&schema))
+        // Return empty DataFrame with correct schema (reuse reader's cached schema)
+        Ok(DataFrame::empty_with_schema(reader.polars_schema()))
     } else if dataframes.len() == 1 {
         Ok(dataframes.into_iter().next().unwrap())
     } else {

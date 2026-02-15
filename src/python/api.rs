@@ -21,7 +21,7 @@ use pyo3_polars::PyDataFrame;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::api::args::{IdxSize, RowIndex, ScanArgsAvro};
+use crate::api::args::{RowIndex, ScanArgsAvro};
 use crate::api::options::AvroOptions;
 use crate::api::read::read_avro_sources;
 use crate::api::schema::read_avro_schema as rust_read_avro_schema;
@@ -30,7 +30,7 @@ use crate::convert::avro_to_arrow_schema;
 use crate::source::S3Config;
 
 use super::errors::{map_polars_error_acquire_gil, map_reader_error_acquire_gil};
-use super::types::{PyColumnSelection, PyFileSource};
+use super::types::{validate_row_index_offset, PyColumnSelection, PyFileSource};
 
 /// Scan Avro file(s), returning a LazyFrame with query optimization support.
 ///
@@ -72,13 +72,7 @@ pub fn scan_avro(
     batch_size: usize,
     max_block_size: Option<usize>,
 ) -> PyResult<Py<PyAny>> {
-    // Validate row_index_offset is non-negative
-    if row_index_offset < 0 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "row_index_offset cannot be negative",
-        ));
-    }
-    let row_index_offset = row_index_offset as IdxSize;
+    let row_index_offset = validate_row_index_offset(row_index_offset)?;
 
     // Get the source paths
     let raw_paths = source.into_paths();
@@ -261,12 +255,7 @@ pub fn read_avro(
     max_block_size: Option<usize>,
 ) -> PyResult<PyDataFrame> {
     // Validate row_index_offset is non-negative
-    if row_index_offset < 0 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "row_index_offset cannot be negative",
-        ));
-    }
-    let row_index_offset = row_index_offset as IdxSize;
+    let row_index_offset = validate_row_index_offset(row_index_offset)?;
 
     // Convert storage_options to S3Config
     let s3_config = storage_options.map(|opts| S3Config::from_dict(&opts));
@@ -336,7 +325,10 @@ pub fn read_avro_schema(
 }
 
 /// Convert a Polars Schema to a Python polars.Schema object.
-fn schema_to_py(py: Python<'_>, schema: &polars::prelude::Schema) -> PyResult<Py<PyAny>> {
+pub(crate) fn schema_to_py(
+    py: Python<'_>,
+    schema: &polars::prelude::Schema,
+) -> PyResult<Py<PyAny>> {
     let polars_mod = py.import("polars")?;
 
     // Build a dict of field_name -> DataType

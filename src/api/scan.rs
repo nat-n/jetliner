@@ -18,7 +18,6 @@
 
 use polars::prelude::*;
 
-use crate::convert::avro_to_arrow_schema;
 use crate::error::ReaderError;
 use crate::reader::ReaderConfig;
 
@@ -51,11 +50,6 @@ impl ScanConfig {
         }
     }
 
-    /// Get the Polars schema for this scan.
-    pub fn polars_schema(&self) -> PolarsResult<Schema> {
-        avro_to_arrow_schema(&self.resolved.schema).map_err(PolarsError::from)
-    }
-
     /// Create a `AvroMultiStreamReader` for this scan configuration.
     ///
     /// # Arguments
@@ -65,7 +59,7 @@ impl ScanConfig {
         &self,
         projected_columns: Option<Vec<String>>,
         n_rows: Option<usize>,
-    ) -> AvroMultiStreamReader {
+    ) -> PolarsResult<AvroMultiStreamReader> {
         // Create reader configuration from AvroOptions
         let mut reader_config = ReaderConfig::new()
             .with_batch_size(self.opts.batch_size)
@@ -107,7 +101,7 @@ impl ScanConfig {
             multi_config = multi_config.with_include_file_paths(include_file_paths.clone());
         }
 
-        AvroMultiStreamReader::new(self.resolved.clone(), multi_config)
+        AvroMultiStreamReader::new(self.resolved.clone(), multi_config).map_err(PolarsError::from)
     }
 }
 
@@ -160,7 +154,7 @@ pub fn collect_scan(
     projected_columns: Option<Vec<String>>,
     n_rows: Option<usize>,
 ) -> PolarsResult<DataFrame> {
-    let mut reader = config.create_reader(projected_columns, n_rows);
+    let mut reader = config.create_reader(projected_columns, n_rows)?;
 
     // Create runtime for async operations
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -182,9 +176,8 @@ pub fn collect_scan(
 
     // Concatenate all DataFrames
     if dataframes.is_empty() {
-        // Return empty DataFrame with correct schema
-        let schema = config.polars_schema()?;
-        Ok(DataFrame::empty_with_schema(&schema))
+        // Return empty DataFrame with correct schema (reuse reader's cached schema)
+        Ok(DataFrame::empty_with_schema(reader.polars_schema()))
     } else if dataframes.len() == 1 {
         Ok(dataframes.into_iter().next().unwrap())
     } else {
@@ -212,8 +205,8 @@ mod tests {
         match result {
             Ok(config) => {
                 assert_eq!(config.resolved.paths.len(), 1);
-                let schema = config.polars_schema().unwrap();
-                assert!(schema.len() > 0);
+                assert!(config.resolved.schema.is_record());
+                assert!(config.create_reader(None, None).is_ok());
             }
             Err(e) => {
                 println!("Note: Test data not found: {}", e);
@@ -299,7 +292,7 @@ mod tests {
 
         match config {
             Ok(config) => {
-                let reader = config.create_reader(None, None);
+                let reader = config.create_reader(None, None).unwrap();
                 assert_eq!(reader.total_sources(), 1);
             }
             Err(e) => {

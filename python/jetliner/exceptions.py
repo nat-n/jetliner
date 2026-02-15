@@ -41,9 +41,12 @@ class JetlinerError(Exception):
 
     Users can catch this to handle any Jetliner-specific error.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific error variant (e.g., "InvalidData", "NotFound")
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific error variant (e.g., "InvalidData", "NotFound").
     """
 
     message: str
@@ -65,14 +68,22 @@ class JetlinerError(Exception):
 class DecodeError(JetlinerError):
     """Error decoding Avro record data.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific decode error variant (e.g., "InvalidData", "InvalidUtf8")
-        path: The file path where the error occurred (if available)
-        block_index: The block number where the error occurred
-        record_index: The record number within the block
-        file_offset: The absolute file offset where the error occurred
-        block_offset: The offset within the block where the error occurred
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific decode error variant (e.g., "InvalidData", "InvalidUtf8").
+    path : str | None
+        The file path where the error occurred (if available).
+    block_index : int | None
+        The block number where the error occurred.
+    record_index : int | None
+        The record number within the block.
+    file_offset : int | None
+        The absolute file offset where the error occurred.
+    block_offset : int | None
+        The offset within the block where the error occurred.
     """
 
     def __init__(
@@ -131,11 +142,16 @@ class ParseError(JetlinerError):
 
     Raised when the file header, magic bytes, or sync markers are invalid.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific parse error variant (e.g., "InvalidMagic", "InvalidSyncMarker")
-        path: The file path where the error occurred (if available)
-        file_offset: The file offset where the error occurred
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific parse error variant (e.g., "InvalidMagic", "InvalidSyncMarker").
+    path : str | None
+        The file path where the error occurred (if available).
+    file_offset : int | None
+        The file offset where the error occurred.
     """
 
     def __init__(
@@ -183,10 +199,14 @@ class SourceError(JetlinerError):
     Note: FileNotFoundError, PermissionError, and AuthenticationError are
     raised for those specific cases.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific source error variant (e.g., "S3Error", "Io")
-        path: The file path that caused the error
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific source error variant (e.g., "S3Error", "Io").
+    path : str | None
+        The file path that caused the error.
     """
 
     def __init__(
@@ -223,11 +243,16 @@ class SchemaError(JetlinerError):
 
     Raised for invalid schemas, unsupported types, or schema incompatibilities.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific schema error variant (e.g., "InvalidSchema", "UnsupportedType")
-        path: The file path where the error occurred (if available)
-        schema_context: Optional additional context (e.g., field name, type)
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific schema error variant (e.g., "InvalidSchema", "UnsupportedType").
+    path : str | None
+        The file path where the error occurred (if available).
+    schema_context : str | None
+        Optional additional context (e.g., field name, type).
     """
 
     def __init__(
@@ -271,13 +296,20 @@ class CodecError(JetlinerError):
 
     Raised for unsupported codecs or decompression failures.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific codec error variant (e.g., "UnsupportedCodec", "DecompressionError")
-        path: The file path where the error occurred (if available)
-        codec: The codec name that caused the error
-        block_index: The block number where the error occurred (if available)
-        file_offset: The file offset where the error occurred (if available)
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific codec error variant (e.g., "UnsupportedCodec", "DecompressionError").
+    path : str | None
+        The file path where the error occurred (if available).
+    codec : str
+        The codec name that caused the error.
+    block_index : int | None
+        The block number where the error occurred (if available).
+    file_offset : int | None
+        The file offset where the error occurred (if available).
     """
 
     def __init__(
@@ -330,10 +362,14 @@ class AuthenticationError(JetlinerError):
     This is distinct from PermissionError which is for valid credentials with
     insufficient permissions.
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific authentication error variant
-        path: The file path where the error occurred (if available)
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific authentication error variant.
+    path : str | None
+        The file path where the error occurred (if available).
     """
 
     def __init__(
@@ -369,19 +405,25 @@ class FileNotFoundError(JetlinerError, builtins.FileNotFoundError):
     """File or S3 object not found.
 
     Inherits from both JetlinerError and builtins.FileNotFoundError, allowing
-    idiomatic Python exception handling:
+    idiomatic Python exception handling::
 
         try:
             df = jetliner.read_avro("missing.avro")
         except FileNotFoundError:
             print("File not found!")
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific error variant
-        path: The file path that was not found
-        errno: Error number (2 = ENOENT for file not found)
-        filename: The file path that was not found (alias for path)
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific error variant.
+    path : str | None
+        The file path that was not found.
+    errno : int
+        Error number (2 = ENOENT for file not found).
+    filename : str | None
+        The file path that was not found (alias for path).
     """
 
     def __init__(
@@ -427,19 +469,25 @@ class PermissionError(JetlinerError, builtins.PermissionError):
     invalid/missing credentials.
 
     Inherits from both JetlinerError and builtins.PermissionError, allowing
-    idiomatic Python exception handling:
+    idiomatic Python exception handling::
 
         try:
             df = jetliner.read_avro("s3://restricted-bucket/file.avro")
         except PermissionError:
             print("Access denied!")
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific error variant
-        path: The file path that caused the error
-        errno: Error number (13 = EACCES for permission denied)
-        filename: The file path that caused the error (alias for path)
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific error variant.
+    path : str | None
+        The file path that caused the error.
+    errno : int
+        Error number (13 = EACCES for permission denied).
+    filename : str | None
+        The file path that caused the error (alias for path).
     """
 
     def __init__(
@@ -484,16 +532,19 @@ class ConfigurationError(JetlinerError, builtins.ValueError):
     (e.g., invalid batch size, unsupported options).
 
     Inherits from both JetlinerError and builtins.ValueError, allowing
-    idiomatic Python exception handling:
+    idiomatic Python exception handling::
 
         try:
             reader = jetliner.AvroReader("file.avro", batch_size=-1)
         except ValueError:
             print("Invalid configuration!")
 
-    Attributes:
-        message: Human-readable error message
-        variant: The specific error variant
+    Attributes
+    ----------
+    message : str
+        Human-readable error message.
+    variant : str
+        The specific error variant.
     """
 
     def __init__(

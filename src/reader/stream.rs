@@ -173,6 +173,8 @@ pub struct AvroStreamReader<S: StreamSource> {
     config: ReaderConfig,
     /// Whether we've reached EOF
     finished: bool,
+    /// Total rows read so far
+    rows_read: usize,
 }
 
 impl<S: StreamSource + 'static> AvroStreamReader<S> {
@@ -272,6 +274,7 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
             builder,
             config,
             finished: false,
+            rows_read: 0,
         })
     }
 
@@ -318,6 +321,7 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
                     if self.builder.is_batch_ready() {
                         // Build and return the DataFrame
                         if let Some(df) = self.builder.build(false)? {
+                            self.rows_read += df.height();
                             return Ok(Some(df));
                         }
                     }
@@ -329,6 +333,7 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
 
                     // Force build to get the final batch
                     if let Some(df) = self.builder.finish()? {
+                        self.rows_read += df.height();
                         return Ok(Some(df));
                     }
 
@@ -376,9 +381,22 @@ impl<S: StreamSource + 'static> AvroStreamReader<S> {
         all_errors
     }
 
+    /// Get the total number of errors accumulated so far.
+    ///
+    /// This is cheaper than `errors()` as it avoids allocating a new `Vec`.
+    /// Useful for checking whether new errors have appeared since the last sync.
+    pub fn error_count(&self) -> usize {
+        self.buffer.errors().len() + self.builder.errors().len()
+    }
+
     /// Check if we've reached the end of the file.
     pub fn is_finished(&self) -> bool {
         self.finished
+    }
+
+    /// Get the total number of rows read so far.
+    pub fn rows_read(&self) -> usize {
+        self.rows_read
     }
 
     /// Get the error mode being used.
