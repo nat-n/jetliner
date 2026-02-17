@@ -1,7 +1,7 @@
 # Overview
 
 <p align="center">
-  <img src="assets/jetliner_logo.png" alt="Jetliner Logo" width="200">
+  <img src="assets/jetliner_logo.png" alt="Jetliner Logo" width="300">
 </p>
 
 Jetliner is a high-performance [Polars](https://pola.rs/) plugin for reading Avro files into DataFrames. Built in Rust with Python bindings, it streams data block-by-block with minimal memory overhead.

@@ -36,11 +36,12 @@ from .conftest import MockS3Context
 # =============================================================================
 
 # Safe characters that work reliably across all S3 tools and APIs
+# Note: * is valid in S3 but not safe for jetliner (interpreted as glob)
 SAFE_KEY_CHARS = (
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "0123456789"
-    "!-_.*'()"
+    "!-_.'()"
 )
 
 # Characters that require URL encoding but are valid

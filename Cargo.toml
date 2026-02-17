@@ -58,7 +58,7 @@ aws-config = "1"
 aws-smithy-types = "1"
 
 # Python bindings
-pyo3 = { version = "0.26", features = ["auto-initialize"] }
+pyo3 = { version = "0.26" }
 pyo3-polars = { version = "0.25", features = [
   "dtype-struct",
   "dtype-categorical",
