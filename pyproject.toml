@@ -6,9 +6,10 @@ build-backend = "maturin"
 name = "jetliner"
 version = "0.2.0"
 description = "High-performance Avro streaming reader for Polars DataFrames"
+requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+authors = [{ name = "Nat Noordanus", email = "n@noordan.us" }]
 classifiers = [
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
@@ -18,15 +19,23 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Topic :: Software Development :: Libraries",
   "License :: OSI Approved :: Apache Software License",
 ]
+
 dependencies = ["polars>=1.37"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "hypothesis>=6.0", "maturin>=1.4"]
+
+[project.urls]
+Homepage = "http://jetliner.natn.io/"
+Documentation = "http://jetliner.natn.io/"
+Repository = "https://github.com/nat-n/jetliner"
+Issues = "https://github.com/nat-n/jetliner/issues"
+Releases = "https://github.com/nat-n/jetliner/releases"
 
 [dependency-groups]
 dev = [
@@ -48,7 +57,12 @@ dev = [
   "testcontainers[minio]>=4.14.1",
   "ty>=0.0.14",
 ]
-docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "plotly>=6.5.2", "kaleido>=0.4"]
+docs = [
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.24",
+  "plotly>=6.5.2",
+  "kaleido>=0.4",
+]
 
 [tool.uv]
 default-groups = ["dev"]
@@ -222,10 +236,20 @@ help = "Generate comparison benchmark visualization plots from JSON report"
 script = "plot:generate_plots"
 executor = { group = "docs" }
 env = { PYTHONPATH = "${POE_ROOT}/benches/python" }
-args.input_file = { options = ["--input", "-i"], help = "Input benchmark JSON file", default = "benchmark.json" }
-args.output_dir = { options = ["--output-dir", "-o"], help = "Output directory for generated files", default = "docs/assets" }
-args.html_only = { options = ["--html-only"], type = "boolean", help = "Only generate HTML (skip PNG)", default = false }
-args.png_only = { options = ["--png-only"], type = "boolean", help = "Only generate PNG (skip HTML)", default = false }
+args.input_file = { options = [
+  "--input",
+  "-i",
+], help = "Input benchmark JSON file", default = "benchmark.json" }
+args.output_dir = { options = [
+  "--output-dir",
+  "-o",
+], help = "Output directory for generated files", default = "docs/assets" }
+args.html_only = { options = [
+  "--html-only",
+], type = "boolean", help = "Only generate HTML (skip PNG)", default = false }
+args.png_only = { options = [
+  "--png-only",
+], type = "boolean", help = "Only generate PNG (skip HTML)", default = false }
 
 [tool.poe.tasks.bench-data]
 help = "Generate benchmark data files"
