@@ -31,11 +31,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install poe
+        run: uv tool install poethepoet
+
       - name: Install dependencies
-        run: pip install mkdocs-material mkdocstrings[python]
+        run: uv sync --only-group docs --no-install-project --frozen
 
       - name: Build documentation
-        run: mkdocs build --strict
+        run: poe docs-build
         env:
           PYTHONPATH: python
 

@@ -11,7 +11,7 @@
 
 A high-performance a [Polars](https://pola.rs/) plugin written in Rust with python bindings for fast and memory efficient reading of Avro files into DataFrames.
 
-Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques, and has (almost) complete support for the Avro spec (see [Known Limitations](#known-limitations)).
+Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques, and has (almost) complete support for the Avro spec (see [Known limitations](#known-limitations)).
 
 [Read the docs 📖](http://jetliner.natn.io/)
 
@@ -176,7 +176,7 @@ poe test-rust # run rust unit tests
 poe test-python # run python e2e tests
 ```
 
-## Known Limitations
+## Known limitations
 
 ### Read-Only
 
