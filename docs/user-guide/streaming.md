@@ -180,6 +180,41 @@ To write large results without accumulating in memory, use Polars' streaming sin
 jetliner.scan_avro("large_file.avro").sink_parquet("output.parquet")
 ```
 
+For batch-by-batch processing with query optimization, Polars provides two streaming methods on LazyFrame. Both apply projection pushdown, predicate pushdown, and early stopping before delivering data in batches:
+
+`sink_batches()` pushes batches to a callback:
+
+```python
+import jetliner
+import polars as pl
+
+(
+    jetliner.scan_avro("large_file.avro")
+    .select(["user_id", "amount"])
+    .filter(pl.col("amount") > 100)
+    .sink_batches(lambda batch: process(batch))
+)
+```
+
+`collect_batches()` returns an iterator you pull from:
+
+```python
+import jetliner
+import polars as pl
+
+lf = (
+    jetliner.scan_avro("large_file.avro")
+    .select(["user_id", "amount"])
+    .filter(pl.col("amount") > 100)
+)
+
+for batch in lf.collect_batches():
+    process(batch)
+```
+
+!!! note "When to use AvroReader instead"
+    `sink_batches` and `collect_batches` give you Polars query composition before batches are delivered, but the reader is managed internally. `AvroReader` and `MultiAvroReader` expose the reading process directly: error inspection (`.errors`, `.error_count`), schema access, progress tracking (`.rows_read`, `.is_finished`), and early termination with resource cleanup. Choose the Polars streaming methods when you need query composition; choose the iterator APIs when you need control over the reader itself.
+
 ## Next steps
 
 - [Query Optimization](query-optimization.md) - Reduce data read

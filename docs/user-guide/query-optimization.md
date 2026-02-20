@@ -26,6 +26,8 @@ result = (
 )
 ```
 
+These optimizations also apply when using `sink_batches()` or `collect_batches()` for streaming — see [Streaming](streaming.md#streaming-with-scan_avro).
+
 Polars automatically detects which columns and filters to push down. See the [Polars user guide](https://docs.pola.rs/user-guide/lazy/optimizations/) for details on how the query optimizer works.
 
 ## Using read_avro() with columns
