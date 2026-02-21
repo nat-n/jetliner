@@ -6,14 +6,14 @@
   <a href="https://pypi.org/project/jetliner/"><img src="https://img.shields.io/pypi/v/jetliner.svg" alt="PyPI version"></a>
   <a href="https://pypi.org/project/jetliner/"><img src="https://img.shields.io/pypi/pyversions/jetliner.svg" alt="Python versions"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
-  <a href="http://jetliner.natn.io/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
+  <a href="https://jetliner.natn.io/"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Documentation"></a>
 </p>
 
 A high-performance a [Polars](https://pola.rs/) plugin written in Rust with python bindings for fast and memory efficient reading of Avro files into DataFrames.
 
 Jetliner is designed for data pipelines where Avro files live on S3 or local disk and need to land in Polars fast. It streams data block-by-block rather than loading entire files into memory, uses zero-copy techniques, and has (almost) complete support for the Avro spec (see [Known limitations](#known-limitations)).
 
-[Read the docs 📖](http://jetliner.natn.io/)
+[Read the docs 📖](https://jetliner.natn.io/)
 
 ## Features
 - **High-performance streaming** — Supports block-by-block processing with minimal memory footprint, ideal for large files

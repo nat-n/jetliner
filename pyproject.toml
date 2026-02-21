@@ -31,8 +31,8 @@ dependencies = ["polars>=1.37"]
 dev = ["pytest>=7.0", "hypothesis>=6.0", "maturin>=1.4"]
 
 [project.urls]
-Homepage = "http://jetliner.natn.io/"
-Documentation = "http://jetliner.natn.io/"
+Homepage = "https://jetliner.natn.io/"
+Documentation = "https://jetliner.natn.io/"
 Repository = "https://github.com/nat-n/jetliner"
 Issues = "https://github.com/nat-n/jetliner/issues"
 Releases = "https://github.com/nat-n/jetliner/releases"
